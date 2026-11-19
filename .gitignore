@@ -1,0 +1,18 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+secrets/
+
+# Model weights and download caches
+weights/
+*.gguf
+*.safetensors
+
+# Node: dependencies are installed inside containers, never on the host
+node_modules/
+dist/
+*.tsbuildinfo
+
+# OS
+.DS_Store

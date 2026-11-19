@@ -1,0 +1,68 @@
+# Model server for the lab: one vLLM process serving one chat model on an NVIDIA GPU.
+# Runs on the GPU host. Every setting comes from two env files, both passed explicitly:
+#   .env                  machine-specific: address, key, cache directory (never committed)
+#   profiles/<name>.env   the model and its memory budget (committed, one per measured setup)
+#
+#   docker compose --env-file .env --env-file profiles/<name>.env --profile download run --rm download
+#   docker compose --env-file .env --env-file profiles/<name>.env up -d chat
+name: ai-on-aws-model
+
+x-vllm: &vllm
+  # vllm/vllm-openai:v0.34.0, pinned by digest
+  image: vllm/vllm-openai@sha256:20fdb089454afbb324efa4110a2c025ff7b27cc1a086e07aa580b18df8ad1ce1
+  # Run as the host user that owns the cache directory, so downloaded files are not owned by root.
+  user: "${MODEL_RUN_UID:?set MODEL_RUN_UID}:${MODEL_RUN_GID:?set MODEL_RUN_GID}"
+  volumes:
+    - "${MODEL_CACHE_DIR:?set MODEL_CACHE_DIR}:/cache"
+
+services:
+  # One-shot: fetch the pinned model revision into the cache.
+  # Downloading is a separate, explicit step; the server below never touches the network for weights.
+  download:
+    <<: *vllm
+    profiles: ["download"]
+    entrypoint: ["hf", "download"]
+    command: ["${CHAT_MODEL_REPO:?set CHAT_MODEL_REPO}", "--revision", "${CHAT_MODEL_REVISION:?set CHAT_MODEL_REVISION}"]
+    environment:
+      HOME: /tmp
+      HF_HOME: /cache/hf
+
+  chat:
+    <<: *vllm
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    shm_size: 8gb
+    ports:
+      - "${MODEL_BIND_ADDRESS:?set MODEL_BIND_ADDRESS}:${MODEL_PORT:?set MODEL_PORT}:8000"
+    environment:
+      HOME: /tmp
+      HF_HOME: /cache/hf
+      HF_HUB_OFFLINE: "1" # fail at start-up if the pinned revision is not in the cache
+      VLLM_API_KEY: "${MODEL_API_KEY:?set MODEL_API_KEY}"
+      VLLM_NO_USAGE_STATS: "1" # no usage telemetry
+      DO_NOT_TRACK: "1"
+    command: >-
+      ${CHAT_MODEL_REPO:?set CHAT_MODEL_REPO}
+      --revision ${CHAT_MODEL_REVISION:?set CHAT_MODEL_REVISION}
+      --served-model-name ${MODEL_ID:?set MODEL_ID}
+      --host 0.0.0.0
+      --port 8000
+      --max-model-len ${CHAT_MAX_MODEL_LEN:?set CHAT_MAX_MODEL_LEN}
+      --max-num-seqs ${CHAT_MAX_NUM_SEQS:?set CHAT_MAX_NUM_SEQS}
+      --gpu-memory-utilization ${CHAT_GPU_MEMORY_FRACTION:?set CHAT_GPU_MEMORY_FRACTION}
+      --kv-cache-dtype ${CHAT_KV_CACHE_DTYPE:?set CHAT_KV_CACHE_DTYPE}
+      --enable-auto-tool-choice
+      --tool-call-parser ${CHAT_TOOL_CALL_PARSER:?set CHAT_TOOL_CALL_PARSER}
+      --reasoning-parser ${CHAT_REASONING_PARSER:?set CHAT_REASONING_PARSER}
+      ${CHAT_EXTRA_ARGS?set CHAT_EXTRA_ARGS (may be empty)}
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8000/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 600s
+      retries: 3

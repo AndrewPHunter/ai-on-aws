@@ -1,0 +1,16 @@
+{
+  "temperature": 0,
+  "seed": 20261119,
+  "requestTimeoutMs": 180000,
+  "toolCalling": {
+    "rounds": 20,
+    "concurrency": 4,
+    "maxTokens": 4096,
+    "minCorrectRate": 0.95
+  },
+  "context": {
+    "concurrency": 4,
+    "minPromptTokens": 14000,
+    "maxTokens": 2048
+  }
+}
