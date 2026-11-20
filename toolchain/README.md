@@ -1,6 +1,6 @@
 # Toolchain
 
-The image stages and commands that check the repository's TypeScript. It is not specific to any piece of the lab: it checks every TypeScript file, wherever it is. Its one reference to a piece is a test that compares its Node image digest with the one `model/` uses. How it is put together is in [docs/architecture/toolchain.md](../docs/architecture/toolchain.md).
+The image stages and commands that check the repository's TypeScript and package a piece to run. It is not specific to any piece of the lab: it checks every TypeScript file, wherever it is. Its one reference to a piece is a test that compares its Node image digest with the one `model/` uses. How it is put together is in [docs/architecture/toolchain.md](../docs/architecture/toolchain.md).
 
 Every command on this page is run from the root of the repository. The host needs a shell and Docker with Compose; Node is not needed on it.
 
@@ -61,7 +61,8 @@ Open the repository in VS Code with the Dev Containers extension and choose "Reo
 
 ## What was measured
 
-- `toolchain/check.sh` passed with 24 tests on an arm64 Mac with Docker Desktop and on an amd64 machine with Docker 29 on Ubuntu 24.04.
+- `toolchain/check.sh` passed with 24 tests on an arm64 Mac with Docker Desktop and on an amd64 machine with Docker 29 on Ubuntu 24.04. Since the case system was added it runs 49 tests, and that was run on the arm64 Mac only.
+- The `run` stage was built and run for `tools/case-system` on the arm64 Mac only.
 - Each of these, added on purpose to a copy of the repository, made it exit non-zero: a type error, an unchecked index access, an un-awaited call to a library function, and a failing test.
 - With `.env` files, a `.git` folder, a `secrets` folder and a gate report planted in a copy, none of them was in the image.
 - `toolchain/lock.sh` run twice changed nothing the second time. With a version that does not exist in `package.json`, it exited non-zero at the time limit and left the lockfile unchanged. Both were run on macOS only.
@@ -76,9 +77,11 @@ All in `toolchain/Dockerfile`, built with the root of the repository as the buil
 | `base` | The pinned Node image, user `node`, working directory `/repo` | Every other stage |
 | `deps` | `base`, the root `package.json` and `package-lock.json`, and the dependencies installed from them | The check, the dev container |
 | `check` | `deps` and the repository's source | `toolchain/check.sh` |
+| `run-deps` | `base` and only the dependencies needed at run time, without the check's tools | The `run` stage |
+| `run` | `run-deps`, a `/data` folder owned by `node`, and one piece's `src/` folder. The piece is named by the build argument `PIECE`, such as `tools/case-system` | Each piece's own compose file, which also sets the command |
 | `lock`, `lockfile` | npm resolving the lockfile, and the one file it produces | `toolchain/lock.sh` |
 
-There is no stage yet that compiles a piece to JavaScript or packages it to run. Those stages arrive with the first piece that runs as a container.
+A piece runs its TypeScript directly on Node. There is no stage that compiles to JavaScript.
 
 ## What never enters an image
 

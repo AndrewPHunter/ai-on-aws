@@ -45,7 +45,7 @@ ai-on-aws/
 | [`model/`](model/README.md) | One vLLM server for the chat model, its one-command setup, and the gate that decides whether a running server is fit for the lab | Works, measured on one GPU |
 | [`shared/`](shared/README.md) | Packages used by more than one piece | Placeholder |
 | [`agents/`](agents/README.md) | The agents, each its own container | Placeholder |
-| [`tools/`](tools/README.md) | The agents' tools: MCP servers and APIs. Not developer tooling, which is `toolchain/` | Placeholder |
+| [`tools/`](tools/README.md) | The agents' tools: MCP servers and APIs. Not developer tooling, which is `toolchain/` | One tool works on its own: the case system. No agent uses it yet |
 | [`knowledge/`](knowledge/README.md) | Documents in, search, retrieval for agents | Placeholder |
 | [`platform/`](platform/README.md) | Local stand-ins for the AgentCore services around the runtime | Placeholder |
 | [`evaluation/`](evaluation/README.md) | Measures the other pieces | Placeholder |

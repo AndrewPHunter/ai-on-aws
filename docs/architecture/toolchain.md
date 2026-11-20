@@ -1,6 +1,6 @@
 # Toolchain
 
-How the repository's TypeScript is checked. To use it, see [toolchain/README.md](../../toolchain/README.md).
+How the repository's TypeScript is checked, and how a piece is packaged to run. To use it, see [toolchain/README.md](../../toolchain/README.md).
 
 ## Terms
 
@@ -25,6 +25,11 @@ flowchart TD
   base --> lock[lock: npm resolves the lockfile]
   manifests --> lock
   lock --> lockfile[lockfile: one file] --> out[package-lock.json written by toolchain/lock.sh]
+  base --> rundeps[run-deps: run-time dependencies only]
+  manifests --> rundeps
+  rundeps --> runstage[run: run-deps + one piece's src]
+  piece[One piece's src folder] --> runstage
+  runstage --> container[The piece's container, started by its own compose file]
 ```
 
 ## Always true
@@ -38,7 +43,8 @@ flowchart TD
 7. The only base image is the Node pin. Nothing is installed from the operating system's package manager.
 8. No `.git`, `node_modules`, `.env` file (other than `.env.example`), `secrets` folder or gate report enters an image.
 9. The only place `toolchain/` names a piece is the Node pin test, which reads `model/gate/compose.yaml`. `model/` does not depend on the toolchain: its setup, its gate and its own test command run in the bare Node image with only `model/` mounted and no installed dependency.
-10. TypeScript is run by Node directly. The compiler emits nothing.
+10. TypeScript is run by Node directly, in the check and in a running piece. The compiler emits nothing.
+11. A piece's image holds the run-time dependencies and that piece's `src/` folder only: no tests, no other piece, and none of the check's tools.
 
 ## Where each thing runs
 
@@ -67,7 +73,7 @@ flowchart TD
 | `tsconfig.json` | What the compiler accepts |
 | `eslint.config.js` | The lint rules |
 | `.dockerignore` | What may enter an image |
-| `toolchain/Dockerfile` | The stages, and the toolchain's copy of the Node pin |
+| `toolchain/Dockerfile` | The stages, including the `run` stage every piece is packaged with, and the toolchain's copy of the Node pin |
 | `toolchain/compose.yaml` | The check container's isolation: no network, read-only |
 | `.devcontainer/devcontainer.json` | How VS Code attaches: the stage, the mount, the volume, the user |
-| Each piece | Its own TypeScript and its own tests, in `test/` folders |
+| Each piece | Its own TypeScript in `src/`, its own tests in `test/`, and its own compose file: command, ports, volumes, settings |

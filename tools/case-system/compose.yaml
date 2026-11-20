@@ -1,0 +1,37 @@
+name: ai-on-aws-case-system
+
+services:
+  case-system:
+    build:
+      context: ../..
+      dockerfile: toolchain/Dockerfile
+      target: run
+      args:
+        PIECE: tools/case-system
+    image: ai-on-aws-case-system:local
+    command: ["node", "tools/case-system/src/main.ts"]
+    environment:
+      CASE_DB_PATH: /data/cases.sqlite
+    ports:
+      # Published on this machine only. 8000 is for agents (MCP), 8001 is for reviewers.
+      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:8001:8001"
+    volumes:
+      - cases:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8000/ping').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  # The SQLite file lives here, so cases survive the container being removed.
+  cases:

@@ -20,6 +20,20 @@ FROM deps AS check
 COPY . .
 CMD ["npm", "run", "check"]
 
+# What a piece runs with: the dependencies it needs at run time, without the check's tools.
+FROM base AS run-deps
+COPY --chown=node:node package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+
+# One piece, ready to run. PIECE is the piece's folder, relative to the repository root; only its src/ is copied in.
+# Node runs the TypeScript directly, so there is no compile step. The command is set by the piece's compose file.
+FROM run-deps AS run
+ARG PIECE
+USER root
+RUN test -n "$PIECE" && mkdir /data && chown node:node /data
+USER node
+COPY --chown=node:node ${PIECE}/src ./${PIECE}/src
+
 FROM base AS lock
 # The glob copies package-lock.json too when it exists, so versions already locked do not move.
 COPY --chown=node:node package*.json ./
