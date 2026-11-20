@@ -1,6 +1,7 @@
 # Build context is the repository root (toolchain/Dockerfile). These never enter an image.
 .git
 **/node_modules
+**/dist
 **/.env
 **/.env.*
 !**/.env.example

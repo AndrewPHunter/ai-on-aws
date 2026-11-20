@@ -10,15 +10,16 @@ Every command on this page is run from the root of the repository. The host need
 toolchain/check.sh
 ```
 
-It builds an image from the pinned Node image and the committed lockfile, copies the source in, and runs three steps in a container with no network and a read-only filesystem:
+It builds an image from the pinned Node image and the committed lockfile, copies the source in, and runs four steps in a container with no network and a read-only filesystem:
 
 | Step | What it does | Covers |
 |---|---|---|
-| Typecheck | `tsc` with the settings in `tsconfig.json` | Every `*.ts` file outside `node_modules` |
+| Typecheck | `tsc`, once with the settings in `tsconfig.json` and once with `client/web/tsconfig.json` | Every `*.ts` file outside `node_modules`, and the React app's `*.tsx` files |
 | Lint | ESLint with the rules in `eslint.config.js`, warnings counted as errors | The same files |
 | Test | Node's test runner | Every file matching `test/*.test.ts`, at any depth, outside `node_modules` |
+| Build | Vite builds the React app, into a temporary folder | `client/web/` |
 
-It exits 0 only if the image builds and all three steps pass. The steps run in that order and the first failure stops it. It writes nothing into the repository.
+It exits 0 only if the image builds and all four steps pass. The steps run in that order and the first failure stops it. It writes nothing into the repository.
 
 A new TypeScript file or a new `test/*.test.ts` file is covered without changing anything here.
 
@@ -26,6 +27,7 @@ A new TypeScript file or a new `test/*.test.ts` file is covered without changing
 
 - **Types:** `strict`, plus `noUncheckedIndexedAccess`: reading `list[0]` or a capture group of a match gives a value that may be `undefined`, and the code must handle that.
 - **Syntax Node can run directly:** `erasableSyntaxOnly` and `verbatimModuleSyntax`. The TypeScript here runs on Node without a compile step, so imports name their file with its `.ts` extension, and constructs that need compiling (enums, parameter properties, namespaces) are refused.
+- **The React app has its own compiler settings** in `client/web/tsconfig.json`, because it runs in a browser: the same strictness, with browser types and JSX. Its lint adds the two rules of React hooks.
 - **Promises:** three lint rules, all errors.
 
   | Rule | Catches |
@@ -52,7 +54,7 @@ Commit `package.json` and `package-lock.json` together. If they disagree, the ch
 
 Open the repository in VS Code with the Dev Containers extension and choose "Reopen in Container". VS Code then works inside a container built from the same stage the check installs its dependencies in.
 
-- The repository is mounted at `/repo`, and `npm run check` there runs the same three steps as `toolchain/check.sh`. `npm run typecheck`, `npm run lint` and `npm run test` run one step each.
+- The repository is mounted at `/repo`, and `npm run check` there runs the same four steps as `toolchain/check.sh`. `npm run typecheck`, `npm run lint` and `npm run test` run one step each.
 - Dependencies are kept in a Docker volume, not in the repository. An empty `node_modules` folder appears at the root of the repository on the host: it is where the volume is attached, it stays empty, and git ignores it.
 - The container has no `git`. Commit from a terminal on the host.
 - VS Code downloads its own server and the ESLint extension into the container when it attaches. Those downloads are VS Code's, and the repository does not pin them.
@@ -61,7 +63,7 @@ Open the repository in VS Code with the Dev Containers extension and choose "Reo
 
 ## What was measured
 
-- `toolchain/check.sh` passed with 24 tests on an arm64 Mac with Docker Desktop and on an amd64 machine with Docker 29 on Ubuntu 24.04. Since the case system was added it runs 49 tests, and that was run on the arm64 Mac only.
+- `toolchain/check.sh` passed with 24 tests on an arm64 Mac with Docker Desktop and on an amd64 machine with Docker 29 on Ubuntu 24.04. With the case system and the client it runs 87 tests and builds the React app, and that passed on both machines.
 - The `run` stage was built and run for `tools/case-system` on the arm64 Mac only.
 - Each of these, added on purpose to a copy of the repository, made it exit non-zero: a type error, an unchecked index access, an un-awaited call to a library function, and a failing test.
 - With `.env` files, a `.git` folder, a `secrets` folder and a gate report planted in a copy, none of them was in the image.
@@ -78,10 +80,12 @@ All in `toolchain/Dockerfile`, built with the root of the repository as the buil
 | `deps` | `base`, the root `package.json` and `package-lock.json`, and the dependencies installed from them | The check, the dev container |
 | `check` | `deps` and the repository's source | `toolchain/check.sh` |
 | `run-deps` | `base` and only the dependencies needed at run time, without the check's tools | The `run` stage |
-| `run` | `run-deps`, a `/data` folder owned by `node`, and one piece's `src/` folder. The piece is named by the build argument `PIECE`, such as `tools/case-system` | Each piece's own compose file, which also sets the command |
+| `run` | `run-deps`, a `/data` folder owned by `node`, the `shared/` folder, and one piece's `src/` folder. The piece is named by the build argument `PIECE`, such as `tools/case-system` | Each piece's own compose file, which also sets the command |
+| `web-build` | `deps`, and one piece's React app in its `web/` folder, built by Vite to static files | The `run-web` stage |
+| `run-web` | `run`, and the static files from `web-build` | The compose file of a piece that has a React app, which today is `client/` |
 | `lock`, `lockfile` | npm resolving the lockfile, and the one file it produces | `toolchain/lock.sh` |
 
-A piece runs its TypeScript directly on Node. There is no stage that compiles to JavaScript.
+A piece's server runs its TypeScript directly on Node; nothing compiles it to JavaScript. Only the React app is built, because a browser cannot run it as written.
 
 ## What never enters an image
 

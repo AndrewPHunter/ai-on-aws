@@ -7,6 +7,7 @@ import type { IncomingHttpHeaders, IncomingMessage, Server, ServerResponse } fro
 
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 
+import { CASE_STATUSES, REVIEW_DECISIONS } from '../../../shared/case-contract.ts';
 import { buildMcpServer } from './mcp.ts';
 import type { CallContext, CaseStatus, CaseStore, ReviewDecision } from './store.ts';
 
@@ -21,8 +22,8 @@ export const CONTEXT_HEADERS = {
 export const RECEIPT_ALLOWANCE_MS = 5 * 60 * 1000;
 
 const MAX_BODY_BYTES = 1_000_000;
-const STATUSES: readonly CaseStatus[] = ['incomplete', 'awaiting_review', 'needs_information', 'approved', 'rejected'];
-const DECISIONS: readonly ReviewDecision[] = ['approve', 'reject', 'request_information'];
+const STATUSES: readonly CaseStatus[] = CASE_STATUSES;
+const DECISIONS: readonly ReviewDecision[] = REVIEW_DECISIONS;
 
 class BadRequest extends Error {}
 

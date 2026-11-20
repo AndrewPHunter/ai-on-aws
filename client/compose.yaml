@@ -1,0 +1,42 @@
+name: ai-on-aws-client
+
+services:
+  client:
+    build:
+      context: ..
+      dockerfile: toolchain/Dockerfile
+      target: run-web
+      args:
+        PIECE: client
+    image: ai-on-aws-client:local
+    command: ["node", "client/src/main.ts"]
+    environment:
+      CLIENT_DB_PATH: /data/client.sqlite
+      WEB_ROOT: /repo/client/web/dist
+      # The case system's review server, by its service name on the shared network.
+      CASE_REVIEW_URL: http://case-system:8001
+      # The agents inquiries can be sent to: a JSON list of { id, name, description, url }.
+      # None exists yet.
+      AGENTS: "[]"
+    ports:
+      # Published on this machine only.
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - inquiries:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/agents').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  # Inquiries received and every run made of them.
+  inquiries:

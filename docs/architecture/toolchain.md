@@ -7,7 +7,7 @@ How the repository's TypeScript is checked, and how a piece is packaged to run. 
 | Term | Meaning |
 |---|---|
 | Root manifests | `package.json` and `package-lock.json` at the root of the repository |
-| The check | Typecheck, lint and tests, as defined by the `check` script in the root `package.json` |
+| The check | Typecheck, lint, tests and the build of the React app, as defined by the `check` script in the root `package.json` |
 | Piece | A top-level folder of the lab, such as `model/` |
 | Node pin | The digest of the Node image, written in `toolchain/Dockerfile` and in the files under `model/` that run Node |
 
@@ -30,12 +30,15 @@ flowchart TD
   rundeps --> runstage[run: run-deps + one piece's src]
   piece[One piece's src folder] --> runstage
   runstage --> container[The piece's container, started by its own compose file]
+  deps --> webbuild[web-build: a piece's React app built to static files]
+  runstage --> runweb[run-web: run + the static files]
+  webbuild --> runweb
 ```
 
 ## Always true
 
 1. One definition of the check. The `check` script in the root `package.json` is what `toolchain/check.sh` runs in its container and what `npm run check` runs in the dev container.
-2. The check covers every `*.ts` file outside `node_modules`, and every `test/*.test.ts` file at any depth. Nothing is registered per piece.
+2. The check covers every `*.ts` file outside `node_modules`, and every `test/*.test.ts` file at any depth. A piece that runs on Node registers nothing. The React app is the one exception: because it runs in a browser, `client/web` is named in `tsconfig.json`, `eslint.config.js` and the `check` script, with its own compiler settings.
 3. The check container has no network, a read-only root filesystem, and no mount from the host. Its source is the copy made when the image was built.
 4. Dependencies are installed only by `npm ci` from the committed lockfile, with install scripts off. A lockfile that disagrees with `package.json` fails the install.
 5. Every dependency version in the root `package.json` is exact. A test in `toolchain/test/` fails otherwise.
@@ -44,7 +47,7 @@ flowchart TD
 8. No `.git`, `node_modules`, `.env` file (other than `.env.example`), `secrets` folder or gate report enters an image.
 9. The only place `toolchain/` names a piece is the Node pin test, which reads `model/gate/compose.yaml`. `model/` does not depend on the toolchain: its setup, its gate and its own test command run in the bare Node image with only `model/` mounted and no installed dependency.
 10. TypeScript is run by Node directly, in the check and in a running piece. The compiler emits nothing.
-11. A piece's image holds the run-time dependencies and that piece's `src/` folder only: no tests, no other piece, and none of the check's tools.
+11. A piece's image holds the run-time dependencies, `shared/`, and that piece's `src/` folder: no tests, no other piece, and none of the check's tools. A piece with a React app also holds that app's built static files, and none of the libraries it was built from.
 
 ## Where each thing runs
 
@@ -52,8 +55,8 @@ flowchart TD
 |---|---|---|
 | `npm ci` for the `deps` stage | Image build | Yes, to the npm registry |
 | Lockfile resolution | Image build | Yes, to the npm registry |
-| Typecheck, lint, tests | The check container | None |
-| The same three steps, on demand | The dev container, as user `node` | Whatever the host gives it |
+| Typecheck, lint, tests, and the build of the React app | The check container | None |
+| The same four steps, on demand | The dev container, as user `node` | Whatever the host gives it |
 
 ## How it fails
 

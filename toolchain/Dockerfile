@@ -25,14 +25,31 @@ FROM base AS run-deps
 COPY --chown=node:node package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 
-# One piece, ready to run. PIECE is the piece's folder, relative to the repository root; only its src/ is copied in.
+# One piece, ready to run. PIECE is the piece's folder, relative to the repository root.
+# The image gets that piece's src/ and the shared/ folder every piece may use, and nothing else of the repository.
 # Node runs the TypeScript directly, so there is no compile step. The command is set by the piece's compose file.
 FROM run-deps AS run
 ARG PIECE
 USER root
 RUN test -n "$PIECE" && mkdir /data && chown node:node /data
 USER node
+COPY --chown=node:node shared ./shared
 COPY --chown=node:node ${PIECE}/src ./${PIECE}/src
+
+# The React app of a piece that has one, in its web/ folder, built to static files.
+FROM deps AS web-build
+ARG PIECE
+RUN test -n "$PIECE"
+COPY --chown=node:node shared ./shared
+COPY --chown=node:node ${PIECE}/shared ./${PIECE}/shared
+COPY --chown=node:node ${PIECE}/web ./${PIECE}/web
+RUN npx vite build --config ${PIECE}/web/vite.config.ts --configLoader native
+
+# A piece with a server and a React app: the run stage, plus the built static files for the server to hand out.
+FROM run AS run-web
+ARG PIECE
+COPY --chown=node:node ${PIECE}/shared ./${PIECE}/shared
+COPY --from=web-build --chown=node:node /repo/${PIECE}/web/dist ./${PIECE}/web/dist
 
 FROM base AS lock
 # The glob copies package-lock.json too when it exists, so versions already locked do not move.

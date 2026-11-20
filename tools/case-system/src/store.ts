@@ -5,50 +5,26 @@
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 
-// The four things a report needs before it can go to review.
-export const ELEMENTS = ['patient', 'reporter', 'suspect_drug', 'event'] as const;
-export type ElementName = (typeof ELEMENTS)[number];
-export type Elements = Partial<Record<ElementName, string>>;
+import { CASE_STATUSES, ELEMENTS } from '../../../shared/case-contract.ts';
+import type {
+  AuditView,
+  CaseStatus,
+  CaseView,
+  ElementName,
+  Elements,
+  FoundCases,
+  ReviewDecision,
+  VersionView,
+} from '../../../shared/case-contract.ts';
 
-export type CaseStatus = 'incomplete' | 'awaiting_review' | 'needs_information' | 'approved' | 'rejected';
-export type ReviewDecision = 'approve' | 'reject' | 'request_information';
+export { ELEMENTS };
+export type { AuditView, CaseStatus, CaseView, ElementName, Elements, FoundCases, ReviewDecision, VersionView };
 
 // Who is calling and for which inbound message. Supplied by the agent's code, never by the model.
 export type CallContext = {
   messageId: string;
   receivedAt: string;
   agentId: string;
-};
-
-export type CaseView = {
-  case_id: string;
-  status: CaseStatus;
-  missing: ElementName[];
-  version: number;
-  received_at: string;
-  created_at: string;
-  elements: Elements;
-  note: string | null;
-};
-
-export type VersionView = {
-  version: number;
-  elements: Elements;
-  note: string | null;
-  message_id: string;
-  received_at: string;
-  recorded_at: string;
-  recorded_by: string;
-};
-
-export type AuditView = {
-  seq: number;
-  at: string;
-  actor: string;
-  actor_kind: 'agent' | 'reviewer';
-  action: string;
-  version: number | null;
-  detail: unknown;
 };
 
 export type CreateResult = { outcome: 'created' | 'replayed' | 'conflict'; case: CaseView };
@@ -117,11 +93,8 @@ create table if not exists audit (
 ) strict;
 `;
 
-const STATUSES: readonly CaseStatus[] = ['incomplete', 'awaiting_review', 'needs_information', 'approved', 'rejected'];
+const STATUSES: readonly CaseStatus[] = CASE_STATUSES;
 export const FIND_LIMIT = 50;
-
-// What a lookup returns. `truncated` is true when more cases matched than are listed.
-export type FoundCases = { cases: CaseView[]; truncated: boolean };
 
 type Row = Record<string, unknown>;
 

@@ -21,6 +21,7 @@ The lab is a set of pieces, one folder each. A piece that runs is one or more co
 ai-on-aws/
 ├── README.md             this page
 ├── AGENTS.md             the rules for working here
+├── compose.yaml          starts the running pieces together
 ├── package.json          dependencies and check commands for all TypeScript
 ├── package-lock.json
 ├── tsconfig.json
@@ -31,6 +32,7 @@ ai-on-aws/
 │   └── write-ups/        what was measured and learned
 ├── toolchain/            checks, and later builds and packages, the TypeScript
 ├── model/                the model server
+├── client/               the web app people use: inquiries, agent runs, case review
 ├── shared/               TypeScript used by more than one piece
 ├── agents/               agents on the AgentCore Runtime contract
 ├── tools/                what agents call: MCP servers and APIs
@@ -43,7 +45,8 @@ ai-on-aws/
 |---|---|---|
 | [`toolchain/`](toolchain/README.md) | The image stages and commands that typecheck, lint and test every TypeScript file in the repository, whichever piece it belongs to | Works |
 | [`model/`](model/README.md) | One vLLM server for the chat model, its one-command setup, and the gate that decides whether a running server is fit for the lab | Works, measured on one GPU |
-| [`shared/`](shared/README.md) | Packages used by more than one piece | Placeholder |
+| [`client/`](client/README.md) | A medical information desk: a React app and its server. Receives inquiries, hands them to agents, shows what each agent did, and is where people review cases | Cases and System work. Inquiries wait on the first agent |
+| [`shared/`](shared/README.md) | The contracts between pieces | Two contracts: what an agent is sent and returns, and what the case system sends |
 | [`agents/`](agents/README.md) | The agents, each its own container | Placeholder |
 | [`tools/`](tools/README.md) | The agents' tools: MCP servers and APIs. Not developer tooling, which is `toolchain/` | One tool works on its own: the case system. No agent uses it yet |
 | [`knowledge/`](knowledge/README.md) | Documents in, search, retrieval for agents | Placeholder |
@@ -73,6 +76,16 @@ model/setup.sh --cache-dir <directory>
 
 Setup selects the largest model that fits the GPU's free memory, starts the server, and reports success only if the server passes the lab's gate. The memory and disk it needs, the flags, running the server on a different machine from the one you work on, and what has been measured are in [model/README.md](model/README.md).
 
+### Run the desk
+
+On any machine with Docker, no GPU needed:
+
+```bash
+docker compose up -d --build --wait
+```
+
+Then open <http://127.0.0.1:3000>. This starts the client and the case system. What each screen does, and what does not work yet, is in [client/README.md](client/README.md).
+
 ### Check the code
 
 On any machine with Docker, no GPU needed:
@@ -81,7 +94,7 @@ On any machine with Docker, no GPU needed:
 toolchain/check.sh
 ```
 
-It typechecks, lints and tests all the TypeScript in the repository, in a container with no network. Details, and how to open the repository in the VS Code dev container, are in [toolchain/README.md](toolchain/README.md).
+It typechecks, lints and tests all the TypeScript in the repository and builds the React app, in a container with no network. Details, and how to open the repository in the VS Code dev container, are in [toolchain/README.md](toolchain/README.md).
 
 ## Where to read next
 

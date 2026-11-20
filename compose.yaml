@@ -1,0 +1,7 @@
+# The lab's running pieces on one machine, started together so they share a network.
+# The model server is not here: it runs on the GPU machine, set up by model/setup.sh.
+name: ai-on-aws
+
+include:
+  - tools/case-system/compose.yaml
+  - client/compose.yaml

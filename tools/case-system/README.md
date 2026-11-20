@@ -12,12 +12,14 @@ Every command on this page is run from the root of the repository.
 docker compose -f tools/case-system/compose.yaml up -d --build --wait
 ```
 
+That starts the case system on its own. `docker compose up -d --build --wait` at the root starts it together with the [client](../../client/README.md), which is how the review screens reach it.
+
 | Port | For | What it serves |
 |---|---|---|
 | 8000 | Agents | MCP over HTTP at `POST /mcp`, and `GET /ping` |
 | 8001 | Reviewers | `GET /cases`, `GET /cases/<id>`, `POST /cases/<id>/review` |
 
-Both are published on this machine only. Cases are kept in a SQLite file on the Docker volume `ai-on-aws-case-system_cases`, so they survive the container being removed. To keep the file in a directory of your own instead, change the `cases:/data` line in `compose.yaml` to that directory's path.
+Both are published on this machine only. Cases are kept in a SQLite file on a Docker volume, so they survive the container being removed. The volume is `ai-on-aws-case-system_cases` when the case system is started on its own, and `ai-on-aws_cases` when it is started from the root with the client; the two do not share cases. To keep the file in a directory of your own instead, change the `cases:/data` line in `compose.yaml` to that directory's path.
 
 ```bash
 docker compose -f tools/case-system/compose.yaml down
