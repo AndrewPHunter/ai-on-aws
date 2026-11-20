@@ -1,0 +1,6 @@
+# Override for compose.yaml: the gate container uses the host's network, so it can reach a server
+# published on a loopback address of this machine. model/setup.sh adds it when the bind address is 127.x.x.x.
+#   docker compose -f compose.yaml -f compose.host-network.yaml --env-file ../.env --env-file ../profiles/<name>.env run --rm gate
+services:
+  gate:
+    network_mode: host

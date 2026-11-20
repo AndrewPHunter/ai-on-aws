@@ -1,0 +1,14 @@
+{
+  "requirements": {
+    "minDriverMajor": 580,
+    "minComputeCapability": "7.5"
+  },
+  "marginMiB": 512,
+  "reservedForOtherModelsMiB": 2048,
+  "imageDiskMiB": 37000,
+  "tiers": [
+    { "name": "large", "profile": "qwen3.5-9b-w4a16", "measuredPeakMiB": 16134, "downloadMiB": 11000 },
+    { "name": "medium", "profile": "qwen3.5-4b-w4a16", "measuredPeakMiB": 10780, "downloadMiB": 5400 },
+    { "name": "small", "profile": "qwen3.5-4b-w4a16-20k", "measuredPeakMiB": 9232, "downloadMiB": 5400 }
+  ]
+}

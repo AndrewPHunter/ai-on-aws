@@ -13,6 +13,7 @@ weights/
 node_modules/
 dist/
 *.tsbuildinfo
+model/gate-report.json
 
 # OS
 .DS_Store
