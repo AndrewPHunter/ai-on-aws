@@ -45,6 +45,7 @@ export function selectTier(gpus: readonly Gpu[], tiers: Tiers, tierName: string 
     }
   }
   const gpu = gpus[0]
+  if (gpu === undefined) throw new Error('selectTier: a list of one GPU has no element 0')
 
   const driverMajor = Number(gpu.driverVersion.split('.')[0])
   const { minDriverMajor, minComputeCapability } = tiers.requirements
@@ -101,6 +102,8 @@ export function selectTier(gpus: readonly Gpu[], tiers: Tiers, tierName: string 
   if (best !== null) return { ok: true, gpu, tier: best, needMiB: needMiB(tiers, best), freeMiB }
 
   let smallest = tiers.tiers[0]
+  // A valid tiers file has at least one tier (validateTiers refuses an empty list).
+  if (smallest === undefined) throw new Error('selectTier: the tiers file has no tiers')
   for (const tier of tiers.tiers) if (needMiB(tiers, tier) < needMiB(tiers, smallest)) smallest = tier
   return refuse(smallest)
 }

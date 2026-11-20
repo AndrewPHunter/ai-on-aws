@@ -52,6 +52,7 @@ export function parseArgs(argv: readonly string[], tierNames: readonly string[])
 
   for (let i = 0; i < argv.length; i++) {
     const token = argv[i]
+    if (token === undefined) throw new Error(`parseArgs: argv has no element at index ${i} < argv.length`)
     if (isValueFlag(token)) {
       if (values.has(token)) return fail(`${token} is given twice`)
       const value = argv[i + 1]

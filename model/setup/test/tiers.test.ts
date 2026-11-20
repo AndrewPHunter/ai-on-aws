@@ -61,6 +61,8 @@ test('11. the shipped tiers file is valid, its profiles define what compose.yaml
   const uses = [...compose.matchAll(/\$\{(CHAT_[A-Z0-9_]+|MODEL_ID)(:?)\?/g)]
   const nonEmpty = [...new Set(uses.filter((match) => match[2] === ':').map((match) => match[1]))]
   const defined = [...new Set(uses.filter((match) => match[2] === '').map((match) => match[1]))]
+  assert.ok(nonEmpty.every((name) => name !== undefined), 'a ${NAME:?} use has no name')
+  assert.ok(defined.every((name) => name !== undefined), 'a ${NAME?} use has no name')
   assert.ok(nonEmpty.includes('MODEL_ID') && nonEmpty.includes('CHAT_MODEL_REPO'), nonEmpty.join(','))
   assert.ok(defined.includes('CHAT_EXTRA_ARGS'), defined.join(','))
 

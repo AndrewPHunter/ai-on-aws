@@ -160,7 +160,9 @@ function commandImage(): Results {
   if (images.length !== 1) {
     throw new Stop('repository_invalid', `expected exactly one server image in model/compose.yaml, got ${images.length}: ${images.join(', ')}`)
   }
-  return { server_image: images[0] }
+  const image = images[0]
+  if (image === undefined) throw new Error('commandImage: a list of one image has no element 0')
+  return { server_image: image }
 }
 
 function commandSelect(argv: string[]): Results {

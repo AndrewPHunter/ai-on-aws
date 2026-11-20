@@ -1,0 +1,20 @@
+{
+  "name": "ai-on-aws",
+  "build": {
+    "dockerfile": "../toolchain/Dockerfile",
+    "context": "..",
+    "target": "deps"
+  },
+  "workspaceMount": "source=${localWorkspaceFolder},target=/repo,type=bind",
+  "workspaceFolder": "/repo",
+  "mounts": [
+    "source=ai-on-aws-node-modules-${devcontainerId},target=/repo/node_modules,type=volume"
+  ],
+  "remoteUser": "node",
+  "postCreateCommand": "npm ci --ignore-scripts",
+  "customizations": {
+    "vscode": {
+      "extensions": ["dbaeumer.vscode-eslint"]
+    }
+  }
+}

@@ -1,0 +1,18 @@
+# The check container: typecheck, lint and tests for every TypeScript file. Run it with toolchain/check.sh.
+name: ai-on-aws-toolchain
+
+services:
+  check:
+    build:
+      context: ..
+      dockerfile: toolchain/Dockerfile
+      target: check
+    image: ai-on-aws-toolchain-check:local
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      # npm writes its logs under its cache directory; the root filesystem is read-only.
+      npm_config_cache: /tmp/npm-cache
+      npm_config_update_notifier: "false"

@@ -11,12 +11,16 @@ export function readEnv(text: string, required: readonly string[]): EnvReadResul
   const values = new Map<string, string>()
   const lines = text.split('\n')
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].replace(/\r$/, '')
+    const raw = lines[i]
+    if (raw === undefined) throw new Error(`readEnv: no line at index ${i} < lines.length`)
+    const line = raw.replace(/\r$/, '')
     if (line.trim() === '' || line.trimStart().startsWith('#')) continue
     const match = ASSIGNMENT.exec(line)
     if (match === null) return { ok: false, message: `line ${i + 1} is not NAME=value` }
-    if (values.has(match[1])) return { ok: false, message: `${match[1]} is defined more than once` }
-    values.set(match[1], match[2])
+    const [, name, value] = match
+    if (name === undefined || value === undefined) throw new Error('readEnv: an assignment matched without its name and value groups')
+    if (values.has(name)) return { ok: false, message: `${name} is defined more than once` }
+    values.set(name, value)
   }
   for (const name of required) {
     if (!values.has(name)) return { ok: false, message: `${name} is missing` }

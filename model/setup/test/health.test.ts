@@ -21,6 +21,10 @@ test('22. health verdict: starting waits under the limit, healthy is ready, ever
     return verdict.verdict === 'failed' ? verdict.reason : ''
   })
   assert.equal(new Set(reasons).size, failures.length, `reasons are not distinct: ${reasons.join(' | ')}`)
+  assert.ok(
+    reasons[0] !== undefined && reasons[1] !== undefined && reasons[2] !== undefined && reasons[3] !== undefined,
+    'expected four reasons',
+  )
   assert.ok(reasons[0].includes('exited'), reasons[0])
   assert.ok(reasons[1].includes('unhealthy'), reasons[1])
   assert.ok(reasons[2].includes('could not be read'), reasons[2])

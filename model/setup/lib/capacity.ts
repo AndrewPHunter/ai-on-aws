@@ -21,7 +21,11 @@ export function parseCapacity(log: string): CapacityParse {
   if (last === null) {
     return { ok: false, message: "the server's log has no line \"GPU KV cache size: ... Maximum concurrency for ... tokens per request: ...x\"" }
   }
-  return { ok: true, capacity: { tokens: number(last[1]), context: number(last[2]), concurrency: Number(last[3]) } }
+  const [, tokens, context, concurrency] = last
+  if (tokens === undefined || context === undefined || concurrency === undefined) {
+    throw new Error('parseCapacity: the capacity line matched without its three capture groups')
+  }
+  return { ok: true, capacity: { tokens: number(tokens), context: number(context), concurrency: Number(concurrency) } }
 }
 
 export type CapacityVerdict = { ok: true } | { ok: false; message: string }

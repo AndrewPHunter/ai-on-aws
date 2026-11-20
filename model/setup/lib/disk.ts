@@ -22,6 +22,7 @@ export function parseDiskProbe(output: string): DiskProbeResult {
   for (const line of lines) {
     const fields = line.trim().split(/\s+/)
     const tag = fields[0]
+    if (tag === undefined) throw new Error('parseDiskProbe: splitting a non-blank line gave no first field')
     if (byTag.has(tag)) return { ok: false, message: `line "${tag}" appears more than once` }
     byTag.set(tag, fields.slice(1))
   }
@@ -33,7 +34,8 @@ export function parseDiskProbe(output: string): DiskProbeResult {
     return { ok: false, message: `expected the lines owner, cache, docker and weights, got: ${[...byTag.keys()].join(', ')}` }
   }
   const integer = /^(0|[1-9][0-9]*)$/
-  if (owner.length !== 2 || !integer.test(owner[0]) || !integer.test(owner[1])) {
+  const [uid, gid] = owner
+  if (owner.length !== 2 || uid === undefined || gid === undefined || !integer.test(uid) || !integer.test(gid)) {
     return { ok: false, message: `owner line is not "<uid> <gid>": ${owner.join(' ')}` }
   }
   const available = (fields: string[], what: string): number | string => {
@@ -51,8 +53,8 @@ export function parseDiskProbe(output: string): DiskProbeResult {
   return {
     ok: true,
     probe: {
-      ownerUid: Number(owner[0]),
-      ownerGid: Number(owner[1]),
+      ownerUid: Number(uid),
+      ownerGid: Number(gid),
       cacheFreeMiB: cacheFree,
       dockerFreeMiB: dockerFree,
       weightsPresent: weights[0] === 'present',

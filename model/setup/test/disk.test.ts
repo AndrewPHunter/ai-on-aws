@@ -32,5 +32,6 @@ test('17. disk verdict demands space only for what is absent', () => {
   assert.deepEqual(short({ cacheFreeMiB: 100, dockerFreeMiB: 200 }), ['weights 11000 100 10900', 'image 37000 200 36800'])
   const verdict = diskVerdict({ ...BASE, cacheFreeMiB: 100 })
   if (verdict.ok) throw new Error('expected a refusal')
+  assert.ok(verdict.shortfalls[0] !== undefined, 'expected at least one shortfall')
   for (const figure of ['11000', '100', '10900']) assert.ok(verdict.shortfalls[0].message.includes(figure), verdict.shortfalls[0].message)
 })

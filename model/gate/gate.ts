@@ -92,7 +92,11 @@ const FILLER_WORDS = [
 
 function fillerLine(random: () => number, lineNumber: number): string {
   const words: string[] = []
-  for (let i = 0; i < 12; i++) words.push(FILLER_WORDS[Math.floor(random() * FILLER_WORDS.length)])
+  for (let i = 0; i < 12; i++) {
+    const word = FILLER_WORDS[Math.floor(random() * FILLER_WORDS.length)]
+    if (word === undefined) throw new Error('fillerLine: random() must return a number in [0, 1)')
+    words.push(word)
+  }
   return `Log entry ${lineNumber}: ${words.join(' ')}.`
 }
 
@@ -231,6 +235,7 @@ async function readStream(response: Response): Promise<Completion> {
       }
       const fn = asRecord(part.function)
       const target = result.toolCalls[index]
+      if (target === undefined) throw new Error(`Streamed tool call index ${index} is not a non-negative integer`)
       target.id += asString(part.id)
       target.function.name += asString(fn.name)
       target.function.arguments += asString(fn.arguments)
@@ -325,14 +330,16 @@ function classifyToolRequest(reply: Completion, own: Conversation, all: Conversa
       ? { outcome: 'unparsed_tool_markup', detail: reply.content.slice(0, 200) }
       : { outcome: 'no_tool_call', detail: reply.content.slice(0, 200) }
   }
-  if (reply.toolCalls.length !== 1 || reply.toolCalls[0].function.name !== 'lookup_deployment') {
-    return { outcome: 'wrong_tool', detail: reply.toolCalls.map((call) => call.function.name).join(',') }
-  }
+  const wrongTool: { outcome: ToolOutcome; detail: string } = { outcome: 'wrong_tool', detail: reply.toolCalls.map((call) => call.function.name).join(',') }
+  if (reply.toolCalls.length !== 1) return wrongTool
+  const call = reply.toolCalls[0]
+  if (call === undefined) throw new Error('classifyToolRequest: a list of one tool call has no element 0')
+  if (call.function.name !== 'lookup_deployment') return wrongTool
   let args: Record<string, unknown>
   try {
-    args = asRecord(JSON.parse(reply.toolCalls[0].function.arguments))
+    args = asRecord(JSON.parse(call.function.arguments))
   } catch {
-    return { outcome: 'bad_arguments', detail: reply.toolCalls[0].function.arguments.slice(0, 200) }
+    return { outcome: 'bad_arguments', detail: call.function.arguments.slice(0, 200) }
   }
   if (args.service === own.service && args.environment === 'local') return { outcome: 'ok', detail: '' }
   const borrowed = all.some((other) => other.index !== own.index && other.service === args.service)
@@ -378,10 +385,12 @@ async function runToolConversation(client: Client, config: GateConfig, own: Conv
     const first = classifyToolRequest(request, own, all)
     if (first.outcome !== 'ok') return finish(first.outcome, first.detail)
 
+    const call = request.toolCalls[0]
+    if (call === undefined) throw new Error('classifyToolRequest returned ok for a request without exactly one tool call')
     messages.push({ role: 'assistant', content: request.content === '' ? null : request.content, tool_calls: request.toolCalls })
     messages.push({
       role: 'tool',
-      tool_call_id: request.toolCalls[0].id,
+      tool_call_id: call.id,
       content: JSON.stringify({ status: 'ready', verification_code: own.code }),
     })
     const answer = await client.chat(messages, options)
@@ -395,7 +404,9 @@ async function runToolConversation(client: Client, config: GateConfig, own: Conv
 
 function percentile(sorted: number[], fraction: number): number {
   if (sorted.length === 0) return 0
-  return sorted[Math.min(sorted.length - 1, Math.ceil(fraction * sorted.length) - 1)]
+  const value = sorted[Math.min(sorted.length - 1, Math.ceil(fraction * sorted.length) - 1)]
+  if (value === undefined) throw new Error(`percentile: fraction ${fraction} must be in (0, 1]`)
+  return value
 }
 
 type ToolCallingResult = {

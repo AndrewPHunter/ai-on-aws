@@ -25,6 +25,12 @@ export function parseProbe(output: string): ProbeResult {
       return { ok: false, message: `expected 6 fields, got ${fields.length}: ${line}` }
     }
     const [index, name, total, used, driver, compute] = fields.map((field) => field.trim())
+    if (
+      index === undefined || name === undefined || total === undefined ||
+      used === undefined || driver === undefined || compute === undefined
+    ) {
+      throw new Error('parseProbe: a line of 6 fields gave fewer than 6 values')
+    }
     if (!INTEGER.test(index)) return { ok: false, message: `GPU index is not an integer: ${line}` }
     if (name === '') return { ok: false, message: `GPU name is empty: ${line}` }
     if (!INTEGER.test(total)) return { ok: false, message: `total memory is not an integer number of MiB: ${line}` }

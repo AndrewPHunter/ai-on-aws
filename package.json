@@ -1,0 +1,17 @@
+{
+  "name": "ai-on-aws",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "lint": "eslint --max-warnings 0 .",
+    "test": "node --test \"**/test/*.test.ts\"",
+    "check": "npm run typecheck && npm run lint && npm run test"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "eslint": "10.15.0",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.73.0"
+  }
+}
