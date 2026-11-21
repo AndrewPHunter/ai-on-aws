@@ -27,6 +27,9 @@ export type VersionView = {
   elements: Elements;
   note: string | null;
   message_id: string;
+  // Who sent the message this version came from, as the caller gave it. Empty for a version recorded
+  // before senders were kept.
+  sender: string;
   received_at: string;
   recorded_at: string;
   recorded_by: string;

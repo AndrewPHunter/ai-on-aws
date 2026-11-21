@@ -46,6 +46,7 @@ The four elements are an identifiable patient, an identifiable reporter, a suspe
 - **Follow-ups add, they never overwrite.** Each one is a new version; earlier versions stay readable. A follow-up from the same message is recorded once.
 - **A follow-up sends the case back to review**, or leaves it incomplete, whatever its status was, including approved.
 - **Only a person changes a case to approved, rejected or needs information.** Those are not MCP tools. They are a request to the review server, which requires the reviewer's name.
+- **An agent sees and adds to only the sender's own cases.** `find_case` returns only cases that the sender of the message being handled has reported on, and `add_follow_up` is accepted only on such a case. A case from another sender is answered exactly as a case that does not exist. Two spellings of a sender that differ only in case and spacing are the same sender. Reviewers see every case.
 - **Every change is in an audit trail** with who made it, when, and which message it came from. Replays and refused conflicts are recorded too.
 
 Statuses and who sets them:
@@ -65,8 +66,9 @@ The model does not choose which message or agent a change is recorded against. T
 | `x-message-id` | The agent's identifier for the inbound message it is handling |
 | `x-received-at` | When that message was received, as a date and time |
 | `x-agent-id` | Which agent is calling |
+| `x-sender` | Who sent the message, as the caller gave it, percent-encoded |
 
-Without them, `create_case` and `add_follow_up` are refused and record nothing. Listing tools and plain lookups work without them. Sending only some of them, a receipt time that is not a time, or a receipt time more than five minutes ahead of the server's clock, is refused with status 400.
+Without them every tool call is refused and nothing is recorded or returned. Listing the tools works without them. Sending only some of them, a receipt time that is not a time, or a receipt time more than five minutes ahead of the server's clock, is refused with status 400.
 
 ## Review a case
 
@@ -82,14 +84,16 @@ curl -s -X POST http://127.0.0.1:8001/cases/AE-000001/review -H 'content-type: a
 
 ## What was measured
 
-- The repository check runs 25 tests for this piece, 14 on the store and 11 that drive the real servers over loopback with the MCP SDK's own client. Run on an arm64 Mac only.
+- The repository check runs 33 tests for this piece, 19 on the store and 14 that drive the real servers over loopback with the MCP SDK's own client.
 - By hand against the running container, on an arm64 Mac: a case created, the same call repeated, the container removed and started again on the same volume, and the same call repeated a third time. One case existed throughout, and the audit trail showed one creation and two replays.
 
 ## Known limits
 
 - **The context headers are not established to reach the server through AgentCore.** The Runtime documentation read for this says session headers are forwarded and shows an allowlist setting for others; whether these three pass through Runtime or Gateway has not been tried. Whether the Strands MCP client can send them has not been tried either.
 - **A conflict is reported to the model, and what the model does next is not controlled here.** After a refused create it could send the reworded content as a follow-up, which adds a version and sends the case back to review.
-- **The context headers are trusted as sent.** Nothing authenticates the caller, so anything that can reach port 8000 can claim to be any agent.
+- **The context headers are trusted as sent.** Nothing authenticates the caller, so anything that can reach port 8000 can claim to be any agent, handling a message from any sender. The limit to a sender's own cases is only as good as that sender text.
+- **One event reported by two senders becomes two cases.** The second sender cannot find the first sender's case, and nothing links them.
+- **A store written before senders were kept** opens, but its existing cases have no sender, so no agent lookup finds them. Reviewers still see them.
 - **The review server is not authenticated either.** The reviewer's name is whatever the request says. A model has no tool that reaches it, but a process that can reach port 8001 could.
 - **One case per message.** A message that reports two patients produces one case.
 - **SQLite support in Node 22 is marked experimental** and prints a warning at start. It was chosen because it adds no dependency that needs compiling.

@@ -1,0 +1,38 @@
+name: ai-on-aws-agents
+
+services:
+  # The intake agent with its loop written by hand.
+  intake-handwritten:
+    build:
+      context: ..
+      dockerfile: toolchain/Dockerfile
+      target: run
+      args:
+        PIECE: agents
+    image: ai-on-aws-agents:local
+    command: ["node", "agents/src/intake/main-handwritten.ts"]
+    # Where the model server is and the key it expects, as written by model/setup.sh.
+    # The agent reads MODEL_BASE_URL and MODEL_API_KEY from it. Without this file nothing starts:
+    # set up the model server first.
+    env_file:
+      - ../model/.env
+    environment:
+      AGENT_ID: intake-handwritten
+      # The case system's MCP endpoint, by its service name on the shared network.
+      CASE_MCP_URL: http://case-system:8000/mcp
+    ports:
+      # Published on this machine only, for calling the agent directly.
+      - "127.0.0.1:8080:8080"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/ping').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 5

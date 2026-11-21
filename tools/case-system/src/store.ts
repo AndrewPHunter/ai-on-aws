@@ -25,7 +25,15 @@ export type CallContext = {
   messageId: string;
   receivedAt: string;
   agentId: string;
+  // Who sent the message, as the caller gave it. Lookups and follow-ups are limited to cases this
+  // sender has reported on.
+  sender: string;
 };
+
+// Two senders are the same when their text matches after trimming, collapsing spaces and ignoring case.
+export function senderKey(sender: string): string {
+  return sender.trim().replace(/\s+/g, ' ').toLowerCase();
+}
 
 export type CreateResult = { outcome: 'created' | 'replayed' | 'conflict'; case: CaseView };
 
@@ -46,6 +54,8 @@ export type CaseFilter = {
   patient?: string;
   messageId?: string;
   status?: CaseStatus;
+  // Only cases with at least one version sent by this sender.
+  sender?: string;
 };
 
 const SCHEMA = `
@@ -70,6 +80,8 @@ create table if not exists case_versions (
   received_at text not null,
   recorded_at text not null,
   recorded_by text not null,
+  sender text not null default '',
+  sender_key text not null default '',
   primary key (case_id, version)
 ) strict;
 
@@ -185,6 +197,13 @@ export class CaseStore {
     this.now = now;
     this.db.exec('pragma foreign_keys = on');
     this.db.exec(SCHEMA);
+    // A store written before versions recorded their sender gets the two columns added. Its existing
+    // versions then have an empty sender, which matches no one: no lookup by a sender finds them.
+    const columns = this.db.prepare('pragma table_info(case_versions)').all();
+    if (!columns.some((column) => column['name'] === 'sender')) {
+      this.db.exec("alter table case_versions add column sender text not null default ''");
+      this.db.exec("alter table case_versions add column sender_key text not null default ''");
+    }
   }
 
   close(): void {
@@ -240,7 +259,9 @@ export class CaseStore {
 
     return this.inTransaction(() => {
       const current = this.currentRow(caseId);
-      if (current === undefined) {
+      // A case this sender has never reported on is answered exactly as a case that does not exist,
+      // so the answer does not reveal that it does.
+      if (current === undefined || !this.reportedBy(caseId, context.sender)) {
         return { outcome: 'not_found' };
       }
       const prior = this.operation(operationKey);
@@ -330,6 +351,14 @@ export class CaseStore {
       conditions.push('exists (select 1 from case_versions m where m.case_id = c.case_id and m.message_id = ?)');
       parameters.push(filter.messageId);
     }
+    if (filter.sender !== undefined) {
+      // An empty sender is no one. It must not match versions recorded before senders were kept,
+      // whose sender is empty too.
+      conditions.push(
+        "exists (select 1 from case_versions s where s.case_id = c.case_id and s.sender_key = ? and s.sender_key <> '')",
+      );
+      parameters.push(senderKey(filter.sender));
+    }
     const where = conditions.length === 0 ? '' : `where ${conditions.join(' and ')}`;
     const rows = this.db
       .prepare(
@@ -355,6 +384,7 @@ export class CaseStore {
       elements: elementsOf(row),
       note: optionalText(row, 'note'),
       message_id: text(row, 'message_id'),
+      sender: text(row, 'sender'),
       received_at: text(row, 'received_at'),
       recorded_at: text(row, 'recorded_at'),
       recorded_by: text(row, 'recorded_by'),
@@ -380,6 +410,13 @@ export class CaseStore {
         detail,
       };
     });
+  }
+
+  private reportedBy(caseId: string, sender: string): boolean {
+    const row = this.db
+      .prepare("select 1 as found from case_versions where case_id = ? and sender_key = ? and sender_key <> '' limit 1")
+      .get(caseId, senderKey(sender));
+    return row !== undefined;
   }
 
   private inTransaction<Result>(work: () => Result): Result {
@@ -476,8 +513,8 @@ export class CaseStore {
       .prepare(
         `insert into case_versions
            (case_id, version, patient, reporter, suspect_drug, event, note,
-            message_id, received_at, recorded_at, recorded_by)
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            message_id, received_at, recorded_at, recorded_by, sender, sender_key)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         caseId,
@@ -491,6 +528,8 @@ export class CaseStore {
         context.receivedAt,
         recordedAt,
         context.agentId,
+        context.sender,
+        senderKey(context.sender),
       );
   }
 

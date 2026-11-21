@@ -195,6 +195,7 @@ export function CasePage() {
                   </p>
                   <p className="versions__meta">
                     Recorded by {version.recorded_by} from message {version.message_id}
+                    {version.sender === '' ? '' : `, sent by ${version.sender}`}
                   </p>
                   {changed.length === 0 ? (
                     <p className="versions__meta">No change to the four parts.</p>

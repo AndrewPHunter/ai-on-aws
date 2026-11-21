@@ -9,4 +9,4 @@ The contracts between pieces: the shapes one piece sends and another reads. A pi
 
 `agent-contract.ts` is schemas as well as types: whatever calls an agent checks the answer against them.
 
-No agent exists yet, so the agent contract has been exercised only by the client's tests, against a stand-in written for those tests.
+One agent implements the agent contract: the intake agent in [`agents/`](../agents/README.md). Citations, label-search steps and hand-off steps are defined here but nothing produces them yet.

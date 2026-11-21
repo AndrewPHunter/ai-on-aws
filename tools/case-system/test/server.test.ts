@@ -43,11 +43,15 @@ async function start(t: TestContext): Promise<Running> {
   return { agentUrl: await listen(agent), reviewUrl: await listen(review) };
 }
 
-function contextHeaders(messageId: string): Record<string, string> {
+const RIVERA = 'Dr A. Rivera, a.rivera@example.org';
+const KATO = 'Dr M. Kato, m.kato@example.org';
+
+function contextHeaders(messageId: string, sender = RIVERA): Record<string, string> {
   return {
     [CONTEXT_HEADERS.messageId]: messageId,
     [CONTEXT_HEADERS.receivedAt]: '2025-12-31T23:00:00Z',
     [CONTEXT_HEADERS.agentId]: 'intake-agent',
+    [CONTEXT_HEADERS.sender]: encodeURIComponent(sender),
   };
 }
 
@@ -238,6 +242,57 @@ test('a receipt time in the future is refused, apart from a small allowance for 
 
   const withinAllowance = await sendAt(RECEIPT_ALLOWANCE_MS - 1000);
   assert.equal(withinAllowance.status, 200);
+});
+
+test('a sender finds only their own cases and cannot add to another sender\'s case', async (t) => {
+  const { agentUrl, reviewUrl } = await start(t);
+  const rivera = await connect(t, agentUrl, contextHeaders('m1'));
+  const kato = await connect(t, agentUrl, contextHeaders('m2', KATO));
+  await call(rivera, 'create_case', COMPLETE);
+
+  const own = await call(rivera, 'find_case', { suspect_drug: 'atorvastatin' });
+  const others = await call(kato, 'find_case', { suspect_drug: 'atorvastatin' });
+  const byId = await call(kato, 'find_case', { case_id: 'AE-000001' });
+  assert.ok(Array.isArray(own.payload['cases']));
+  assert.equal(own.payload['cases'].length, 1);
+  assert.deepEqual(others.payload['cases'], []);
+  assert.deepEqual(byId.payload['cases'], []);
+
+  const added = await call(kato, 'add_follow_up', { case_id: 'AE-000001', event: 'something else' });
+  const missing = await call(kato, 'add_follow_up', { case_id: 'AE-000099', event: 'something else' });
+  assert.equal(added.isError, true);
+  assert.equal(added.payload['error'], 'case_not_found');
+  assert.equal(missing.payload['error'], 'case_not_found');
+
+  const detail: unknown = await (await fetch(`${reviewUrl}/cases/AE-000001`)).json();
+  assert.ok(typeof detail === 'object' && detail !== null && 'versions' in detail && Array.isArray(detail.versions));
+  assert.equal(detail.versions.length, 1);
+});
+
+test('a lookup without the context headers is refused, because it is always on behalf of a sender', async (t) => {
+  const { agentUrl } = await start(t);
+  const withContext = await connect(t, agentUrl, contextHeaders('m1'));
+  const without = await connect(t, agentUrl, {});
+  await call(withContext, 'create_case', COMPLETE);
+
+  const found = await call(without, 'find_case', { suspect_drug: 'atorvastatin' });
+  assert.equal(found.isError, true);
+  assert.equal(found.payload['error'], 'call_context_missing');
+});
+
+test('a sender header that is not percent-encoded text is refused with 400', async (t) => {
+  const { agentUrl } = await start(t);
+  const response = await fetch(`${agentUrl}/mcp`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
+      ...contextHeaders('m1'),
+      [CONTEXT_HEADERS.sender]: '%E0%A4%A',
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+  });
+  assert.equal(response.status, 400);
 });
 
 test('the agent server answers the health check and has no review route', async (t) => {

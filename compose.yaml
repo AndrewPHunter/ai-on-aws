@@ -1,7 +1,12 @@
-# The lab's running pieces on one machine, started together so they share a network.
-# The model server is not here: it runs on the GPU machine, set up by model/setup.sh.
+# The lab, started together on one network: the agents, the case system they write to, and the client.
+#
+#   docker compose up -d --build --wait
+#
+# The model server is not started here. It runs on the GPU machine, set up by model/setup.sh, and
+# that setup writes model/.env, which tells the agents where it is. Set it up first.
 name: ai-on-aws
 
 include:
   - tools/case-system/compose.yaml
+  - agents/compose.yaml
   - client/compose.yaml

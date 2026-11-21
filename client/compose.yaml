@@ -16,8 +16,12 @@ services:
       # The case system's review server, by its service name on the shared network.
       CASE_REVIEW_URL: http://case-system:8001
       # The agents inquiries can be sent to: a JSON list of { id, name, description, url }.
-      # None exists yet.
-      AGENTS: "[]"
+      # An agent listed here that is not running shows as not reachable.
+      AGENTS: >-
+        [{"id": "intake-handwritten",
+          "name": "Intake agent, hand-written loop",
+          "description": "Records adverse events as cases. Its loop is written by hand. It does not answer clinical questions.",
+          "url": "http://intake-handwritten:8080"}]
     ports:
       # Published on this machine only.
       - "127.0.0.1:3000:3000"

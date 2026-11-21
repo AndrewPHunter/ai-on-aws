@@ -63,7 +63,7 @@ Open the repository in VS Code with the Dev Containers extension and choose "Reo
 
 ## What was measured
 
-- `toolchain/check.sh` passed with 24 tests on an arm64 Mac with Docker Desktop and on an amd64 machine with Docker 29 on Ubuntu 24.04. With the case system and the client it runs 87 tests and builds the React app, and that passed on both machines.
+- `toolchain/check.sh` passed with 24 tests on an arm64 Mac with Docker Desktop and on an amd64 machine with Docker 29 on Ubuntu 24.04. With the case system, the client and the intake agent it runs 132 tests and builds the React app, and that passed on both machines.
 - The `run` stage was built and run for `tools/case-system` on the arm64 Mac only.
 - Each of these, added on purpose to a copy of the repository, made it exit non-zero: a type error, an unchecked index access, an un-awaited call to a library function, and a failing test.
 - With `.env` files, a `.git` folder, a `secrets` folder and a gate report planted in a copy, none of them was in the image.

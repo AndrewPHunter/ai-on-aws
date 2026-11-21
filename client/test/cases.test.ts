@@ -42,6 +42,7 @@ async function start(t: TestContext): Promise<Running> {
         [CONTEXT_HEADERS.messageId]: 'm1',
         [CONTEXT_HEADERS.receivedAt]: '2025-12-31T23:00:00Z',
         [CONTEXT_HEADERS.agentId]: 'intake-agent',
+        [CONTEXT_HEADERS.sender]: encodeURIComponent('Dr A. Rivera, a.rivera@example.org'),
       },
     },
   });

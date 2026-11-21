@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 
 import { CaseStore, FIND_LIMIT } from '../src/store.ts';
@@ -17,8 +18,10 @@ function memoryStore(): CaseStore {
   return new CaseStore(':memory:', steppingClock());
 }
 
-function message(id: string): CallContext {
-  return { messageId: id, receivedAt: '2025-12-31T23:00:00.000Z', agentId: 'intake-agent' };
+const RIVERA = 'Dr A. Rivera, cardiologist, a.rivera@example.org';
+
+function message(id: string, sender = RIVERA): CallContext {
+  return { messageId: id, receivedAt: '2025-12-31T23:00:00.000Z', agentId: 'intake-agent', sender };
 }
 
 const COMPLETE: Elements = {
@@ -234,4 +237,88 @@ test('cases and the record of handled messages survive closing and reopening the
   assert.equal(second.createCase(message('m1'), COMPLETE).outcome, 'replayed');
   assert.equal(second.createCase(message('m2'), COMPLETE).case.case_id, 'AE-000002');
   second.close();
+});
+
+const KATO = 'Dr M. Kato, pharmacy, m.kato@example.org';
+
+test('a lookup for a sender returns only cases that sender has reported on', () => {
+  const store = memoryStore();
+  store.createCase(message('m1'), COMPLETE);
+  store.createCase(message('m2', KATO), COMPLETE);
+
+  assert.deepEqual(
+    store.find({ sender: RIVERA, suspectDrug: 'atorvastatin' }).cases.map((found) => found.case_id),
+    ['AE-000001'],
+  );
+  assert.deepEqual(
+    store.find({ sender: KATO }).cases.map((found) => found.case_id),
+    ['AE-000002'],
+  );
+  assert.deepEqual(store.find({ sender: 'someone else' }).cases, []);
+  assert.equal(store.find({}).cases.length, 2);
+});
+
+test('two spellings of a sender that differ only in case and spacing are the same sender', () => {
+  const store = memoryStore();
+  store.createCase(message('m1'), COMPLETE);
+
+  const found = store.find({ sender: '  dr a. rivera,   CARDIOLOGIST, a.rivera@example.org ' });
+  assert.equal(found.cases.length, 1);
+});
+
+test('a follow-up from a sender who has not reported on the case is answered as if there were no such case', () => {
+  const store = memoryStore();
+  store.createCase(message('m1'), COMPLETE);
+
+  const notTheirs = store.addFollowUp(message('m2', KATO), 'AE-000001', { event: 'changed' }, undefined);
+  const notThere = store.addFollowUp(message('m3', KATO), 'AE-000099', { event: 'changed' }, undefined);
+
+  assert.deepEqual(notTheirs, { outcome: 'not_found' });
+  assert.deepEqual(notTheirs, notThere);
+  assert.equal(store.versions('AE-000001').length, 1);
+  assert.equal(store.auditTrail('AE-000001').length, 1);
+});
+
+test('a sender who has added to a case can find it and add to it again', () => {
+  const store = memoryStore();
+  store.createCase(message('m1'), COMPLETE);
+  store.addFollowUp(message('m2'), 'AE-000001', {}, 'first follow-up');
+  const again = store.addFollowUp(message('m3'), 'AE-000001', {}, 'second follow-up');
+
+  assert.equal(again.outcome, 'recorded');
+  assert.deepEqual(
+    store.versions('AE-000001').map((version) => version.sender),
+    [RIVERA, RIVERA, RIVERA],
+  );
+});
+
+test('a store written before senders were kept still opens, and no sender finds its old cases', () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'case-store-old-')), 'cases.sqlite');
+  const old = new DatabaseSync(path);
+  old.exec(`
+    create table cases (
+      n integer primary key, case_id text not null unique, status text not null,
+      current_version integer not null, received_at text not null, created_at text not null
+    ) strict;
+    create table case_versions (
+      case_id text not null references cases(case_id), version integer not null,
+      patient text, reporter text, suspect_drug text, event text, note text,
+      message_id text not null, received_at text not null, recorded_at text not null, recorded_by text not null,
+      primary key (case_id, version)
+    ) strict;
+    insert into cases values (1, 'AE-000001', 'awaiting_review', 1, '2025-12-31T23:00:00.000Z', '2026-01-01T00:00:00.000Z');
+    insert into case_versions values ('AE-000001', 1, 'JD', 'Dr Rivera', 'atorvastatin', 'rash', null,
+      'old-message', '2025-12-31T23:00:00.000Z', '2026-01-01T00:00:00.000Z', 'old-agent');
+  `);
+  old.close();
+
+  const store = new CaseStore(path, steppingClock());
+  assert.equal(store.getCase('AE-000001')?.status, 'awaiting_review');
+  assert.equal(store.versions('AE-000001')[0]?.sender, '');
+  assert.deepEqual(store.find({ sender: RIVERA }).cases, []);
+  assert.deepEqual(store.find({ sender: '' }).cases, []);
+  assert.equal(store.find({}).cases.length, 1);
+  assert.deepEqual(store.addFollowUp(message('m0', ''), 'AE-000001', { event: 'changed' }, undefined), { outcome: 'not_found' });
+  assert.equal(store.createCase(message('m1'), COMPLETE).case.case_id, 'AE-000002');
+  store.close();
 });

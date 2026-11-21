@@ -12,7 +12,7 @@ Every command on this page is run from the root of the repository.
 docker compose up -d --build --wait
 ```
 
-Then open <http://127.0.0.1:3000>. That starts the client together with the [case system](../tools/case-system/README.md), on one network. Both are published on this machine only.
+Then open <http://127.0.0.1:3000>. That starts the client together with the [agents](../agents/README.md) and the [case system](../tools/case-system/README.md), on one network. All are published on this machine only. The agents need the model server, so [set that up](../model/README.md) first.
 
 ```bash
 docker compose down
@@ -31,9 +31,8 @@ stops them and keeps the inquiries and cases. Add `-v` to delete them.
 
 ## What works today
 
-- **Cases and System work against the running case system.**
-- **Inquiries cannot be sent yet, because no agent exists.** The screen says so. The prepared inquiries can be read.
-- **The read-outs for replies, citations, case actions and steps are written against the agent contract, not against an agent.** They have not been seen with a real agent's output.
+- **Inquiries, Cases and System work,** with the [intake agent](../agents/README.md).
+- **The read-outs for citations, label searches and hand-offs between agents have not been seen with real output,** because the intake agent produces none. Replies, case actions, model steps and tool steps have.
 - **Label search and evaluation have no screen.** They are listed on System as not built.
 
 ## How it is put together
@@ -62,7 +61,7 @@ Set in [`compose.yaml`](compose.yaml).
 
 | Setting | Meaning |
 |---|---|
-| `AGENTS` | The agents an inquiry can be sent to: a JSON list of `{ id, name, description, url }`. Empty until an agent exists. |
+| `AGENTS` | The agents an inquiry can be sent to: a JSON list of `{ id, name, description, url }` |
 | `CASE_REVIEW_URL` | Where the case system's review server is |
 | `CLIENT_DB_PATH` | The SQLite file for inquiries and runs |
 | `WEB_ROOT` | The folder holding the built app |

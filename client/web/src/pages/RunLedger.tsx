@@ -51,6 +51,11 @@ function StepDetail({ step }: { step: Step }) {
     case 'tool':
       return (
         <>
+          <p className="stepnote">
+            {step.requested_by === 'agent'
+              ? 'Made by the agent’s own code, not asked for by the model.'
+              : 'Asked for by the model.'}
+          </p>
           <Payload label="Sent" value={step.arguments} />
           <Payload label={step.is_error ? 'Came back as an error' : 'Came back'} value={step.result} />
         </>

@@ -80,8 +80,10 @@ export function stepTitle(step: Step): string {
         return 'The model answered';
       }
       return `The model asked for ${step.tool_calls.map((call) => call.name).join(', ')}`;
-    case 'tool':
-      return step.is_error ? `${step.tool} was refused or failed` : `${step.tool} ran`;
+    case 'tool': {
+      const who = step.requested_by === 'agent' ? ', repeated by the agent’s own code' : '';
+      return step.is_error ? `${step.tool} was refused or did not answer${who}` : `${step.tool} ran${who}`;
+    }
     case 'retrieval':
       return 'Searched the label';
     case 'handoff':

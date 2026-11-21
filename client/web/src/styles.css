@@ -975,6 +975,12 @@ select:disabled {
   overflow-wrap: anywhere;
 }
 
+.stepnote {
+  margin-bottom: 8px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
 .payload + .payload {
   margin-top: 10px;
 }

@@ -36,6 +36,9 @@ export const stepSchema = z.discriminatedUnion('kind', [
     kind: z.literal('tool'),
     ...timing,
     tool: z.string(),
+    // Who decided to make the call: the model, or the agent's own code (for example repeating a call
+    // whose reply was lost).
+    requested_by: z.enum(['model', 'agent']),
     arguments: z.unknown(),
     result: z.unknown(),
     is_error: z.boolean(),

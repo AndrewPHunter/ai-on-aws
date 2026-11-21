@@ -16,6 +16,8 @@ export const CONTEXT_HEADERS = {
   messageId: 'x-message-id',
   receivedAt: 'x-received-at',
   agentId: 'x-agent-id',
+  // Percent-encoded, because a header cannot carry every character a name can contain.
+  sender: 'x-sender',
 } as const;
 
 // How far ahead of this server's clock a receipt time may be, to allow for clocks that disagree.
@@ -43,13 +45,21 @@ export function contextFrom(headers: IncomingHttpHeaders, now: () => Date): Call
   const messageId = single(headers, CONTEXT_HEADERS.messageId);
   const receivedAt = single(headers, CONTEXT_HEADERS.receivedAt);
   const agentId = single(headers, CONTEXT_HEADERS.agentId);
-  if (messageId === undefined && receivedAt === undefined && agentId === undefined) {
+  const encodedSender = single(headers, CONTEXT_HEADERS.sender);
+  if (messageId === undefined && receivedAt === undefined && agentId === undefined && encodedSender === undefined) {
     return undefined;
   }
-  if (messageId === undefined || receivedAt === undefined || agentId === undefined) {
-    throw new BadRequest(
-      `Send all of ${CONTEXT_HEADERS.messageId}, ${CONTEXT_HEADERS.receivedAt} and ${CONTEXT_HEADERS.agentId}, or none`,
-    );
+  if (messageId === undefined || receivedAt === undefined || agentId === undefined || encodedSender === undefined) {
+    throw new BadRequest(`Send all of ${Object.values(CONTEXT_HEADERS).join(', ')}, or none`);
+  }
+  let sender: string;
+  try {
+    sender = decodeURIComponent(encodedSender).trim();
+  } catch {
+    throw new BadRequest(`Header ${CONTEXT_HEADERS.sender} is not percent-encoded text`);
+  }
+  if (sender === '') {
+    throw new BadRequest(`Header ${CONTEXT_HEADERS.sender} is empty`);
   }
   const received = new Date(receivedAt);
   if (Number.isNaN(received.getTime())) {
@@ -58,7 +68,7 @@ export function contextFrom(headers: IncomingHttpHeaders, now: () => Date): Call
   if (received.getTime() > now().getTime() + RECEIPT_ALLOWANCE_MS) {
     throw new BadRequest(`Header ${CONTEXT_HEADERS.receivedAt} is in the future`);
   }
-  return { messageId, receivedAt: received.toISOString(), agentId };
+  return { messageId, receivedAt: received.toISOString(), agentId, sender };
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {

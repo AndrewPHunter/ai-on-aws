@@ -93,7 +93,8 @@ export function buildMcpServer(store: CaseStore, context: CallContext | undefine
     'find_case',
     {
       description:
-        'Look up existing cases. Use from_this_message to check whether a case was already opened for the ' +
+        'Look up existing cases that the sender of this message has reported on. Cases from other senders ' +
+        'are never returned. Use from_this_message to check whether a case was already opened for the ' +
         'message being handled, for example after a create_case call that did not return. Use suspect_drug ' +
         'and patient to find an earlier case that a new message may be a follow-up to. At least one filter is ' +
         'required. Newest cases come first; truncated is true when more matched than are listed.',
@@ -108,6 +109,10 @@ export function buildMcpServer(store: CaseStore, context: CallContext | undefine
       },
     },
     (args) => {
+      // A lookup is always on behalf of a sender, so it needs the call context.
+      if (context === undefined) {
+        return contextMissing();
+      }
       const filter: CaseFilter = {};
       if (args.case_id !== undefined) {
         filter.caseId = args.case_id;
@@ -119,14 +124,13 @@ export function buildMcpServer(store: CaseStore, context: CallContext | undefine
         filter.patient = args.patient;
       }
       if (args.from_this_message === true) {
-        if (context === undefined) {
-          return contextMissing();
-        }
         filter.messageId = context.messageId;
       }
       if (Object.keys(filter).length === 0) {
         return reply({ error: 'filter_required', detail: 'Give at least one filter.' }, true);
       }
+      // Set by code, not by the model: only cases this message's sender has reported on.
+      filter.sender = context.sender;
       return reply(store.find(filter), false);
     },
   );
@@ -137,7 +141,8 @@ export function buildMcpServer(store: CaseStore, context: CallContext | undefine
       description:
         'Add information to an existing case, for example when a later message supplies something that was ' +
         'missing. The earlier content stays on record as a previous version. The case then goes back to a ' +
-        'reviewer. This cannot approve, reject or close a case.',
+        'reviewer. Only a case the sender of this message has already reported on can be added to. This ' +
+        'cannot approve, reject or close a case.',
       inputSchema: {
         case_id: z.string().describe('The case to add to, such as AE-000012.'),
         ...elementFields,
