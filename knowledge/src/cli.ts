@@ -1,5 +1,5 @@
-// The command line of the three corpus commands, run through knowledge/src/main.ts by knowledge/pin.sh, fetch.sh
-// and census.sh in the pinned Node image. Every setting is a named flag, and every flag a command takes is
+// The command line of the four corpus commands, run through knowledge/src/main.ts by knowledge/pin.sh, fetch.sh,
+// census.sh and parse.sh in the pinned Node image. Every setting is a named flag, and every flag a command takes is
 // required: nothing has a default. Input and output (the transport, waiting, the two output streams) are passed
 // in, so the whole command line runs in tests against the stand-in.
 //
@@ -7,15 +7,18 @@
 //                                     --labels-path <path> --qa-path <path> --benchmark-max-bytes <n> <client flags>
 //   node knowledge/src/main.ts fetch  --corpus <dir> --data <dir> --benchmark-max-bytes <n> <client flags>
 //   node knowledge/src/main.ts census --corpus <dir> --data <dir>
+//   node knowledge/src/main.ts parse  --corpus <dir> --data <dir>
 //
 //   client flags: --raw-base <url> --dailymed-base <url> --user-agent <text> --dailymed-concurrency <n>
 //                 --github-concurrency <n> --workers <n> --attempts <n> --waits-ms <n,n,...> --timeout-ms <n>
 //                 --zip-max-bytes <n> --xml-max-bytes <n>
 //
-// Exit codes: 0 done; 1 done, with labels or files refused (fetch, census) or a request that failed (pin);
-//             2 could not run (flags, or tracked files that do not pass the schema).
+// Exit codes: 0 done (for parse: ran to the end, whatever the labels' results); 1 done, with labels or files
+//             refused (fetch, census) or a request that failed (pin); 2 could not run (flags, or tracked files
+//             that do not pass the schema).
 
 import { runCensus } from './census.ts'
+import { runParse } from './parse/run.ts'
 import { InputError, fetchCorpus } from './fetch.ts'
 import { PoliteClient } from './http.ts'
 import { pin } from './pin.ts'
@@ -41,6 +44,7 @@ const FLAGS = {
   pin: ['corpus', 'data', 'repository', 'revision', 'licence', 'labels-path', 'qa-path', 'benchmark-max-bytes', ...CLIENT_FLAGS],
   fetch: ['corpus', 'data', 'benchmark-max-bytes', ...CLIENT_FLAGS],
   census: ['corpus', 'data'],
+  parse: ['corpus', 'data'],
 } as const
 
 type Command = keyof typeof FLAGS
@@ -119,8 +123,8 @@ export async function runCommand(argv: readonly string[], io: CommandIo): Promis
 async function run(argv: readonly string[], io: CommandIo): Promise<number> {
   const { log, warn } = io
   const [command, ...rest] = argv
-  if (command !== 'pin' && command !== 'fetch' && command !== 'census') {
-    throw new UsageError('the first argument must be pin, fetch or census')
+  if (command !== 'pin' && command !== 'fetch' && command !== 'census' && command !== 'parse') {
+    throw new UsageError('the first argument must be pin, fetch, census or parse')
   }
   const flags = parseFlags(command, rest)
   const corpusDir = text(flags, 'corpus')
@@ -129,6 +133,13 @@ async function run(argv: readonly string[], io: CommandIo): Promise<number> {
   if (command === 'census') {
     const { exitCode } = await runCensus({ corpusDir, dataDir, log, warn })
     return exitCode
+  }
+
+  if (command === 'parse') {
+    const started = process.hrtime.bigint()
+    await runParse({ corpusDir, dataDir, log })
+    log(`time: ${Number((process.hrtime.bigint() - started) / 1_000_000n) / 1000} s`)
+    return 0
   }
 
   const dailymedConcurrency = count(flags, 'dailymed-concurrency')

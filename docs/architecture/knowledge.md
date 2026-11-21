@@ -1,6 +1,6 @@
 # Knowledge
 
-The corpus of the lab's Bedrock Knowledge Bases stand-in: US drug labels from DailyMed, pinned by set id and version, fetched onto disk and counted. To use it, see [knowledge/README.md](../../knowledge/README.md).
+The corpus of the lab's Bedrock Knowledge Bases stand-in: US drug labels from DailyMed, pinned by set id and version, fetched onto disk, counted, and parsed into structured documents. To use it, see [knowledge/README.md](../../knowledge/README.md).
 
 ## The corpus as pinned
 
@@ -29,6 +29,9 @@ The corpus holds both prescription and over-the-counter labels. Nothing downstre
 | Data folder | `knowledge/data/`: the benchmark files, the label XML files and the reports. Never tracked, never in an image |
 | Download record | `labels/<set id>/<version>.download.json` beside each XML: the SHA-256 of the zip it came from and of the XML |
 | Stand-in | The loopback server the tests use in place of DailyMed and the benchmark's host. It serves synthetic data and marks each response as a stand-in's |
+| Parsed document | `parsed/<set id>/<version>.json`: a label as identity, products and a tree of sections holding blocks (paragraphs, lists, tables, images) and Highlights blocks, with its warnings |
+| Problem | What the parser found wrong: a code, a severity (error or warning), the section id or table position, counts. Never label text |
+| Excluded | A label with an error: it has no parsed file |
 
 ## What moves where
 
@@ -47,6 +50,8 @@ flowchart LR
         L["labels/&lt;set id&gt;/&lt;version&gt;.xml<br/>+ .download.json"]
         FR["fetch-report.json"]
         C["census.json"]
+        PD["parsed/&lt;set id&gt;/&lt;version&gt;.json"]
+        PR["parse-report.json"]
     end
     GH -- "pin.sh: files" --> B
     GH -- "pin.sh: checksums" --> P
@@ -62,6 +67,28 @@ flowchart LR
     L --> CE
     M --> CE
     CE --> C
+    L -- "parse.sh, no network" --> PA(("parse"))
+    M --> PA
+    PA -- "labels without an error" --> PD
+    PA --> PR
+```
+
+Inside one label, in parsing:
+
+```mermaid
+flowchart LR
+    X["XML bytes<br/>(same safe reader)"] --> P["parser: identity, products,<br/>sections, blocks, tables, Highlights"]
+    P --> D["parsed document"]
+    X --> A["side A: every text node under the body<br/>(own walk, product data skipped)"]
+    D --> B["side B: every text in the document<br/>(footnote marks removed)"]
+    A --> T{"tokens and counts equal?"}
+    B --> T
+    T -- "no" --> E["error text-not-conserved"]
+    P --> Q["problems: errors and warnings"]
+    Q --> R{"any error?"}
+    E --> R
+    R -- "no" --> W["write parsed file"]
+    R -- "yes" --> N["excluded: no file"]
 ```
 
 Inside one download, in pinning and in fetching:
@@ -101,6 +128,14 @@ flowchart LR
 13. A request that fails after every attempt during pinning stops the run, and nothing is written to `knowledge/corpus/`.
 14. The census runs with no network and writes counts and codes only.
 15. Every setting is a named flag of the tool, given by the script. The tool has no defaults and reads no environment variable.
+16. The parser is one pure function from XML bytes to a document and problems: no clock, no randomness, no input or output. The same input gives a byte-identical parsed file and report.
+17. No text of a parsed label is lost or doubled without an error: every label passes the check that no text was lost, or gets `text-not-conserved` and no parsed file. The check takes its own walk of the XML and shares nothing of the parser's traversal.
+18. A label with any error has no parsed file in the data folder; one left by an earlier run is removed.
+19. Highlights text is only ever in a section's Highlights blocks, never in its own blocks.
+20. In a table's grid every position is covered by at most one cell, and empty positions are only ever at the end of a short row, where the label's own cells stop. Anything else excludes the label with `table-not-rectangular`. No cell is moved to fill a gap.
+21. The parse report holds identifiers, codes from the fixed lists, element names and numbers only.
+22. Text the parser does not understand is kept where it sits; its element is reported by name and count.
+23. For every table row the parsed document records whether it is wholly bold and how many of its cells have text. Which rows are column headings beyond the one inference rule is not decided here.
 
 ## Where each step runs
 
@@ -110,7 +145,21 @@ flowchart LR
 | `pin` | The image, as the host user, read-only root filesystem, no capabilities | DailyMed and GitHub | `corpus/` read-write, `data/` read-write |
 | `fetch` | The same | DailyMed and GitHub | `corpus/` read-only, `data/` read-write |
 | `census` | The same | None | `corpus/` read-only, `data/` read-write |
-| Tests F1 to F13 | `toolchain/check.sh` | None; the stand-in listens on loopback | None |
+| `parse` | The same | None | `corpus/` read-only, `data/` read-write |
+| Tests F1 to F13, P1 to P21 | `toolchain/check.sh` | None; the stand-in listens on loopback | None |
+
+## Parsing: problems and what follows
+
+| Code | Severity | Raised when | Result |
+|---|---|---|---|
+| `text-not-conserved` | error | The token collections of side A and side B differ; gives missing and extra | Excluded |
+| `table-not-rectangular` | error | After spans, two cells claim one position, a span passes the last row, or a row has an empty position before a covered one | Excluded |
+| `no-sections` | error | No section of the body has text | Excluded |
+| `unreadable` | error | A step 1 refusal, or the XML is missing or does not match the manifest | Excluded |
+| `section-untitled`, `section-unclassified` | warning | A section with no title; a section coded 42229-5 | Written |
+| `table-header-inferred`, `table-header-none`, `table-caption-inferred`, `table-nested` | warning | How a table's header and caption were found; a table inside a cell | Written |
+| `section-images-only`, `footnote-reference-unmatched`, `element-unknown` | warning | A section of images only; a reference to no footnote; an element not known, by name and count | Written |
+| `table-row-short`, `footnote-mark-unmatched` | warning | A table with rows shorter than its widest row (with how many); a `tfoot` mark no cell of the table carries | Written |
 
 ## How it fails
 
@@ -133,13 +182,15 @@ flowchart LR
 | `knowledge/pin.sh` | The benchmark's repository, revision, licence and file paths |
 | `knowledge/lib.sh` | The image name, the container's isolation, and every request setting |
 | `knowledge/src/` | The tool: the schema, the request client, the archive and XML readers, pinning, fetching, the census |
+| `knowledge/src/parse/` | The parsed document's shape and problem codes (`model.ts`), the parser (`parser.ts`), the check that no text was lost (`conserve.ts`), and the command (`run.ts`) |
 | `knowledge/corpus/` | What the corpus is: written by `pin.sh`, read by everything else |
-| `knowledge/data/` | Local copies; regenerated by `fetch.sh` and `census.sh` |
+| `knowledge/data/` | Local copies; regenerated by `fetch.sh`, `census.sh` and `parse.sh` |
 | `toolchain/Dockerfile` | The `run` stage the image is built from, and the Node pin |
 
 ## What is not present
 
-- No parsing of a label into sections, no chunks, no search index, no retrieval API, no Bedrock data source.
+- No chunks, no search index, no retrieval API, no Bedrock data source.
+- No decision on which table rows are column headings beyond the one inference rule; no text read from images; no section numbers in old-format labels.
 - No label version beyond the one pinned per set id, and no rule for choosing among several labels of one drug.
 - No label for a set id DailyMed does not serve: the manifest lists it as not pinned.
 - No check that a pinned label is still the newest version at DailyMed.
