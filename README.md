@@ -49,7 +49,7 @@ ai-on-aws/
 | [`shared/`](shared/README.md) | The contracts between pieces | Two contracts: what an agent is sent and returns, and what the case system sends. Both intake agents implement the first |
 | [`agents/`](agents/README.md) | The agents, each its own container, each serving the AgentCore Runtime contract | One agent, intake, built twice: with its loop written by hand, and on Strands. Both work against the local model |
 | [`tools/`](tools/README.md) | The agents' tools: MCP servers and APIs. Not developer tooling, which is `toolchain/` | One tool: the case system, used by both intake agents |
-| [`knowledge/`](knowledge/README.md) | Documents in, search, retrieval for agents | Placeholder |
+| [`knowledge/`](knowledge/README.md) | Documents in, search, retrieval for agents. The documents are US drug labels from DailyMed, prescription and over-the-counter | The corpus: the labels of the FDARxBench benchmark that DailyMed serves, pinned by set id and version, fetched and checked by checksum, and counted. No parsing, search or retrieval yet |
 | [`platform/`](platform/README.md) | Local stand-ins for the AgentCore services around the runtime | Placeholder |
 | [`evaluation/`](evaluation/README.md) | Measures the other pieces | Placeholder |
 
