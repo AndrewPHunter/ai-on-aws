@@ -9,4 +9,7 @@ name: ai-on-aws
 include:
   - tools/case-system/compose.yaml
   - agents/compose.yaml
-  - client/compose.yaml
+  # The client's compose file is read with platform/identity/.env, for the desk client's secret.
+  - path: client/compose.yaml
+    env_file: platform/identity/.env
+  - platform/identity/compose.yaml

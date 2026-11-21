@@ -1,15 +1,19 @@
 // Two HTTP servers over one store.
 //   The agent server speaks MCP at POST /mcp and answers GET /ping. It is what agents are given.
 //   The review server is for people: list cases, read one with its history, and record a decision.
+// Every route on both but GET /ping requires a valid access token, checked before the body is read. On
+// the agent server the token's user becomes the user the agent acted for; on the review server it is
+// the reviewer, and deciding a case needs the reviewer role.
 
 import { createServer } from 'node:http';
 import type { IncomingHttpHeaders, IncomingMessage, Server, ServerResponse } from 'node:http';
 
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 
+import type { AccessTokenCheck, Caller } from '../../../shared/access-token.ts';
 import { CASE_STATUSES, REVIEW_DECISIONS } from '../../../shared/case-contract.ts';
 import { buildMcpServer } from './mcp.ts';
-import type { CallContext, CaseStatus, CaseStore, ReviewDecision } from './store.ts';
+import type { CallContext, CaseStatus, CaseStore, Person, ReviewDecision } from './store.ts';
 
 // Headers the calling agent's code sets on every MCP request that changes anything.
 export const CONTEXT_HEADERS = {
@@ -40,8 +44,8 @@ function single(headers: IncomingHttpHeaders, name: string): string | undefined 
 
 // No context headers at all is allowed: listing tools and plain lookups need none.
 // Some but not all, a receipt time that is not a time, or one that is still in the future,
-// is a mistake by the caller and is refused.
-export function contextFrom(headers: IncomingHttpHeaders, now: () => Date): CallContext | undefined {
+// is a mistake by the caller and is refused. actingFor is the user of the accepted access token.
+export function contextFrom(headers: IncomingHttpHeaders, now: () => Date, actingFor: Person): CallContext | undefined {
   const messageId = single(headers, CONTEXT_HEADERS.messageId);
   const receivedAt = single(headers, CONTEXT_HEADERS.receivedAt);
   const agentId = single(headers, CONTEXT_HEADERS.agentId);
@@ -68,7 +72,7 @@ export function contextFrom(headers: IncomingHttpHeaders, now: () => Date): Call
   if (received.getTime() > now().getTime() + RECEIPT_ALLOWANCE_MS) {
     throw new BadRequest(`Header ${CONTEXT_HEADERS.receivedAt} is in the future`);
   }
-  return { messageId, receivedAt: received.toISOString(), agentId, sender };
+  return { messageId, receivedAt: received.toISOString(), agentId, actingFor, sender };
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {
@@ -118,13 +122,38 @@ function pathOf(request: IncomingMessage): URL {
   return new URL(request.url ?? '/', 'http://case-system');
 }
 
-export function createAgentServer(store: CaseStore, now: () => Date): Server {
+// The caller of an accepted token, or undefined once a refusal (401) or an unavailable check (503) has
+// been answered. Nothing of the request's body has been read either way.
+async function callerOf(request: IncomingMessage, response: ServerResponse, checkToken: AccessTokenCheck): Promise<Caller | undefined> {
+  const checked = await checkToken(request.headers.authorization);
+  if (checked.kind === 'caller') {
+    return checked.caller;
+  }
+  if (checked.kind === 'refused') {
+    response.writeHead(401, { 'content-type': 'application/json', 'www-authenticate': 'Bearer error="invalid_token"' });
+    response.end(JSON.stringify({ error: 'unauthorized', reason: checked.reason, detail: checked.detail }));
+  } else {
+    sendJson(response, 503, { error: 'identity_unavailable', detail: checked.detail });
+  }
+  request.resume();
+  return undefined;
+}
+
+function personOf(caller: Caller): Person {
+  return { name: caller.name, subject: caller.subject };
+}
+
+export function createAgentServer(store: CaseStore, now: () => Date, checkToken: AccessTokenCheck): Server {
   return createServer(
     listener(async (request, response) => {
       const { pathname } = pathOf(request);
 
       if (pathname === '/ping' && request.method === 'GET') {
         sendJson(response, 200, { status: 'Healthy' });
+        return;
+      }
+      const caller = await callerOf(request, response, checkToken);
+      if (caller === undefined) {
         return;
       }
       if (pathname !== '/mcp') {
@@ -138,7 +167,7 @@ export function createAgentServer(store: CaseStore, now: () => Date): Server {
         return;
       }
 
-      const context = contextFrom(request.headers, now);
+      const context = contextFrom(request.headers, now, personOf(caller));
       const body = await readJson(request);
       const mcp = buildMcpServer(store, context);
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
@@ -179,13 +208,17 @@ function optionalString(body: unknown, name: string): string | undefined {
   return value;
 }
 
-export function createReviewServer(store: CaseStore): Server {
+export function createReviewServer(store: CaseStore, checkToken: AccessTokenCheck, reviewerRole: string): Server {
   return createServer(
     listener(async (request, response) => {
       const url = pathOf(request);
 
       if (url.pathname === '/ping' && request.method === 'GET') {
         sendJson(response, 200, { status: 'Healthy' });
+        return;
+      }
+      const caller = await callerOf(request, response, checkToken);
+      if (caller === undefined) {
         return;
       }
 
@@ -222,8 +255,17 @@ export function createReviewServer(store: CaseStore): Server {
       }
 
       if (isReview && request.method === 'POST') {
+        // Decided before the case is looked up or the body read, so a non-reviewer learns nothing.
+        if (!caller.roles.includes(reviewerRole)) {
+          request.resume();
+          sendJson(response, 403, { error: 'not_a_reviewer', detail: `Deciding a case needs the ${reviewerRole} role.` });
+          return;
+        }
         const body = await readJson(request);
-        const reviewer = requiredString(body, 'reviewer');
+        if (field(body, 'reviewer') !== undefined) {
+          throw new BadRequest('"reviewer" is not accepted: the reviewer is whoever the access token names');
+        }
+        const reviewer = personOf(caller);
         const wanted = requiredString(body, 'decision');
         const decision = DECISIONS.find((candidate) => candidate === wanted);
         if (decision === undefined) {

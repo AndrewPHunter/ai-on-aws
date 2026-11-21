@@ -2,6 +2,8 @@
 
 The agents that handle inquiries. Each runs as its own container from one image, and each serves the same HTTP contract, the one Amazon Bedrock AgentCore Runtime asks of a container: `POST /invocations` and `GET /ping` on port 8080.
 
+`POST /invocations` requires an access token from the lab's [identity provider](../platform/identity/README.md), as `Authorization: Bearer`, checked before anything else: the check AgentCore Runtime's JWT authorizer makes in front of the container, made here too. The agent passes the caller's token on to the case system on every request. `GET /ping` needs none.
+
 Every command on this page is run from the root of the repository.
 
 | Agent | What it does | State |
@@ -19,13 +21,18 @@ The agents need the model server. [Set it up](../model/README.md) first; that wr
 docker compose up -d --build --wait
 ```
 
-That starts both intake agents with the case system and the [client](../client/README.md). Open <http://127.0.0.1:3000>, choose an agent and send an inquiry.
+That starts both intake agents with the case system, the identity provider and the [client](../client/README.md). Open <http://localhost:3000>, sign in, choose an agent and send an inquiry.
 
-To call an agent directly, use port 8080 for the hand-written one and 8081 for the one on Strands:
+To call an agent directly, use port 8080 for the hand-written one and 8081 for the one on Strands, with an access token issued to the `desk` client that has at least 150 seconds left. Without one the answer is 401:
 
 ```bash
-curl -s http://127.0.0.1:8080/invocations -H 'content-type: application/json' -d '{"message":{"id":"m-1","received_at":"2026-01-01T09:00:00Z","sender":"Dr. A. Rivera, a.rivera@example.org","text":"My patient JD, 54, developed severe muscle pain on atorvastatin 40 mg."}}'
+curl -s http://127.0.0.1:8080/invocations -H 'content-type: application/json' -H "authorization: Bearer $ACCESS_TOKEN" -d '{"message":{"id":"m-1","received_at":"2026-01-01T09:00:00Z","sender":"Dr. A. Rivera, a.rivera@example.org","text":"My patient JD, 54, developed severe muscle pain on atorvastatin 40 mg."}}'
 ```
+
+| Answer | When |
+|---|---|
+| 401, `WWW-Authenticate: Bearer error="invalid_token"`, `{"error":"unauthorized","reason","detail"}` | No token, or one that is malformed, signed by another key or not with RS256, from another issuer, not for `lab-agents`, not issued to an allowed client, expired, or with less than 150 s left. `reason` names which |
+| 503 `identity_unavailable` | The identity provider's discovery document or keys cannot be fetched, or it names another issuer |
 
 The request and the answer are defined in [`shared/agent-contract.ts`](../shared/agent-contract.ts). The answer carries the reply, what was done to cases, and every step taken.
 
@@ -111,6 +118,13 @@ Set in [`compose.yaml`](compose.yaml), for each agent. The limits and sampling s
 | `MODEL_ID` | The model's name. Optional: if unset, the agent asks the server, which must serve exactly one model. |
 | `CASE_MCP_URL` | The case system's MCP endpoint |
 | `AGENT_ID` | The name this agent's changes are recorded under |
+| `AUTH_DISCOVERY_URL` | Where the identity provider's discovery document is: `http://identity:8080/realms/lab/.well-known/openid-configuration` |
+| `AUTH_ISSUER` | The issuer it and every token must name, exactly: `http://localhost:8090/realms/lab` |
+| `AUTH_ALLOWED_AUDIENCE` | A value the token's `aud` must contain: `lab-agents` |
+| `AUTH_ALLOWED_CLIENTS` | The `client_id` values accepted, separated by commas: `desk` |
+| `AUTH_ROLES_CLAIM` | The claim holding the caller's roles: `roles` |
+
+Every setting but `MODEL_ID` is required; the agent stops at start-up naming any that is missing. A token must have at least the run's time limit (150 s) left. The keys are fetched again, at most every 30 s, when a token names one not yet seen.
 
 ## What was measured
 
@@ -125,7 +139,10 @@ Against the local model (Qwen3.5-9B on vLLM), through the client, on the seven p
 
 ## Known limits
 
-- **The agent trusts the case system's address and is not authenticated to it,** and nothing authenticates callers of `/invocations`.
+- **The case system checks the token the agent passes on.** If it refuses the token when the agent connects, the run fails with "The case system refused the caller's token."; if it cannot check tokens, with "The case system could not check the caller's token." A refusal on a later tool call in the same run is not told apart: it is handled as a call that got no answer.
+- **The agent's name is still a header it claims,** and the token is passed on unchanged, not exchanged for a narrower one. The agent trusts the case system's address.
+- **The caller's roles are read but not used:** any accepted token may submit a message.
+- **The token check has run in tests only,** against a stand-in issuer, not yet in an agent container against the lab's Keycloak.
 - **The message text is put between `<message>` tags.** A message that contains the closing tag has not been tried.
 - **A follow-up can replace detailed values with vaguer ones.** In one run the patient "JD, a 54-year-old man" became "JD", the dose was dropped, and the original description of the event was replaced by the new information alone. The earlier version keeps the originals.
 - **The retry without thinking has run only in tests,** against a scripted stand-in for the model. In the runs made after it was added, the model answered without it.

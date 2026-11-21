@@ -20,11 +20,17 @@ import type {
 export { ELEMENTS };
 export type { AuditView, CaseStatus, CaseView, ElementName, Elements, FoundCases, ReviewDecision, VersionView };
 
-// Who is calling and for which inbound message. Supplied by the agent's code, never by the model.
+// A person as the identity provider names them: their name and their subject.
+export type Person = { name: string; subject: string };
+
+// Who is calling and for which inbound message. Supplied by the agent's code, never by the model,
+// except actingFor, which comes from the access token the agent passed on.
 export type CallContext = {
   messageId: string;
   receivedAt: string;
   agentId: string;
+  // The signed-in user the agent is acting for.
+  actingFor: Person;
   // Who sent the message, as the caller gave it. Lookups and follow-ups are limited to cases this
   // sender has reported on.
   sender: string;
@@ -204,6 +210,14 @@ export class CaseStore {
       this.db.exec("alter table case_versions add column sender text not null default ''");
       this.db.exec("alter table case_versions add column sender_key text not null default ''");
     }
+    // A store written before tokens were checked gets the three audit columns added, empty. Its
+    // existing entries then name no user acted for and no reviewer subject.
+    const auditColumns = this.db.prepare('pragma table_info(audit)').all();
+    for (const column of ['acting_for_name', 'acting_for_subject', 'actor_subject']) {
+      if (!auditColumns.some((existing) => existing['name'] === column)) {
+        this.db.exec(`alter table audit add column ${column} text`);
+      }
+    }
   }
 
   close(): void {
@@ -221,7 +235,7 @@ export class CaseStore {
       const prior = this.operation(operationKey);
       if (prior !== undefined) {
         const outcome = prior.payloadHash === payloadHash ? 'replayed' : 'conflict';
-        this.audit(context.agentId, 'agent', `create_${outcome}`, prior.caseId, prior.version, {
+        this.agentAudit(context, `create_${outcome}`, prior.caseId, prior.version, {
           message_id: context.messageId,
         });
         return { outcome, case: this.requireCase(prior.caseId) };
@@ -237,7 +251,7 @@ export class CaseStore {
         .run(number, caseId, statusAfterWrite(elements), context.receivedAt, recordedAt);
       this.insertVersion(caseId, 1, elements, null, context, recordedAt);
       this.recordOperation(operationKey, payloadHash, caseId, 1, recordedAt);
-      this.audit(context.agentId, 'agent', 'case_created', caseId, 1, {
+      this.agentAudit(context, 'case_created', caseId, 1, {
         message_id: context.messageId,
         missing: missingFrom(elements),
       });
@@ -267,7 +281,7 @@ export class CaseStore {
       const prior = this.operation(operationKey);
       if (prior !== undefined) {
         const outcome = prior.payloadHash === payloadHash ? 'replayed' : 'conflict';
-        this.audit(context.agentId, 'agent', `follow_up_${outcome}`, caseId, prior.version, {
+        this.agentAudit(context, `follow_up_${outcome}`, caseId, prior.version, {
           message_id: context.messageId,
         });
         return { outcome, case: this.requireCase(caseId) };
@@ -281,7 +295,7 @@ export class CaseStore {
         .prepare('update cases set status = ?, current_version = ? where case_id = ?')
         .run(statusAfterWrite(merged), version, caseId);
       this.recordOperation(operationKey, payloadHash, caseId, version, recordedAt);
-      this.audit(context.agentId, 'agent', 'follow_up_added', caseId, version, {
+      this.agentAudit(context, 'follow_up_added', caseId, version, {
         message_id: context.messageId,
         changed: Object.keys(provided),
         missing: missingFrom(merged),
@@ -290,8 +304,9 @@ export class CaseStore {
     });
   }
 
-  // A person's decision on a case. Approve and reject need a case that is awaiting review.
-  review(caseId: string, reviewer: string, decision: ReviewDecision, noteInput: string | undefined): ReviewResult {
+  // A person's decision on a case. Approve and reject need a case that is awaiting review. The reviewer
+  // is the person the access token names.
+  review(caseId: string, reviewer: Person, decision: ReviewDecision, noteInput: string | undefined): ReviewResult {
     const trimmedNote = noteInput?.trim();
     const note = trimmedNote === undefined || trimmedNote === '' ? null : trimmedNote;
     if (decision === 'request_information' && note === null) {
@@ -312,11 +327,13 @@ export class CaseStore {
       const next: CaseStatus =
         decision === 'approve' ? 'approved' : decision === 'reject' ? 'rejected' : 'needs_information';
       this.db.prepare('update cases set status = ? where case_id = ?').run(next, caseId);
-      this.audit(reviewer, 'reviewer', `review_${decision}`, caseId, integer(current, 'current_version'), {
-        from: status,
-        to: next,
-        note,
-      });
+      this.insertAudit(
+        { actor: reviewer.name, kind: 'reviewer', actingFor: null, actorSubject: reviewer.subject },
+        `review_${decision}`,
+        caseId,
+        integer(current, 'current_version'),
+        { from: status, to: next, note },
+      );
       return { outcome: 'done', case: this.requireCase(caseId) };
     });
   }
@@ -400,11 +417,15 @@ export class CaseStore {
       }
       const version = row['version'];
       const detail: unknown = JSON.parse(text(row, 'detail'));
+      const actingName = optionalText(row, 'acting_for_name');
+      const actingSubject = optionalText(row, 'acting_for_subject');
       return {
         seq: integer(row, 'seq'),
         at: text(row, 'at'),
         actor: text(row, 'actor'),
         actor_kind: kind,
+        acting_for: actingName === null || actingSubject === null ? null : { name: actingName, subject: actingSubject },
+        actor_subject: optionalText(row, 'actor_subject'),
         action: text(row, 'action'),
         version: version === null ? null : integer(row, 'version'),
         detail,
@@ -533,16 +554,34 @@ export class CaseStore {
       );
   }
 
-  private audit(
-    actor: string,
-    actorKind: 'agent' | 'reviewer',
+  // An agent's change: the agent is the actor, and the user it acted for is recorded with it.
+  private agentAudit(context: CallContext, action: string, caseId: string, version: number | null, detail: unknown): void {
+    this.insertAudit({ actor: context.agentId, kind: 'agent', actingFor: context.actingFor, actorSubject: null }, action, caseId, version, detail);
+  }
+
+  private insertAudit(
+    who: { actor: string; kind: 'agent' | 'reviewer'; actingFor: Person | null; actorSubject: string | null },
     action: string,
     caseId: string,
     version: number | null,
     detail: unknown,
   ): void {
     this.db
-      .prepare('insert into audit (at, actor, actor_kind, action, case_id, version, detail) values (?, ?, ?, ?, ?, ?, ?)')
-      .run(this.now().toISOString(), actor, actorKind, action, caseId, version, JSON.stringify(detail));
+      .prepare(
+        'insert into audit (at, actor, actor_kind, action, case_id, version, detail, acting_for_name, acting_for_subject, actor_subject) ' +
+          'values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run(
+        this.now().toISOString(),
+        who.actor,
+        who.kind,
+        action,
+        caseId,
+        version,
+        JSON.stringify(detail),
+        who.actingFor?.name ?? null,
+        who.actingFor?.subject ?? null,
+        who.actorSubject,
+      );
   }
 }

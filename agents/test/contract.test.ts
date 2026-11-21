@@ -1,4 +1,5 @@
-// Drives the agent contract server over loopback with small handlers written in each test.
+// Drives the agent contract server over loopback with small handlers written in each test. Every
+// request to /invocations carries a valid access token from the stand-in issuer.
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -8,23 +9,28 @@ import { invocationResponseSchema } from '../../shared/agent-contract.ts';
 import type { InboundMessage, InvocationResponse } from '../../shared/agent-contract.ts';
 import { createContractServer } from '../src/contract/server.ts';
 import type { Handler } from '../src/contract/server.ts';
-import { listen, message, stop } from './helpers.ts';
+import { listen, message, startTokenRig, stop } from './helpers.ts';
 
 const IDENTITY = { id: 'contract-test-agent', implementation: 'none: the handler is written in each test' };
 
-type Received = { url: string; received: InboundMessage[] };
+type Received = { url: string; received: InboundMessage[]; token: string };
 
 async function startContract(t: TestContext, handler: Handler): Promise<Received> {
   const received: InboundMessage[] = [];
-  const server = createContractServer(IDENTITY, (inbound) => {
-    received.push(inbound);
-    return handler(inbound);
-  });
+  const tokens = await startTokenRig(t);
+  const server = createContractServer(
+    IDENTITY,
+    (inbound, caller) => {
+      received.push(inbound);
+      return handler(inbound, caller);
+    },
+    tokens.check,
+  );
   const url = await listen(server);
   t.after(() => {
     stop(server);
   });
-  return { url, received };
+  return { url, received, token: await tokens.mint() };
 }
 
 const ANSWER: InvocationResponse = {
@@ -41,8 +47,12 @@ function answering(response: InvocationResponse): Handler {
   return () => Promise.resolve(response);
 }
 
-async function post(url: string, body: string): Promise<{ status: number; body: unknown }> {
-  const response = await fetch(`${url}/invocations`, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
+async function post(agent: Received, body: string): Promise<{ status: number; body: unknown }> {
+  const response = await fetch(`${agent.url}/invocations`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${agent.token}` },
+    body,
+  });
   const parsed: unknown = await response.json();
   return { status: response.status, body: parsed };
 }
@@ -58,7 +68,7 @@ test('a valid request reaches the handler and its response comes back', async (t
   const agent = await startContract(t, answering(ANSWER));
   const inbound = message('msg-1', 'Hello');
 
-  const answer = await post(agent.url, JSON.stringify({ message: inbound }));
+  const answer = await post(agent, JSON.stringify({ message: inbound }));
 
   assert.equal(answer.status, 200);
   assert.deepEqual(invocationResponseSchema.parse(answer.body), ANSWER);
@@ -67,7 +77,7 @@ test('a valid request reaches the handler and its response comes back', async (t
 
 test('a body that is not JSON is 400 and the handler is not called', async (t) => {
   const agent = await startContract(t, answering(ANSWER));
-  const answer = await post(agent.url, '{"message": ');
+  const answer = await post(agent, '{"message": ');
   assert.equal(answer.status, 400);
   assert.equal(agent.received.length, 0);
 });
@@ -75,14 +85,14 @@ test('a body that is not JSON is 400 and the handler is not called', async (t) =
 test('a request missing a field is 400 and the handler is not called', async (t) => {
   const agent = await startContract(t, answering(ANSWER));
   const { text: _dropped, ...withoutText } = message('msg-1', 'Hello');
-  const answer = await post(agent.url, JSON.stringify({ message: withoutText }));
+  const answer = await post(agent, JSON.stringify({ message: withoutText }));
   assert.equal(answer.status, 400);
   assert.equal(agent.received.length, 0);
 });
 
 test('a handler that throws gives a failed outcome inside the contract', async (t) => {
   const agent = await startContract(t, () => Promise.reject(new Error('boom (expected by this test)')));
-  const answer = await post(agent.url, JSON.stringify({ message: message('msg-1', 'Hello') }));
+  const answer = await post(agent, JSON.stringify({ message: message('msg-1', 'Hello') }));
   assert.equal(answer.status, 200);
   const response = invocationResponseSchema.parse(answer.body);
   assert.equal(response.outcome, 'failed');
@@ -95,7 +105,7 @@ test('a handler that answers outside the contract gives 500', async (t) => {
     t,
     answering({ ...ANSWER, steps: [{ kind: 'error', started_at: 'yesterday', duration_ms: -1, message: 'bad step' }] }),
   );
-  const answer = await post(agent.url, JSON.stringify({ message: message('msg-1', 'Hello') }));
+  const answer = await post(agent, JSON.stringify({ message: message('msg-1', 'Hello') }));
   assert.equal(answer.status, 500);
   assert.equal(agent.received.length, 1);
 });

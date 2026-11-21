@@ -10,9 +10,13 @@ import type { TestContext } from 'node:test';
 
 import { z } from 'zod';
 
+import { createAccessTokenCheck } from '../../shared/access-token.ts';
+import type { AccessTokenCheck, Caller } from '../../shared/access-token.ts';
 import { invocationResponseSchema } from '../../shared/agent-contract.ts';
 import type { InboundMessage, InvocationResponse, Step } from '../../shared/agent-contract.ts';
 import { createAgentServer, createReviewServer } from '../../tools/case-system/src/http.ts';
+import { startStandInIssuer } from '../../test-support/issuer.ts';
+import type { MintOptions, StandInIssuer } from '../../test-support/issuer.ts';
 import { CaseStore } from '../../tools/case-system/src/store.ts';
 import type { AgentIdentity } from '../src/contract/server.ts';
 import { handleInquiry as handleByHand } from '../src/intake/handwritten.ts';
@@ -390,14 +394,29 @@ export function modelRequest(model: ScriptedModel, index: number): ModelRequest 
 
 export type DropRule = (tool: string, nth: number) => boolean;
 
+// One request the proxy received, with the headers it arrived with.
+export type ProxiedRequest = { method: string | undefined; headers: Record<string, string> };
+
 export type DroppingProxy = {
   mcpUrl: string;
+  // Every request, in order, as the agent sent it.
+  requests: ProxiedRequest[];
   // How many times each tool was called through the proxy (dropped calls included).
   calls: (tool: string) => number;
   dropped: () => number;
 };
 
-const FORWARDED_HEADERS = ['accept', 'content-type', 'mcp-protocol-version', 'mcp-session-id', 'x-message-id', 'x-received-at', 'x-agent-id', 'x-sender'];
+const FORWARDED_HEADERS = [
+  'accept',
+  'authorization',
+  'content-type',
+  'mcp-protocol-version',
+  'mcp-session-id',
+  'x-message-id',
+  'x-received-at',
+  'x-agent-id',
+  'x-sender',
+];
 
 function toolCallName(body: unknown): string | undefined {
   if (prop(body, 'method') !== 'tools/call') {
@@ -419,6 +438,7 @@ export async function startDroppingProxy(
   options: ProxyOptions = {},
 ): Promise<DroppingProxy> {
   const counts = new Map<string, number>();
+  const requests: ProxiedRequest[] = [];
   let droppedCount = 0;
 
   async function forward(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -432,6 +452,7 @@ export async function startDroppingProxy(
     }
     const parsedBody = parseOrUndefined(body);
     const method = prop(parsedBody, 'method');
+    requests.push({ method: typeof method === 'string' ? method : undefined, headers: { ...headers } });
     if (typeof method === 'string') {
       options.onMethod?.(method);
     }
@@ -474,20 +495,52 @@ export async function startDroppingProxy(
   t.after(() => {
     stop(server);
   });
-  return { mcpUrl: `${url}/mcp`, calls: (tool) => counts.get(tool) ?? 0, dropped: () => droppedCount };
+  return { mcpUrl: `${url}/mcp`, requests, calls: (tool) => counts.get(tool) ?? 0, dropped: () => droppedCount };
 }
 
 // --- The real case system, in-process --------------------------------------------------------------
 
 export const STORE_START = '2026-03-01T09:00:00.000Z';
 
-export type CaseSystem = { store: CaseStore; mcpUrl: string; reviewUrl: string };
+export type CaseSystem = {
+  store: CaseStore;
+  mcpUrl: string;
+  reviewUrl: string;
+  // The stand-in issuer the case system trusts, so a test can make it fail.
+  issuer: StandInIssuer;
+  // A signed-in user whose real token the case system accepts: who a run is for.
+  caller: Caller;
+  // The same user's token, for calling the review server; the user holds the reviewer role.
+  reviewerToken: string;
+};
 
+// The real case system, requiring real tokens from a stand-in issuer, as it does in the lab.
 export async function startCaseSystem(t: TestContext): Promise<CaseSystem> {
   const now = steppingClock(STORE_START);
   const store = new CaseStore(':memory:', now);
-  const agentServer = createAgentServer(store, now);
-  const reviewServer = createReviewServer(store);
+  const tokenTime = (): Date => new Date(STORE_START);
+  const issuer = await startStandInIssuer({
+    clientId: 'desk',
+    clientSecret: 'stand-in-secret',
+    redirectUri: 'http://localhost:3000/auth/callback',
+    postLogoutRedirectUri: 'http://localhost:3000/',
+    now: tokenTime,
+    issuer: TOKEN_ISSUER,
+  });
+  t.after(() => issuer.close());
+  const check = createAccessTokenCheck(
+    {
+      discoveryUrl: issuer.discoveryUrl,
+      issuer: TOKEN_ISSUER,
+      audience: 'lab-case-system',
+      allowedClients: ['desk'],
+      rolesClaim: 'roles',
+      minRemainingSeconds: 0,
+    },
+    { now: tokenTime, keyRefetchWaitMs: 30_000, timeoutMs: 2000 },
+  );
+  const agentServer = createAgentServer(store, now, check);
+  const reviewServer = createReviewServer(store, check, 'reviewer');
   const agentUrl = await listen(agentServer);
   const reviewUrl = await listen(reviewServer);
   t.after(() => {
@@ -495,7 +548,17 @@ export async function startCaseSystem(t: TestContext): Promise<CaseSystem> {
     stop(reviewServer);
     store.close();
   });
-  return { store, mcpUrl: `${agentUrl}/mcp`, reviewUrl };
+  const token = await issuer.mintAccessToken({ lifetimeSeconds: 600, claims: TOKEN_CLAIMS });
+  const caller: Caller = {
+    subject: TOKEN_CLAIMS.sub,
+    username: TOKEN_CLAIMS.preferred_username,
+    name: TOKEN_CLAIMS.name,
+    clientId: TOKEN_CLAIMS.client_id,
+    roles: [...TOKEN_CLAIMS.roles],
+    expiresAt: new Date(new Date(STORE_START).getTime() + 600_000),
+    token,
+  };
+  return { store, mcpUrl: `${agentUrl}/mcp`, reviewUrl, issuer, caller, reviewerToken: token };
 }
 
 // --- The agents under test -------------------------------------------------------------------------
@@ -508,9 +571,23 @@ export function message(id: string, textBody: string, receivedAt = '2026-03-01T0
   return { id, received_at: receivedAt, sender: 'dr.lee@clinic.example', text: textBody };
 }
 
+// A caller for a run whose case system is never reached, so its token is never checked. A run against
+// the case system uses that case system's caller (CaseSystem.caller), whose token it accepts.
+export const TEST_CALLER: Caller = {
+  subject: '6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f02',
+  username: 'dana.desk',
+  name: 'Dana Desk',
+  clientId: 'desk',
+  roles: ['default-roles-lab'],
+  expiresAt: new Date('2026-03-01T10:10:00.000Z'),
+  token: 'access-token-of-the-test-caller',
+};
+
 export type RunOptions = {
   model: ModelSettings;
   mcpUrl: string;
+  // Who the run is for, as the agent's server hands it to the handler once the token was accepted.
+  caller: Caller;
   clock?: AgentClock;
   limits?: Partial<Limits>;
   // The hand-written loop only: each wait between two requests to the model is added here, and the
@@ -581,7 +658,7 @@ export const HANDWRITTEN: Implementation = {
       {
         identity: this.identity,
         model: createChatModel(options.model),
-        connectTools: (m, timeoutMs) => connectCaseTools(options.mcpUrl, m, this.identity.id, timeoutMs),
+        connectTools: (m, token, timeoutMs) => connectCaseTools(options.mcpUrl, m, this.identity.id, token, timeoutMs),
         now: clock.now,
         sleep: (ms) => {
           clock.advance(ms);
@@ -592,6 +669,7 @@ export const HANDWRITTEN: Implementation = {
         limits: { ...LIMITS, ...options.limits },
       },
       inbound,
+      options.caller,
     );
     return invocationResponseSchema.parse(response);
   },
@@ -620,6 +698,7 @@ const STRANDS: Implementation = {
         limits: { ...LIMITS, ...options.limits },
       },
       inbound,
+      options.caller,
     );
     return invocationResponseSchema.parse(response);
   },
@@ -659,4 +738,53 @@ export function item<T>(items: readonly T[], index: number, what: string): T {
     assert.fail(`There is no ${what} number ${index + 1}`);
   }
   return found;
+}
+
+// --- Access tokens ---------------------------------------------------------------------------------
+// Real signed tokens from the stand-in issuer in test-support/, checked by the real shared check.
+
+export const TOKEN_ISSUER = 'http://localhost:8090/realms/lab';
+export const TOKEN_MIN_REMAINING_SECONDS = 150;
+
+export const TOKEN_CLAIMS = {
+  aud: ['lab-agents', 'lab-case-system'],
+  client_id: 'desk',
+  sub: '6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f01',
+  preferred_username: 'riley.reviewer',
+  name: 'Riley Reviewer',
+  roles: ['default-roles-lab', 'reviewer'],
+};
+
+export type TokenRig = {
+  issuer: StandInIssuer;
+  check: AccessTokenCheck;
+  // A token with the claims above, 600 s to live, overridden as asked.
+  mint: (options?: Partial<MintOptions>) => Promise<string>;
+};
+
+export async function startTokenRig(t: TestContext): Promise<TokenRig> {
+  const clock = agentClock(AGENT_START);
+  const issuer = await startStandInIssuer({
+    clientId: 'desk',
+    clientSecret: 'stand-in-secret',
+    redirectUri: 'http://localhost:3000/auth/callback',
+    postLogoutRedirectUri: 'http://localhost:3000/',
+    now: clock.now,
+    issuer: TOKEN_ISSUER,
+  });
+  t.after(() => issuer.close());
+  const check = createAccessTokenCheck(
+    {
+      discoveryUrl: issuer.discoveryUrl,
+      issuer: TOKEN_ISSUER,
+      audience: 'lab-agents',
+      allowedClients: ['desk'],
+      rolesClaim: 'roles',
+      minRemainingSeconds: TOKEN_MIN_REMAINING_SECONDS,
+    },
+    { now: clock.now, keyRefetchWaitMs: 30_000, timeoutMs: 2000 },
+  );
+  const mint = (options: Partial<MintOptions> = {}): Promise<string> =>
+    issuer.mintAccessToken({ lifetimeSeconds: 600, ...options, claims: { ...TOKEN_CLAIMS, ...options.claims } });
+  return { issuer, check, mint };
 }

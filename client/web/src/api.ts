@@ -12,9 +12,11 @@ import type {
   InquiryResponse,
   NewInquiryRequest,
   NewRunRequest,
-  ReviewRequest,
+  ReviewDecisionRequest,
   RunResponse,
   SampleList,
+  SessionView,
+  SignOutResponse,
   SystemStatus,
 } from '../../shared/api.ts';
 
@@ -69,6 +71,41 @@ function post<Result>(path: string, payload: unknown): Promise<Result> {
 
 export function failureText(error: unknown): string {
   return error instanceof Error ? error.message : 'Something went wrong.';
+}
+
+// The server answers this when nobody is signed in, or the sign-in could not be renewed.
+export function isSignedOut(error: unknown): boolean {
+  return error instanceof ApiFailure && error.status === 401 && error.code === 'not_signed_in';
+}
+
+export const SESSION_KEY = ['session'] as const;
+
+// Who is signed in, or null when nobody is.
+export function useSession() {
+  return useQuery({
+    queryKey: SESSION_KEY,
+    queryFn: async (): Promise<SessionView | null> => {
+      try {
+        return await request<SessionView>('/api/session');
+      } catch (error) {
+        if (isSignedOut(error)) {
+          return null;
+        }
+        throw error;
+      }
+    },
+    staleTime: 60_000,
+  });
+}
+
+// Ends the session here, then sends the browser to the identity provider to end it there too.
+export function useSignOut() {
+  return useMutation({
+    mutationFn: () => post<SignOutResponse>('/auth/logout', {}),
+    onSuccess: (answer) => {
+      window.location.assign(answer.sign_out_url);
+    },
+  });
 }
 
 function anyRunning(inquiry: Inquiry | undefined): boolean {
@@ -162,7 +199,7 @@ export function useCase(caseId: string | undefined) {
 export function useReview(caseId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload: ReviewRequest) => post<unknown>(`/api/cases/${encodeURIComponent(caseId)}/review`, payload),
+    mutationFn: (payload: ReviewDecisionRequest) => post<unknown>(`/api/cases/${encodeURIComponent(caseId)}/review`, payload),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['case', caseId] });
       void queryClient.invalidateQueries({ queryKey: ['cases'] });

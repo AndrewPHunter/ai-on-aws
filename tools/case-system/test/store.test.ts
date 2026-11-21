@@ -20,8 +20,12 @@ function memoryStore(): CaseStore {
 
 const RIVERA = 'Dr A. Rivera, cardiologist, a.rivera@example.org';
 
+// The signed-in user an agent acts for, and the reviewer, as an access token names them.
+const DANA = { name: 'Dana Desk', subject: '6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f02' };
+const RILEY = { name: 'Riley Reviewer', subject: '6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f01' };
+
 function message(id: string, sender = RIVERA): CallContext {
-  return { messageId: id, receivedAt: '2025-12-31T23:00:00.000Z', agentId: 'intake-agent', sender };
+  return { messageId: id, receivedAt: '2025-12-31T23:00:00.000Z', agentId: 'intake-agent', actingFor: DANA, sender };
 }
 
 const COMPLETE: Elements = {
@@ -144,22 +148,22 @@ test('a reviewer can approve a case that is awaiting review, and only then', () 
   store.createCase(message('m1'), COMPLETE);
   store.createCase(message('m2'), { event: 'rash' });
 
-  const approved = store.review('AE-000001', 'r.okafor', 'approve', undefined);
+  const approved = store.review('AE-000001', RILEY, 'approve', undefined);
   assert.equal(approved.outcome, 'done');
   assert.ok(approved.outcome === 'done');
   assert.equal(approved.case.status, 'approved');
 
-  const twice = store.review('AE-000001', 'r.okafor', 'reject', undefined);
+  const twice = store.review('AE-000001', RILEY, 'reject', undefined);
   assert.deepEqual(twice, { outcome: 'not_allowed', status: 'approved' });
 
-  const incomplete = store.review('AE-000002', 'r.okafor', 'approve', undefined);
+  const incomplete = store.review('AE-000002', RILEY, 'approve', undefined);
   assert.deepEqual(incomplete, { outcome: 'not_allowed', status: 'incomplete' });
 
-  assert.equal(store.review('AE-000099', 'r.okafor', 'approve', undefined).outcome, 'not_found');
+  assert.equal(store.review('AE-000099', RILEY, 'approve', undefined).outcome, 'not_found');
 
   const trail = store.auditTrail('AE-000001');
   const decision = trail.find((entry) => entry.action === 'review_approve');
-  assert.equal(decision?.actor, 'r.okafor');
+  assert.equal(decision?.actor, 'Riley Reviewer');
   assert.equal(decision?.actor_kind, 'reviewer');
 });
 
@@ -167,8 +171,8 @@ test('asking for more information needs a note and is allowed on an incomplete c
   const store = memoryStore();
   store.createCase(message('m1'), { event: 'rash' });
 
-  assert.equal(store.review('AE-000001', 'r.okafor', 'request_information', '  ').outcome, 'note_required');
-  const asked = store.review('AE-000001', 'r.okafor', 'request_information', 'Which drug, and who is reporting?');
+  assert.equal(store.review('AE-000001', RILEY, 'request_information', '  ').outcome, 'note_required');
+  const asked = store.review('AE-000001', RILEY, 'request_information', 'Which drug, and who is reporting?');
   assert.equal(asked.outcome, 'done');
   assert.ok(asked.outcome === 'done');
   assert.equal(asked.case.status, 'needs_information');
@@ -177,7 +181,7 @@ test('asking for more information needs a note and is allowed on an incomplete c
 test('a follow-up on an approved case puts the new version back in front of a reviewer', () => {
   const store = memoryStore();
   store.createCase(message('m1'), COMPLETE);
-  store.review('AE-000001', 'r.okafor', 'approve', undefined);
+  store.review('AE-000001', RILEY, 'approve', undefined);
   const result = store.addFollowUp(message('m2'), 'AE-000001', { event: 'severe muscle pain, now hospitalised' }, undefined);
 
   assert.equal(result.outcome, 'recorded');

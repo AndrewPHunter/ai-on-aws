@@ -29,12 +29,24 @@ x-intake-agent: &intake-agent
     timeout: 3s
     retries: 5
 
+# The access token every POST /invocations must carry: the same values AgentCore Runtime's JWT
+# authorizer is configured with (discovery URL, allowed audience, allowed client ids). The discovery
+# document is fetched by the identity service's name on the shared network; the issuer it and every
+# token name is the browser's address for it.
+x-auth: &auth
+  AUTH_DISCOVERY_URL: http://identity:8080/realms/lab/.well-known/openid-configuration
+  AUTH_ISSUER: http://localhost:8090/realms/lab
+  AUTH_ALLOWED_AUDIENCE: lab-agents
+  AUTH_ALLOWED_CLIENTS: desk
+  AUTH_ROLES_CLAIM: roles
+
 services:
   # The intake agent with its loop written by hand.
   intake-handwritten:
     <<: *intake-agent
     command: ["node", "agents/src/intake/main-handwritten.ts"]
     environment:
+      <<: *auth
       AGENT_ID: intake-handwritten
       # The case system's MCP endpoint, by its service name on the shared network.
       CASE_MCP_URL: http://case-system:8000/mcp
@@ -47,6 +59,7 @@ services:
     <<: *intake-agent
     command: ["node", "agents/src/intake/main-strands.ts"]
     environment:
+      <<: *auth
       AGENT_ID: intake-strands
       CASE_MCP_URL: http://case-system:8000/mcp
     ports:

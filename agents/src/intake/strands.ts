@@ -57,11 +57,12 @@ import {
 import type { AgentResult, Message, ToolContext, ToolSpec, ToolStreamGenerator } from '@strands-agents/sdk';
 import { OpenAIModel } from '@strands-agents/sdk/models/openai';
 
+import type { Caller } from '../../../shared/access-token.ts';
 import type { InboundMessage, InvocationResponse } from '../../../shared/agent-contract.ts';
 import type { AgentIdentity } from '../contract/server.ts';
 import { MODEL_UNREACHABLE, modelAnsweredWithStatus, modelDidNotAnswerWithin } from '../model/served.ts';
 import type { ModelSettings } from '../model/served.ts';
-import { CASE_SYSTEM_UNREACHABLE, contextHeaders, noAnswerWithin, payloadOf } from '../tools/case-system.ts';
+import { caseSystemHeaders, connectionFailure, noAnswerWithin, payloadOf } from '../tools/case-system.ts';
 import type { ToolOutcome } from '../tools/tool-set.ts';
 import { SYSTEM_PROMPT, userTurn } from './prompt.ts';
 import {
@@ -178,11 +179,12 @@ function textOf(message: Message): string {
     .join('');
 }
 
-export async function handleInquiry(deps: StrandsDeps, message: InboundMessage): Promise<InvocationResponse> {
+export async function handleInquiry(deps: StrandsDeps, message: InboundMessage, caller: Caller): Promise<InvocationResponse> {
   const run = startRun(deps.identity, deps.now, deps.limits);
   const mcp = new McpClient({
     url: deps.caseMcpUrl,
-    headers: contextHeaders(message, deps.identity.id),
+    // The context headers and the caller's token, on every request this client makes.
+    headers: caseSystemHeaders(message, deps.identity.id, caller.token),
     applicationName: deps.identity.id,
   });
 
@@ -193,9 +195,10 @@ export async function handleInquiry(deps: StrandsDeps, message: InboundMessage):
         await mcp.connect();
         return mcp.listTools();
       });
-    } catch {
-      recordError(run, CASE_SYSTEM_UNREACHABLE);
-      return failed(run, CASE_SYSTEM_UNREACHABLE);
+    } catch (error) {
+      const reason = connectionFailure(error);
+      recordError(run, reason);
+      return failed(run, reason);
     }
     return await converse(run, deps, mcp, listed, message);
   } finally {

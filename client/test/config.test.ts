@@ -5,11 +5,25 @@ import { configFrom } from '../src/config.ts';
 
 const AGENT = { id: 'intake', name: 'Intake agent', description: 'Answers and opens cases.', url: 'http://intake:8080/' };
 
+const SIGN_IN = {
+  OIDC_DISCOVERY_URL: 'http://identity:8080/realms/lab/.well-known/openid-configuration',
+  OIDC_ISSUER: 'http://localhost:8090/realms/lab',
+  OIDC_CLIENT_ID: 'desk',
+  OIDC_CLIENT_SECRET: 'not-a-real-secret',
+  OIDC_REDIRECT_URI: 'http://localhost:3000/auth/callback',
+  OIDC_POST_LOGOUT_REDIRECT_URI: 'http://localhost:3000/',
+  OIDC_REVOCATION_ENDPOINT: 'http://identity:8080/realms/lab/protocol/openid-connect/revoke',
+  APP_ORIGIN: 'http://localhost:3000',
+  ROLES_CLAIM: 'roles',
+  REVIEWER_ROLE: 'reviewer',
+};
+
 const VALID = {
   CLIENT_DB_PATH: '/data/client.db',
   CASE_REVIEW_URL: 'http://case-system:8001',
   AGENTS: JSON.stringify([AGENT]),
   WEB_ROOT: '/srv/web',
+  ...SIGN_IN,
 };
 
 test('a complete environment gives the settings, with URLs stored without a trailing slash', () => {
@@ -18,7 +32,37 @@ test('a complete environment gives the settings, with URLs stored without a trai
     caseReviewUrl: 'http://case-system:8001',
     agents: [{ ...AGENT, url: 'http://intake:8080' }],
     webRoot: '/srv/web',
+    oidc: {
+      discoveryUrl: 'http://identity:8080/realms/lab/.well-known/openid-configuration',
+      issuer: 'http://localhost:8090/realms/lab',
+      clientId: 'desk',
+      clientSecret: 'not-a-real-secret',
+      redirectUri: 'http://localhost:3000/auth/callback',
+      // Kept byte for byte, trailing slash included: the provider compares it exactly.
+      postLogoutRedirectUri: 'http://localhost:3000/',
+      revocationEndpoint: 'http://identity:8080/realms/lab/protocol/openid-connect/revoke',
+    },
+    appOrigin: 'http://localhost:3000',
+    rolesClaim: 'roles',
+    reviewerRole: 'reviewer',
   });
+});
+
+test('C13. each sign-in setting is required: with any one removed or blank, reading the settings fails naming it', () => {
+  for (const name of Object.keys(SIGN_IN)) {
+    const missing: NodeJS.ProcessEnv = { ...VALID };
+    delete missing[name];
+    assert.throws(() => configFrom(missing), new RegExp(`^Error: ${name} is not set`), name);
+    assert.throws(() => configFrom({ ...VALID, [name]: '  ' }), new RegExp(`^Error: ${name} is not set`), name);
+  }
+  assert.equal(configFrom({ ...VALID, OIDC_REVOCATION_ENDPOINT: 'none' }).oidc.revocationEndpoint, null);
+  for (const value of ['identity:8080/revoke', 'not a url', 'ftp://identity/revoke', 'None']) {
+    assert.throws(
+      () => configFrom({ ...VALID, OIDC_REVOCATION_ENDPOINT: value }),
+      /^Error: OIDC_REVOCATION_ENDPOINT must be an http or https URL, or the word none/,
+      value,
+    );
+  }
 });
 
 test('an empty list of agents is valid', () => {

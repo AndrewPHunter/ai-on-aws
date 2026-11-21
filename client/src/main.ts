@@ -1,17 +1,21 @@
 // Starts the client: reads its settings, opens the store, settles runs a previous process left
-// running, and serves the API and the web app on 3000.
+// running, and serves sign-in, the API and the web app on 3000. The identity provider is not asked
+// anything until someone signs in, so the client starts while it is down.
 
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 
 import { configFrom } from './config.ts';
 import type { Config } from './config.ts';
-import { createClientServer } from './server.ts';
+import { IdentityProvider } from './identity.ts';
+import { AGENT_TOKEN_MIN_LIFE_MS, createClientServer } from './server.ts';
+import { SessionStore } from './sessions.ts';
 import { InquiryStore } from './store.ts';
 
 const PORT = 3000;
 const HOST = '0.0.0.0';
-// Long enough for an agent that makes several model and tool calls on a self-hosted model.
-const AGENT_TIMEOUT_MS = 180_000;
+// Long enough for an agent that makes several model and tool calls on a self-hosted model. The access
+// token sent with a run must outlive this wait, so the two are one number.
+const AGENT_TIMEOUT_MS = AGENT_TOKEN_MIN_LIFE_MS;
 
 let config: Config;
 try {
@@ -28,7 +32,18 @@ if (interrupted > 0) {
   console.log(`Marked ${interrupted} run(s) left running by a previous process as failed.`);
 }
 
-const server = createClientServer({ config, store, now, newId: randomUUID, agentTimeoutMs: AGENT_TIMEOUT_MS });
+const identity = new IdentityProvider(config.oidc, { claim: config.rolesClaim, reviewerRole: config.reviewerRole }, now);
+const sessions = new SessionStore(now, randomBytes);
+
+const server = createClientServer({
+  config,
+  store,
+  now,
+  newId: randomUUID,
+  agentTimeoutMs: AGENT_TIMEOUT_MS,
+  identity,
+  sessions,
+});
 
 server.listen(PORT, HOST, () => {
   console.log(`Client listening on ${HOST}:${PORT} with ${config.agents.length} agent(s) configured`);
