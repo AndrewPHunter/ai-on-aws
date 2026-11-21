@@ -9,18 +9,27 @@ import type { TestContext } from 'node:test';
 import { createReviewServer } from '../../tools/case-system/src/http.ts';
 import { CaseStore } from '../../tools/case-system/src/store.ts';
 import { SAMPLES } from '../src/samples.ts';
+import { IdentityProvider } from '../src/identity.ts';
 import { createClientServer } from '../src/server.ts';
+import { SessionStore } from '../src/sessions.ts';
 import { InquiryStore } from '../src/store.ts';
 import {
   EXAMPLE_RESPONSE,
+  RILEY,
+  clientConfig,
   deadUrl,
   eventually,
+  fetchAs,
   getJson,
   listen,
   postJson,
   prop,
+  seededRandom,
   sequentialIds,
+  settableClock,
+  signIn,
   startClient,
+  startIssuer,
   steppingClock,
   stop,
   tempDir,
@@ -37,6 +46,9 @@ type StandInAgent = {
   url: string;
   // Every body received at /invocations, parsed, in order.
   received: unknown[];
+  // The Authorization header of every request to /invocations, in the same order, and of every /ping.
+  authorizations: (string | undefined)[];
+  pingAuthorizations: (string | undefined)[];
   setMode: (mode: StandInMode) => void;
 };
 
@@ -54,9 +66,12 @@ async function bodyOf(request: IncomingMessage): Promise<unknown> {
 async function startStandInAgent(t: TestContext, initial: StandInMode): Promise<StandInAgent> {
   let mode = initial;
   const received: unknown[] = [];
+  const authorizations: (string | undefined)[] = [];
+  const pingAuthorizations: (string | undefined)[] = [];
 
   function answer(request: IncomingMessage, response: ServerResponse): void {
     if (request.url === '/ping' && request.method === 'GET') {
+      pingAuthorizations.push(request.headers.authorization);
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ status: 'Healthy' }));
       return;
@@ -69,6 +84,7 @@ async function startStandInAgent(t: TestContext, initial: StandInMode): Promise<
     bodyOf(request)
       .then((body) => {
         received.push(body);
+        authorizations.push(request.headers.authorization);
         switch (mode) {
           case 'correct':
             response.writeHead(200, { 'content-type': 'application/json' });
@@ -105,6 +121,8 @@ async function startStandInAgent(t: TestContext, initial: StandInMode): Promise<
   return {
     url,
     received,
+    authorizations,
+    pingAuthorizations,
     setMode: (next) => {
       mode = next;
     },
@@ -153,6 +171,7 @@ const RUNNING = {
   agent_id: 'stand-in',
   state: 'running',
   started_at: '2026-03-01T09:00:01.000Z',
+  started_by: { name: 'Riley Reviewer' },
   finished_at: null,
   duration_ms: null,
   error: null,
@@ -165,7 +184,14 @@ test('a new inquiry answers 202 with a running run, and later reads back complet
   const accepted = await send(client);
   assert.equal(accepted.status, 202);
   assert.deepEqual(accepted.body, {
-    inquiry: { id: 'id-1', received_at: '2026-03-01T09:00:00.000Z', sender: SENDER, text: TEXT, runs: [RUNNING] },
+    inquiry: {
+      id: 'id-1',
+      received_at: '2026-03-01T09:00:00.000Z',
+      entered_by: { name: 'Riley Reviewer' },
+      sender: SENDER,
+      text: TEXT,
+      runs: [RUNNING],
+    },
   });
 
   const done = await settled(client, 'id-1');
@@ -173,6 +199,7 @@ test('a new inquiry answers 202 with a running run, and later reads back complet
     inquiry: {
       id: 'id-1',
       received_at: '2026-03-01T09:00:00.000Z',
+      entered_by: { name: 'Riley Reviewer' },
       sender: SENDER,
       text: TEXT,
       runs: [
@@ -297,11 +324,11 @@ test('an inquiry is refused with 400, and nothing is stored, when it is malforme
     assert.equal(typeof prop(refused.body, 'detail'), 'string');
   }
 
-  const notJson = await fetch(`${client.url}/api/inquiries`, { method: 'POST', body: '{not json' });
+  const notJson = await fetchAs(`${client.url}/api/inquiries`, { method: 'POST', body: '{not json' });
   assert.equal(notJson.status, 400);
   assert.deepEqual(await notJson.json(), { error: 'bad_request', detail: 'The request body is not JSON.' });
 
-  const tooLarge = await fetch(`${client.url}/api/inquiries`, {
+  const tooLarge = await fetchAs(`${client.url}/api/inquiries`, {
     method: 'POST',
     body: JSON.stringify({ sender: SENDER, text: 'x'.repeat(1_100_000), agent_id: 'stand-in' }),
   });
@@ -351,7 +378,7 @@ test('an unknown API path is 404 and a wrong method on a known one is 405, both 
   assert.equal(missing.status, 404);
   assert.deepEqual(missing.body, { error: 'not_found', detail: 'There is no API route /api/nothing-here.' });
 
-  const wrong = await fetch(`${client.url}/api/inquiries`, { method: 'DELETE' });
+  const wrong = await fetchAs(`${client.url}/api/inquiries`, { method: 'DELETE' });
   assert.equal(wrong.status, 405);
   assert.equal(wrong.headers.get('allow'), 'GET, POST');
   assert.deepEqual(await wrong.json(), { error: 'method_not_allowed', detail: '/api/inquiries accepts GET, POST.' });
@@ -363,17 +390,29 @@ test('an unknown API path is 404 and a wrong method on a known one is 405, both 
 
 test('an unexpected failure is a 500 internal_error with no stack trace', async (t) => {
   const store = new InquiryStore(':memory:', steppingClock('2026-03-01T09:00:00Z'));
+  const clock = settableClock('2026-03-01T09:00:00Z');
+  const issuer = await startIssuer(t, clock);
+  const config = clientConfig({
+    caseReviewUrl: await deadUrl(t),
+    agents: [],
+    webRoot: tempDir(t),
+    discoveryUrl: issuer.discoveryUrl,
+    revocationEndpoint: issuer.revocationUrl,
+  });
   const server = createClientServer({
-    config: { dbPath: ':memory:', caseReviewUrl: await deadUrl(t), agents: [], webRoot: tempDir(t) },
+    config,
     store,
     now: () => new Date('2026-03-01T09:00:00Z'),
     newId: sequentialIds('id'),
     agentTimeoutMs: 1000,
+    identity: new IdentityProvider(config.oidc, { claim: 'roles', reviewerRole: 'reviewer' }, clock.now),
+    sessions: new SessionStore(clock.now, seededRandom('closed-store')),
   });
   const url = await listen(server);
   t.after(() => {
     stop(server);
   });
+  await signIn(url, issuer, RILEY);
   // A closed database makes the next read throw, which no route expects.
   store.close();
   const failed = await getJson(`${url}/api/inquiries`);
@@ -409,6 +448,13 @@ test('status reports the case system and each agent as up when they answer the h
       },
       { id: 'stand-in', name: 'Stand-in', role: 'Test stand-in agent.', state: 'up', detail: 'Answered the health check.' },
       {
+        id: 'identity',
+        name: 'Identity provider',
+        role: 'Signs desk staff in and issues the tokens sent to agents and the case system.',
+        state: 'up',
+        detail: 'Answered the health check.',
+      },
+      {
         id: 'knowledge',
         name: 'Label search',
         role: 'Finds the passages of the approved label that answer a question.',
@@ -439,6 +485,7 @@ test('status reports pieces that cannot be reached as down, with the reason', as
     [
       ['case-system', 'down'],
       ['gone', 'down'],
+      ['identity', 'up'],
       ['knowledge', 'not_built'],
       ['evaluation', 'not_built'],
     ],
@@ -454,7 +501,7 @@ test('with no agent configured, status says so in a single agents piece', async 
   const client = await startClient(t, { agents: [], caseReviewUrl: await deadUrl(t), webRoot: tempDir(t) });
   const pieces = prop((await getJson(`${client.url}/api/status`)).body, 'pieces');
   assert.ok(Array.isArray(pieces));
-  assert.deepEqual(pieces.map((piece) => prop(piece, 'id')), ['case-system', 'agents', 'knowledge', 'evaluation']);
+  assert.deepEqual(pieces.map((piece) => prop(piece, 'id')), ['case-system', 'agents', 'identity', 'knowledge', 'evaluation']);
   assert.deepEqual(pieces[1], {
     id: 'agents',
     name: 'Agents',

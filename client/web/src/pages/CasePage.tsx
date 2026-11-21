@@ -6,7 +6,7 @@ import type { CaseRecord, ElementName, ReviewDecision, VersionView } from '../..
 import { ApiFailure, failureText, useCase, useReview } from '../api.ts';
 import { Boxed, Loading, Problem, StatusBadge } from '../components.tsx';
 import { ELEMENT_LABEL, auditLabel, daysAfter, formatDate, formatDateTime, pretty } from '../format.ts';
-import { useReviewer } from '../reviewer.tsx';
+import { useSignedInUser } from '../session.tsx';
 
 const FIELD_ORDER: readonly ElementName[] = ['patient', 'reporter', 'suspect_drug', 'event'];
 
@@ -18,20 +18,16 @@ function changedIn(version: VersionView, previous: VersionView | undefined): Ele
 }
 
 function Decision({ record }: { record: CaseRecord }) {
-  const reviewer = useReviewer();
+  const user = useSignedInUser();
   const review = useReview(record.case.case_id);
   const [note, setNote] = useState('');
   const status = record.case.status;
-  const name = reviewer.name.trim();
 
   const canDecide = status === 'awaiting_review';
   const canAsk = status === 'awaiting_review' || status === 'incomplete';
 
   function decide(decision: ReviewDecision): void {
-    review.mutate(
-      { reviewer: name, decision, ...(note.trim() === '' ? {} : { note: note.trim() }) },
-      { onSuccess: () => setNote('') },
-    );
+    review.mutate({ decision, ...(note.trim() === '' ? {} : { note: note.trim() }) }, { onSuccess: () => setNote('') });
   }
 
   if (!canDecide && !canAsk) {
@@ -42,6 +38,15 @@ function Decision({ record }: { record: CaseRecord }) {
           This case is {status === 'needs_information' ? 'waiting for more information' : status}. It comes back
           for a decision if a follow-up is added.
         </p>
+      </section>
+    );
+  }
+
+  if (!user.is_reviewer) {
+    return (
+      <section className="settled">
+        <h3>Decision</h3>
+        <p>Only a reviewer can decide a case.</p>
       </section>
     );
   }
@@ -61,18 +66,14 @@ function Decision({ record }: { record: CaseRecord }) {
         onChange={(event) => setNote(event.target.value)}
         placeholder={canDecide ? 'Optional, unless you ask for information' : 'What is needed, and from whom'}
       />
-      {name === '' ? (
-        <p className="boxed__hint">Enter your name under “Reviewing as” before you decide.</p>
-      ) : (
-        <p className="boxed__hint">Recorded as {name}.</p>
-      )}
+      <p className="boxed__hint">Recorded as {user.name}.</p>
       <div className="actions">
         {canDecide ? (
           <>
             <button
               type="button"
               className="button button--primary"
-              disabled={name === '' || review.isPending}
+              disabled={review.isPending}
               onClick={() => decide('approve')}
             >
               Approve case
@@ -80,7 +81,7 @@ function Decision({ record }: { record: CaseRecord }) {
             <button
               type="button"
               className="button"
-              disabled={name === '' || review.isPending}
+              disabled={review.isPending}
               onClick={() => decide('reject')}
             >
               Reject case
@@ -90,7 +91,7 @@ function Decision({ record }: { record: CaseRecord }) {
         <button
           type="button"
           className="button"
-          disabled={name === '' || note.trim() === '' || review.isPending}
+          disabled={note.trim() === '' || review.isPending}
           onClick={() => decide('request_information')}
         >
           Ask for information

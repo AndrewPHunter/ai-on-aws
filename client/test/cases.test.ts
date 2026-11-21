@@ -89,20 +89,23 @@ test('one case is read through the client with its versions and audit trail; a m
   assert.deepEqual(missing.body, { error: 'case_not_found' });
 });
 
-test('a review is forwarded: approve once is 200, twice is 409, and no reviewer is 400', async (t) => {
+test('a review is forwarded under the signed-in reviewer: approve once is 200, twice is 409, and a body naming a reviewer is 400', async (t) => {
   const { clientUrl } = await start(t);
   const review = (payload: unknown): ReturnType<typeof postJson> =>
     postJson(`${clientUrl}/api/cases/AE-000001/review`, payload);
 
-  const noReviewer = await review({ decision: 'approve' });
-  assert.equal(noReviewer.status, 400);
-  assert.deepEqual(noReviewer.body, { error: 'bad_request', detail: '"reviewer" is required' });
+  const namesReviewer = await review({ reviewer: 'r.okafor', decision: 'approve' });
+  assert.equal(namesReviewer.status, 400);
+  assert.deepEqual(namesReviewer.body, {
+    error: 'bad_request',
+    detail: '"reviewer" is set by the server to whoever is signed in. Do not send it.',
+  });
 
-  const approved = await review({ reviewer: 'r.okafor', decision: 'approve' });
+  const approved = await review({ decision: 'approve' });
   assert.equal(approved.status, 200);
   assert.equal(prop(prop(approved.body, 'case'), 'status'), 'approved');
 
-  const twice = await review({ reviewer: 'r.okafor', decision: 'approve' });
+  const twice = await review({ decision: 'approve' });
   assert.equal(twice.status, 409);
   assert.deepEqual(twice.body, {
     error: 'not_allowed',
@@ -116,7 +119,7 @@ test('a review is forwarded: approve once is 200, twice is 409, and no reviewer 
     audit.map((entry) => [prop(entry, 'action'), prop(entry, 'actor')]),
     [
       ['case_created', 'intake-agent'],
-      ['review_approve', 'r.okafor'],
+      ['review_approve', 'Riley Reviewer'],
     ],
   );
 });
@@ -126,7 +129,7 @@ test('a case system that cannot be reached is 502 with an ApiError', async (t) =
   for (const answer of [
     await getJson(`${client.url}/api/cases`),
     await getJson(`${client.url}/api/cases/AE-000001`),
-    await postJson(`${client.url}/api/cases/AE-000001/review`, { reviewer: 'r.okafor', decision: 'approve' }),
+    await postJson(`${client.url}/api/cases/AE-000001/review`, { decision: 'approve' }),
   ]) {
     assert.equal(answer.status, 502);
     assert.equal(prop(answer.body, 'error'), 'case_system_unreachable');

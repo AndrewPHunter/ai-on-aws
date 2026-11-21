@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { checkClaims, type ClaimExpectations, type ClaimStatement } from '../src/claims.ts'
+import { checkClaims, checkIdTokenRoles, type ClaimExpectations, type ClaimStatement, type IdTokenStatement } from '../src/claims.ts'
 
 const expectations = (isReviewer: boolean): ClaimExpectations => ({
   issuer: 'http://localhost:8090/realms/lab',
@@ -45,6 +45,21 @@ const cases: { name: string; token: Record<string, unknown>; isReviewer: boolean
 test('I6. the claim checker reports each violation of the claims table by name', () => {
   for (const { name, token, isReviewer, expected } of cases) {
     const reported = checkClaims(token, expectations(isReviewer)).map((violation) => violation.statement)
+    assert.deepEqual(reported, expected, name)
+  }
+})
+
+const idTokenCases: { name: string; claims: Record<string, unknown>; isReviewer: boolean; expected: IdTokenStatement[] }[] = [
+  { name: 'reviewer with reviewer', claims: { roles: ['default-roles-lab', 'reviewer'] }, isReviewer: true, expected: [] },
+  { name: 'non-reviewer without reviewer', claims: { roles: ['default-roles-lab'] }, isReviewer: false, expected: [] },
+  { name: 'roles missing', claims: { sub: 'x' }, isReviewer: true, expected: ['ID token roles is an array of strings'] },
+  { name: 'reviewer for the non-reviewer', claims: { roles: ['reviewer'] }, isReviewer: false, expected: ['ID token reviewer role absent for a non-reviewer'] },
+  { name: 'no reviewer for the reviewer', claims: { roles: ['default-roles-lab'] }, isReviewer: true, expected: ['ID token reviewer role present for a reviewer'] },
+]
+
+test('G1. the ID-token checker reports roles missing, reviewer for the non-reviewer, and no reviewer for the reviewer', () => {
+  for (const { name, claims, isReviewer, expected } of idTokenCases) {
+    const reported = checkIdTokenRoles(claims, { reviewerRole: 'reviewer', isReviewer }).map((violation) => violation.statement)
     assert.deepEqual(reported, expected, name)
   }
 })

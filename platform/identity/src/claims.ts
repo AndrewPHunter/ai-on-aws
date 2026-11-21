@@ -71,3 +71,28 @@ export function checkClaims(claims: Readonly<Record<string, unknown>>, expected:
 
   return violations
 }
+
+export type IdTokenExpectations = { reviewerRole: string; isReviewer: boolean }
+
+/** The statement names an ID-token violation is reported under. */
+export type IdTokenStatement =
+  | 'ID token roles is an array of strings'
+  | 'ID token reviewer role present for a reviewer'
+  | 'ID token reviewer role absent for a non-reviewer'
+
+export type IdTokenViolation = { statement: IdTokenStatement; detail: string }
+
+/** What the desk's server reads from the ID token to know a user's roles: a top-level `roles` array. */
+export function checkIdTokenRoles(claims: Readonly<Record<string, unknown>>, expected: IdTokenExpectations): IdTokenViolation[] {
+  const roles = claims.roles
+  if (!Array.isArray(roles) || !roles.every((role) => typeof role === 'string')) {
+    return [{ statement: 'ID token roles is an array of strings', detail: `got ${describe(roles)}` }]
+  }
+  if (expected.isReviewer && !roles.includes(expected.reviewerRole)) {
+    return [{ statement: 'ID token reviewer role present for a reviewer', detail: `${expected.reviewerRole} not in ${JSON.stringify(roles)}` }]
+  }
+  if (!expected.isReviewer && roles.includes(expected.reviewerRole)) {
+    return [{ statement: 'ID token reviewer role absent for a non-reviewer', detail: `${expected.reviewerRole} in ${JSON.stringify(roles)}` }]
+  }
+  return []
+}

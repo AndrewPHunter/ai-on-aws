@@ -4,7 +4,7 @@ An OpenID Connect provider for the lab: Keycloak 26.8.2 in development mode, wit
 
 It is a local stand-in for the identity provider that AgentCore's JWT authorizer trusts. On AWS that authorizer is configured with a discovery URL, the allowed audiences (`aud`), the allowed client IDs (read from a claim named `client_id`), and optional rules on custom claims. The tokens issued here carry those claims in that shape, so the code that will check them does not depend on anything particular to Keycloak.
 
-Nothing in the lab checks these tokens yet. The provider runs with the rest of the lab and issues tokens; the client, the agents and the case system do not ask for them.
+The client is the one piece that asks for tokens: its server signs desk staff in here, validates their ID tokens, and sends their access tokens to the agents and the case system. The agents and the case system do not check those tokens yet.
 
 How it is put together: [docs/architecture/identity.md](../../docs/architecture/identity.md).
 
@@ -63,6 +63,10 @@ An access token issued to either user through `desk` is a JWT signed with RS256 
 
 A user who holds no realm role at all would get no `roles` claim: Keycloak leaves an empty list out. That is why both users hold the default role.
 
+## ID token
+
+The ID token issued with it, also signed with RS256 by a key at `jwks_uri`, names the same issuer, has `desk` as its audience, and carries the same top-level `roles` array: `reviewer` is in it for `riley.reviewer` and not for `dana.desk`. The same `roles` mapper on the `desk` client puts it in both tokens. The ID token is what tells the desk's server who signed in and whether they are a reviewer.
+
 ## Two addresses
 
 | Who | Reaches the provider at | Gets |
@@ -81,7 +85,7 @@ The issuer is `http://localhost:8090/realms/lab` on both. Keycloak does this thr
 
 ## The gate
 
-`gate.sh` checks a running service for real and exits 0 only if every statement in "Access token claims" and "Two addresses" holds:
+`gate.sh` checks a running service for real and exits 0 only if every statement in "Access token claims", "ID token" and "Two addresses" holds:
 
 ```bash
 platform/identity/gate.sh <compose-project>
@@ -99,7 +103,7 @@ The gate runs in the pinned Node image on the project's default network (`<compo
 
 1. fetches the discovery document at `http://identity:8080` and checks its issuer, and that its key set answers;
 2. signs each user in through the Authorization Code flow with PKCE: it requests the authorization endpoint, posts the sign-in form with a cookie jar, reads the redirect to the callback without requesting it, and exchanges the code at the token endpoint with the client secret and the code verifier;
-3. verifies each access token's signature against the published keys and checks every claim in the table above;
+3. verifies each access token's signature against the published keys and checks every claim in the table above, then verifies each ID token (signature, issuer, audience) and checks its `roles`;
 4. checks that the token endpoint refuses the password grant.
 
 The gate is the browser here, but it runs inside the network, where `localhost:8090` is the gate's own container. So the front-channel URLs the provider hands out on `http://localhost:8090` (the authorization endpoint and the sign-in form's action) are sent to `http://identity:8080` with the same path and query. Back-channel URLs from discovery are used as given.
@@ -134,7 +138,7 @@ So the container's own layer holds the rebuilt server, and is discarded with the
 
 | What | Note |
 |---|---|
-| Anything that checks the tokens | The client, the agents and the case system do not ask for a token |
+| Anything that checks the access tokens | The agents and the case system accept a call with or without one. The client validates ID tokens only |
 | HTTPS | — |
 | Refresh-token policy, session limits, brute-force protection, password policy | Keycloak's defaults for a new realm |
 | Self-registration, password reset, email | Turned off; no mail server |

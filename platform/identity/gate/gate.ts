@@ -7,7 +7,8 @@
 //      page is requested, its form is posted with a cookie jar, the redirect to the callback is read but not
 //      followed, and the code is exchanged with the client secret and the code verifier.
 //   3. Each access token is a JWS signed with RS256 by a key at jwks_uri, and carries the claims in the
-//      README's claims table.
+//      README's claims table. Each ID token is signed the same way, names the issuer and the client, and
+//      carries the user's roles.
 //   4. The token endpoint refuses the password grant.
 //
 // The gate stands in for the browser while running inside the network. The browser reaches the provider at
@@ -24,7 +25,7 @@
 import { randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { createRemoteJWKSet, decodeProtectedHeader, jwtVerify } from 'jose'
-import { checkClaims } from '../src/claims.ts'
+import { checkClaims, checkIdTokenRoles } from '../src/claims.ts'
 import { signInFormAction } from '../src/login-form.ts'
 import { codeChallengeS256, codeVerifier } from '../src/pkce.ts'
 
@@ -200,8 +201,8 @@ async function discover(http: Http, transport: string, config: GateConfig): Prom
 
 type Secrets = { clientSecret: string; passwords: Map<string, string> }
 
-/** The Authorization Code flow with PKCE, as a browser and the desk's server would run it. Returns the access token. */
-async function signIn(http: Http, transport: string, config: GateConfig, discovery: Discovery, user: UserConfig, secrets: Secrets): Promise<string> {
+/** The Authorization Code flow with PKCE, as a browser and the desk's server would run it. Returns the access and ID tokens. */
+async function signIn(http: Http, transport: string, config: GateConfig, discovery: Discovery, user: UserConfig, secrets: Secrets): Promise<{ accessToken: string; idToken: string }> {
   const who = user.username
   const browserOrigin = new URL(config.issuer).origin
   const jar = new CookieJar()
@@ -265,8 +266,28 @@ async function signIn(http: Http, transport: string, config: GateConfig, discove
   must(exchange.status === 200, exchangeStatement, `status ${exchange.status}, error ${JSON.stringify(tokens.error)}`)
   const accessToken = tokens.access_token
   must(typeof accessToken === 'string' && accessToken !== '', exchangeStatement, 'no access_token in the response')
+  const idToken = tokens.id_token
+  must(typeof idToken === 'string' && idToken !== '', exchangeStatement, 'no id_token in the response')
   holds(exchangeStatement)
-  return accessToken
+  return { accessToken, idToken }
+}
+
+/** The ID token's signature, issuer and audience, then the roles the desk's server reads from it. Returns its roles claim. */
+async function checkIdToken(idToken: string, keys: ReturnType<typeof createRemoteJWKSet>, config: GateConfig, user: UserConfig): Promise<unknown> {
+  const who = user.username
+  const signed = `${who}: the ID token is a JWS signed with RS256 by a key at jwks_uri, for issuer ${config.issuer} and audience ${config.clientId}`
+  let claims: Record<string, unknown>
+  try {
+    const { payload } = await jwtVerify(idToken, keys, { algorithms: ['RS256'], issuer: config.issuer, audience: config.clientId })
+    claims = { ...payload }
+  } catch (error) {
+    throw new StatementFailed(signed, (error as Error).message)
+  }
+  holds(signed)
+  const first = checkIdTokenRoles(claims, { reviewerRole: config.reviewerRole, isReviewer: user.isReviewer })[0]
+  if (first !== undefined) throw new StatementFailed(`${who}: ${first.statement}`, first.detail)
+  holds(`${who}: the ID token carries roles, with ${config.reviewerRole} ${user.isReviewer ? 'present' : 'absent'}`)
+  return claims.roles
 }
 
 async function verifyToken(token: string, keys: ReturnType<typeof createRemoteJWKSet>, who: string): Promise<{ header: Record<string, unknown>; claims: Record<string, unknown> }> {
@@ -314,7 +335,7 @@ type Report = {
   failed: string | null
   transport: string
   discovery: Discovery | null
-  users: { username: string; header: Record<string, unknown>; claims: Record<string, unknown> }[]
+  users: { username: string; header: Record<string, unknown>; claims: Record<string, unknown>; idTokenRoles: unknown }[]
   passwordGrant: { status: number; error: unknown } | null
   held: string[]
 }
@@ -337,9 +358,10 @@ async function main(): Promise<number> {
     const keys = createRemoteJWKSet(new URL(discovery.jwks_uri))
 
     for (const user of config.users) {
-      const token = await signIn(http, transport, config, discovery, user, secrets)
-      const { header, claims } = await verifyToken(token, keys, user.username)
-      report.users.push({ username: user.username, header, claims })
+      const { accessToken, idToken } = await signIn(http, transport, config, discovery, user, secrets)
+      const { header, claims } = await verifyToken(accessToken, keys, user.username)
+      const entry: Report['users'][number] = { username: user.username, header, claims, idTokenRoles: null }
+      report.users.push(entry)
       const violations = checkClaims(claims, {
         issuer: config.issuer,
         audiences: config.audiences,
@@ -351,6 +373,7 @@ async function main(): Promise<number> {
       const first = violations[0]
       if (first !== undefined) throw new StatementFailed(`${user.username}: claim ${first.statement}`, first.detail)
       holds(`${user.username}: every claim in the claims table holds`)
+      entry.idTokenRoles = await checkIdToken(idToken, keys, config, user)
     }
 
     const firstUser = config.users[0]

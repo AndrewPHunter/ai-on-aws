@@ -2,7 +2,7 @@
 
 The lab's OpenID Connect provider: Keycloak in development mode, one realm, imported from a file at every start. It stands in for the identity provider that AgentCore's JWT authorizer trusts. To use it, see [platform/identity/README.md](../../platform/identity/README.md).
 
-Nothing in the lab consumes its tokens. The client, the agents and the case system neither ask for a token nor check one.
+The client is its one consumer: its server signs desk staff in, keeps their tokens, and sends the access token on every call to an agent and to the case system. The agents and the case system accept a call with or without that token and check nothing.
 
 ## Terms
 
@@ -14,6 +14,8 @@ Nothing in the lab consumes its tokens. The client, the agents and the case syst
 | Front channel | Requests a browser makes: the sign-in page and sign-out |
 | Back channel | Requests a server makes: discovery, token exchange, keys, userinfo |
 | Gate | `platform/identity/gate.sh` and `platform/identity/gate/`: the check that decides whether a running provider issues the tokens described here |
+| Client | The desk's server, `client/src/`, the relying party registered as `desk` |
+| Session | The client's record of one signed-in user: who they are and their tokens, in the client's memory, found by a random identifier |
 
 ## What runs
 
@@ -23,9 +25,12 @@ flowchart LR
   realm[realm/lab-realm.json] -- "imported at start, placeholders replaced" --> kc
   subgraph net["The lab's network"]
     kc["identity: Keycloak, port 8080"]
+    client["client"]
     gate["gate (when run)"]
   end
   browser["Browser on this machine"] -- "http://localhost:8090 (published on 127.0.0.1)" --> kc
+  browser -- "http://localhost:3000, session cookie" --> client
+  client -- "http://identity:8080" --> kc
   gate -- "http://identity:8080" --> kc
 ```
 
@@ -49,7 +54,7 @@ flowchart LR
 | Redirect URI | `http://localhost:3000/auth/callback` |
 | Post-logout redirect URI | `http://localhost:3000/` |
 | Default scopes | `basic`, `profile`, `email` |
-| Mappers | Audience `lab-agents`; audience `lab-case-system`; hard-coded claim `client_id` = `desk`; realm roles as top-level `roles` |
+| Mappers | Audience `lab-agents`; audience `lab-case-system`; hard-coded claim `client_id` = `desk` (access token); realm roles as top-level `roles` (access token and ID token) |
 
 | User | Name | Email | Realm roles | Password |
 |---|---|---|---|---|
@@ -73,6 +78,10 @@ A JWT signed with RS256 by a key at the realm's `jwks_uri`.
 | `sub`, `preferred_username`, `name` | The user's id (fixed in the realm file), username and full name | — |
 | `exp` − `iat` | 600 | — |
 
+## The ID token
+
+Signed the same way, issuer `http://localhost:8090/realms/lab`, audience `desk`. The client reads `sub`, `name`, `preferred_username` and `roles` from it; `reviewer` in `roles` makes the user a reviewer.
+
 ## Two addresses
 
 ```mermaid
@@ -93,19 +102,83 @@ sequenceDiagram
 | Party | Address | Uses |
 |---|---|---|
 | Browser | `http://localhost:8090` | Authorization endpoint, sign-in form, sign-out |
-| Container on the lab's network | `http://identity:8080` | Discovery, token endpoint, `jwks_uri`, userinfo |
+| Container on the lab's network (the client, the gate) | `http://identity:8080` | Discovery, token endpoint, `jwks_uri`, userinfo, revocation |
+
+| Discovery field, fetched at `http://identity:8080` | Address given |
+|---|---|
+| `issuer`, `authorization_endpoint`, `end_session_endpoint` | `http://localhost:8090`, the browser's |
+| `token_endpoint`, `jwks_uri`, `userinfo_endpoint`, `introspection_endpoint` | `http://identity:8080` |
+| `revocation_endpoint` | `http://localhost:8090`, the browser's, which a container cannot reach. The client does not read it: it is configured with `OIDC_REVOCATION_ENDPOINT` = `http://identity:8080/realms/lab/protocol/openid-connect/revoke` |
 
 | Setting | Effect |
 |---|---|
 | `KC_HOSTNAME=http://localhost:8090` | Issuer and every front-channel URL, whatever address the request came in on |
 | `KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true` | Back-channel URLs use the address the request came in on |
 
+## Signing in through the client
+
+```mermaid
+sequenceDiagram
+  participant B as Browser
+  participant C as client (localhost:3000)
+  participant K as identity
+  B->>C: GET /auth/login
+  C->>K: GET http://identity:8080/.../.well-known/openid-configuration (first need only; issuer must equal OIDC_ISSUER)
+  C->>C: pending sign-in: state, nonce, PKCE verifier, browser binding (256 bits each)
+  C-->>B: 302 to authorization_endpoint (localhost:8090) with state, nonce, S256 challenge; Set-Cookie desk_signin (binding, Path=/auth, 10 minutes)
+  B->>K: sign in
+  K-->>B: 302 to http://localhost:3000/auth/callback?code, state, iss
+  B->>C: GET /auth/callback, with desk_signin
+  C->>C: take the pending sign-in for state (unused, under 10 minutes, binding equals the cookie); clear desk_signin
+  C->>K: POST token_endpoint (code, verifier, client secret)
+  K-->>C: access, refresh and ID tokens
+  C->>K: GET jwks_uri
+  C->>C: ID token: signature, issuer, audience desk, nonce, expiry; session created
+  C-->>B: 302 to /, Set-Cookie desk_session (HttpOnly, SameSite=Lax, Path=/)
+```
+
+| Step | Refused when | Answer |
+|---|---|---|
+| Callback | State unknown, used, or 10 minutes old; no `desk_signin` cookie, or another sign-in's; the provider sent `error` | 400 page, no session; the pending sign-in is used up |
+| Code exchange, ID token | The provider refuses the code; the ID token fails any check | 502 page, no session |
+| Discovery | Unreachable, or `issuer` is not `OIDC_ISSUER` | 502 `identity_unreachable` |
+
+### Sessions and where tokens live
+
+| Held | Where | For how long |
+|---|---|---|
+| Access, refresh and ID tokens; the user's subject, name, username and roles | The client's memory, in the session | Until sign-out, a failed renewal, or the client stops |
+| Pending sign-ins (state, nonce, verifier, binding) | The client's memory | Until their callback, 10 minutes, or 1000 newer ones |
+| A pending sign-in's binding | The browser that started it, in the `desk_signin` cookie | Until the callback clears it, or 10 minutes |
+| Session identifier | The browser, in the `desk_session` cookie | Until sign-out clears it |
+| Who entered an inquiry and started a run: subject and name | The client's SQLite file | With the inquiry |
+
+No token is written to disk or to the store, and no token is in any response body or in any header but `Set-Cookie`, which carries none either.
+
+### Signing out
+
+| Step | What happens |
+|---|---|
+| `POST /auth/logout` | The session is removed and `desk_session` cleared |
+| Revocation | The refresh token is revoked (RFC 7009) at the configured `OIDC_REVOCATION_ENDPOINT`, authenticating as `desk`; with `none`, no call. A refusal or no answer is logged; sign-out goes on |
+| Answer | 200 with `sign_out_url`: the provider's `end_session_endpoint` with `client_id` and `post_logout_redirect_uri`, and no token |
+
+### What the client sends downstream
+
+| Call | `Authorization` | Access token must have left |
+|---|---|---|
+| Agent `POST /invocations` | `Bearer <access token>` | 180 s, the time the client waits for an agent |
+| Case system: list, get, review | `Bearer <access token>` | 30 s |
+| Health checks (`/ping`) | None | — |
+
+With less time left the client renews the access token with the refresh token first. If the provider refuses or cannot be reached, the request answers 401 `not_signed_in`, the session is removed, and nothing is sent. A review is forwarded with `reviewer` set to the session user's name, and only for a user holding `reviewer`.
+
 ## Where secrets live
 
 | Secret | Written by | Held in | Read by |
 |---|---|---|---|
 | Administrator username and password | `setup.sh`, random | Identity secrets | The provider, at start |
-| `desk` client secret | `setup.sh`, random | Identity secrets | The provider, through the realm import; the gate |
+| `desk` client secret | `setup.sh`, random | Identity secrets | The provider, through the realm import; the gate; the client, as `OIDC_CLIENT_SECRET`, the only value its container takes from the identity secrets |
 | User passwords | `setup.sh`, random | Identity secrets | The provider, through the realm import; the gate |
 | Token signing keys | The provider, at start | The provider's database, on a tmpfs | Nobody outside; the public keys are at `jwks_uri` |
 
@@ -125,7 +198,9 @@ The realm file holds a `${NAME}` placeholder where each secret goes, and no secr
 
 | What | Note |
 |---|---|
-| A consumer of the tokens | No piece of the lab asks for or checks a token |
+| A check of the access token | The agents and the case system accept a call with or without one |
+| Session expiry of the client's own | A session ends only at sign-out, a failed renewal or a restart |
+| `Secure` on the session cookie | The client is served over HTTP on this machine |
 | HTTPS | HTTP on loopback and the lab's network only |
 | Persistence | Nothing survives a restart; tokens issued before one stop verifying after it |
 | Production database or clustering | — |

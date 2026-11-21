@@ -205,7 +205,10 @@ export function InquiryDetail({ inquiryId }: { inquiryId: string }) {
         <article className="message" aria-label="The inquiry">
           <header className="message__head">
             <p className="message__from">{found.sender}</p>
-            <p className="message__when">Received {formatDateTime(found.received_at)}</p>
+            <p className="message__when">
+              Received {formatDateTime(found.received_at)}
+              {found.entered_by === null ? '' : `, entered by ${found.entered_by.name}`}
+            </p>
           </header>
           {found.text.split(/\n{2,}/).map((paragraph, index) => (
             <p key={index} className="document">
@@ -222,6 +225,7 @@ export function InquiryDetail({ inquiryId }: { inquiryId: string }) {
               <h2>{agentName(known, run.agent_id)}</h2>
               <RunBadge state={run.state} />
             </header>
+            {run.started_by === null ? null : <p className="message__when">Started by {run.started_by.name}</p>}
             <RunResult run={run} />
           </>
         )}
