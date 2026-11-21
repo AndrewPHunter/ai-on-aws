@@ -1,7 +1,8 @@
-// What is particular to the case system: how to connect to its three MCP tools with the context
-// headers that say which inbound message and which agent a change comes from, which of its tools
-// change a case, and what its answers mean for a run's record. The model never sees or sets those
-// headers; they are fixed here, by code, for the whole of one run.
+// What is particular to the case system, whichever implementation is calling it: the context headers
+// that say which inbound message and which agent a change comes from, which of its tools change a
+// case, how to read its answers, and what they mean for a run's record. Also the hand-written
+// agent's own connection to its three MCP tools (connectCaseTools); the Strands agent connects with
+// Strands' MCP client and uses everything else here.
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -14,7 +15,27 @@ import type { Connected, ToolOutcome } from './tool-set.ts';
 // The tools that change a case. A lost reply from one of these leaves the outcome unknown.
 export const WRITING_TOOLS: readonly string[] = ['create_case', 'add_follow_up'];
 
-function payloadOf(result: unknown): unknown {
+// The four headers every request to the case system carries for one run. They say which inbound
+// message and which agent a change comes from, and who sent the message. Built here, by code, from
+// the message as it was received: no implementation lets the model supply or change them.
+export function contextHeaders(message: InboundMessage, agentId: string): Record<string, string> {
+  return {
+    'x-message-id': message.id,
+    'x-received-at': message.received_at,
+    'x-agent-id': agentId,
+    // Percent-encoded, because a header cannot carry every character a name can contain.
+    'x-sender': encodeURIComponent(message.sender),
+  };
+}
+
+export const CASE_SYSTEM_UNREACHABLE = 'The case system could not be reached.';
+
+export function noAnswerWithin(timeoutMs: number): string {
+  return `The case system did not answer within ${Math.round(timeoutMs / 100) / 10} s, or the connection failed.`;
+}
+
+// What the case system's answer to a tool call carries: one piece of text, which is JSON.
+export function payloadOf(result: unknown): unknown {
   const content: unknown = typeof result === 'object' && result !== null ? Reflect.get(result, 'content') : undefined;
   const first: unknown = Array.isArray(content) ? content[0] : undefined;
   const text: unknown = typeof first === 'object' && first !== null ? Reflect.get(first, 'text') : undefined;
@@ -37,15 +58,7 @@ export async function connectCaseTools(
 ): Promise<Connected> {
   const client = new Client({ name: agentId, version: '1' });
   const transport = new StreamableHTTPClientTransport(new URL(mcpUrl), {
-    requestInit: {
-      headers: {
-        'x-message-id': message.id,
-        'x-received-at': message.received_at,
-        'x-agent-id': agentId,
-        // Percent-encoded, because a header cannot carry every character a name can contain.
-        'x-sender': encodeURIComponent(message.sender),
-      },
-    },
+    requestInit: { headers: contextHeaders(message, agentId) },
   });
 
   let definitions: ToolDefinition[];
@@ -58,7 +71,7 @@ export async function connectCaseTools(
     }));
   } catch {
     await client.close().catch(() => undefined);
-    return { ok: false, reason: 'The case system could not be reached.' };
+    return { ok: false, reason: CASE_SYSTEM_UNREACHABLE };
   }
 
   return {
@@ -70,10 +83,7 @@ export async function connectCaseTools(
           const result = await client.callTool({ name, arguments: args }, undefined, { timeout: callTimeoutMs });
           return { kind: 'answered', isError: result.isError === true, payload: payloadOf(result) };
         } catch {
-          return {
-            kind: 'no_answer',
-            reason: `The case system did not answer within ${Math.round(callTimeoutMs / 100) / 10} s, or the connection failed.`,
-          };
+          return { kind: 'no_answer', reason: noAnswerWithin(callTimeoutMs) };
         }
       },
       async close() {

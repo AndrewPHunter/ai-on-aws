@@ -8,7 +8,9 @@ import { invocationResponseSchema } from '../../shared/agent-contract.ts';
 import type { InboundMessage, InvocationResponse } from '../../shared/agent-contract.ts';
 import { createContractServer } from '../src/contract/server.ts';
 import type { Handler } from '../src/contract/server.ts';
-import { IDENTITY, listen, message, stop } from './helpers.ts';
+import { listen, message, stop } from './helpers.ts';
+
+const IDENTITY = { id: 'contract-test-agent', implementation: 'none: the handler is written in each test' };
 
 type Received = { url: string; received: InboundMessage[] };
 

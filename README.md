@@ -46,9 +46,9 @@ ai-on-aws/
 | [`toolchain/`](toolchain/README.md) | The image stages and commands that typecheck, lint and test every TypeScript file in the repository, whichever piece it belongs to | Works |
 | [`model/`](model/README.md) | One vLLM server for the chat model, its one-command setup, and the gate that decides whether a running server is fit for the lab | Works, measured on one GPU |
 | [`client/`](client/README.md) | A medical information desk: a React app and its server. Receives inquiries, hands them to agents, shows what each agent did, and is where people review cases | Works with the intake agent. No screen yet for label search or evaluation |
-| [`shared/`](shared/README.md) | The contracts between pieces | Two contracts: what an agent is sent and returns, and what the case system sends. One agent implements the first |
-| [`agents/`](agents/README.md) | The agents, each its own container, each serving the AgentCore Runtime contract | One agent: intake, with its loop written by hand. Works against the local model |
-| [`tools/`](tools/README.md) | The agents' tools: MCP servers and APIs. Not developer tooling, which is `toolchain/` | One tool: the case system, used by the intake agent |
+| [`shared/`](shared/README.md) | The contracts between pieces | Two contracts: what an agent is sent and returns, and what the case system sends. Both intake agents implement the first |
+| [`agents/`](agents/README.md) | The agents, each its own container, each serving the AgentCore Runtime contract | One agent, intake, built twice: with its loop written by hand, and on Strands. Both work against the local model |
+| [`tools/`](tools/README.md) | The agents' tools: MCP servers and APIs. Not developer tooling, which is `toolchain/` | One tool: the case system, used by both intake agents |
 | [`knowledge/`](knowledge/README.md) | Documents in, search, retrieval for agents | Placeholder |
 | [`platform/`](platform/README.md) | Local stand-ins for the AgentCore services around the runtime | Placeholder |
 | [`evaluation/`](evaluation/README.md) | Measures the other pieces | Placeholder |

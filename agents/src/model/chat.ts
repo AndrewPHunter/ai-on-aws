@@ -3,6 +3,9 @@
 
 import { z } from 'zod';
 
+import { MODEL_UNREACHABLE, isTimeout, modelAnsweredWithStatus, modelDidNotAnswerWithin } from './served.ts';
+import type { ModelSettings } from './served.ts';
+
 export type ToolCall = { id: string; type: 'function'; function: { name: string; arguments: string } };
 
 export type ChatMessage =
@@ -24,7 +27,12 @@ export type Completion = {
 };
 
 // A failure carries a sentence for a person. It never carries the server's address or the key.
-export type ChatResult = { ok: true; completion: Completion } | { ok: false; reason: string };
+// `retryable` says whether the same request is worth sending again: the connection failed, or the
+// server said the fault was momentary or its own (408, 429, 5xx). A request the server rejected,
+// or an answer in the wrong form, would be the same again. A request that ran out of time is not
+// worth it either: it has already had all the time one request is allowed. This client never
+// sends twice itself; that is the caller's to do.
+export type ChatResult = { ok: true; completion: Completion } | { ok: false; reason: string; retryable: boolean };
 
 // `thinking` asks the model to reason before it answers, where the model has such a mode.
 // Reasoning counts against the output allowance, so a turn can spend all of it and answer nothing.
@@ -33,15 +41,6 @@ export type ChatOptions = { timeoutMs: number; thinking: boolean };
 export type ChatModel = {
   id: string;
   complete(messages: ChatMessage[], tools: ToolDefinition[], options: ChatOptions): Promise<ChatResult>;
-};
-
-export type ModelSettings = {
-  baseUrl: string;
-  apiKey: string;
-  modelId: string;
-  temperature: number;
-  maxTokens: number;
-  seed: number;
 };
 
 const completionSchema = z.object({
@@ -64,16 +63,6 @@ const completionSchema = z.object({
     .nullable()
     .optional(),
 });
-
-const modelListSchema = z.object({ data: z.array(z.object({ id: z.string() })) });
-
-function seconds(ms: number): string {
-  return `${Math.round(ms / 1000)} s`;
-}
-
-function isTimeout(error: unknown): boolean {
-  return error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
-}
 
 export function createChatModel(settings: ModelSettings): ChatModel {
   const headers = { 'content-type': 'application/json', authorization: `Bearer ${settings.apiKey}` };
@@ -104,18 +93,18 @@ export function createChatModel(settings: ModelSettings): ChatModel {
       } catch (error) {
         return {
           ok: false,
-          reason: isTimeout(error)
-            ? `The model did not answer within ${seconds(timeoutMs)}.`
-            : 'The model could not be reached.',
+          ...(isTimeout(error)
+            ? { reason: modelDidNotAnswerWithin(timeoutMs), retryable: false }
+            : { reason: MODEL_UNREACHABLE, retryable: true }),
         };
       }
       if (status !== 200) {
-        return { ok: false, reason: `The model answered with status ${status}.` };
+        return { ok: false, reason: modelAnsweredWithStatus(status), retryable: status === 408 || status === 429 || status >= 500 };
       }
       const parsed = completionSchema.safeParse(body);
       const choice = parsed.success ? parsed.data.choices[0] : undefined;
       if (!parsed.success || choice === undefined) {
-        return { ok: false, reason: 'The model’s answer was not in the expected form.' };
+        return { ok: false, reason: 'The model’s answer was not in the expected form.', retryable: false };
       }
       return {
         ok: true,
@@ -133,34 +122,4 @@ export function createChatModel(settings: ModelSettings): ChatModel {
       };
     },
   };
-}
-
-// The model server serves one chat model. Ask it which, so the name is not configured in two places.
-export async function servedModelId(
-  baseUrl: string,
-  apiKey: string,
-  timeoutMs: number,
-): Promise<{ ok: true; id: string } | { ok: false; reason: string }> {
-  let body: unknown;
-  try {
-    const response = await fetch(`${baseUrl}/models`, {
-      headers: { authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    if (response.status !== 200) {
-      return { ok: false, reason: `The model server answered its model list with status ${response.status}.` };
-    }
-    body = await response.json();
-  } catch (error) {
-    return {
-      ok: false,
-      reason: isTimeout(error) ? 'The model server did not answer in time.' : 'The model server could not be reached.',
-    };
-  }
-  const parsed = modelListSchema.safeParse(body);
-  const only = parsed.success && parsed.data.data.length === 1 ? parsed.data.data[0] : undefined;
-  if (only === undefined) {
-    return { ok: false, reason: 'The model server does not serve exactly one model, so the model must be named.' };
-  }
-  return { ok: true, id: only.id };
 }

@@ -15,12 +15,12 @@ import type { InboundMessage, InvocationResponse, Step } from '../../shared/agen
 import { createAgentServer, createReviewServer } from '../../tools/case-system/src/http.ts';
 import { CaseStore } from '../../tools/case-system/src/store.ts';
 import type { AgentIdentity } from '../src/contract/server.ts';
-import { handleInquiry } from '../src/intake/handwritten.ts';
-import type { IntakeDeps, Limits } from '../src/intake/handwritten.ts';
+import { handleInquiry as handleByHand } from '../src/intake/handwritten.ts';
+import type { Limits } from '../src/intake/run.ts';
+import { handleInquiry as handleWithStrands } from '../src/intake/strands.ts';
 import { createChatModel } from '../src/model/chat.ts';
-import type { ChatModel } from '../src/model/chat.ts';
+import type { ModelSettings } from '../src/model/served.ts';
 import { connectCaseTools } from '../src/tools/case-system.ts';
-import type { Connected } from '../src/tools/tool-set.ts';
 
 // --- Servers on loopback ----------------------------------------------------------------------------
 
@@ -111,9 +111,13 @@ export function agentClock(start: string): AgentClock {
 }
 
 // --- Test double 1: the scripted model -------------------------------------------------------------
-// STAND-IN for the model server. NOT a model. An HTTP server that speaks the two routes of the
-// OpenAI-compatible API the agent uses (GET /v1/models, POST /v1/chat/completions) and answers each
-// chat request with the next answer from a queue the test wrote. It records every request body.
+// STAND-IN for the model server. NOT a model. An HTTP server that speaks the routes of the
+// OpenAI-compatible API the agents use and answers each request with the next answer from a queue
+// the test wrote. It records every request body.
+//   GET  /v1/models
+//   POST /v1/chat/completions   the hand-written agent. One JSON body.
+//   POST /v1/responses          the Strands agent (Strands' default API). A stream of events in the
+//                               order and shape the real model server was seen to send them.
 // When the queue is empty it answers 500 and counts the request as unexpected, so a test that ran
 // past its script fails visibly instead of being handed a default answer.
 
@@ -125,8 +129,9 @@ export type ScriptedAnswer =
 
 export type ScriptedModel = {
   baseUrl: string;
-  model: ChatModel;
-  // Every body received at /v1/chat/completions, parsed, in order.
+  // What an agent needs to call this stand-in.
+  settings: ModelSettings;
+  // Every body received at /v1/chat/completions or /v1/responses, parsed, in order.
   requests: unknown[];
   unexpectedRequests: () => number;
 };
@@ -202,19 +207,81 @@ export async function startScriptedModel(
     }
   }
 
+  // The same answers as a stream of Responses API events. A turn that ran out of output allowance
+  // ends with response.incomplete; any other ends with response.completed.
+  function answerAsResponse(response: ServerResponse, next: ScriptedAnswer): void {
+    if (next.kind === 'never') {
+      return;
+    }
+    if (next.kind === 'status') {
+      sendJson(response, next.status, { error: 'scripted status' });
+      return;
+    }
+    const cutOff = next.finishReason === 'length';
+    const about = {
+      id: 'resp-scripted',
+      object: 'response',
+      model: SCRIPTED_MODEL_ID,
+      incomplete_details: cutOff ? { reason: 'max_output_tokens' } : null,
+    };
+    const output: unknown[] = [];
+    const events: Array<{ type: string } & Record<string, unknown>> = [
+      { type: 'response.created', response: { ...about, status: 'in_progress', incomplete_details: null, output: [] } },
+    ];
+    if (next.kind === 'text' && next.content !== null && next.content !== '') {
+      const id = 'msg-scripted';
+      const part = { type: 'output_text', text: next.content, annotations: [] };
+      const done = { id, type: 'message', role: 'assistant', status: cutOff ? 'incomplete' : 'completed', content: [part] };
+      events.push(
+        { type: 'response.output_item.added', output_index: 0, item: { ...done, status: 'in_progress', content: [] } },
+        { type: 'response.content_part.added', item_id: id, output_index: 0, content_index: 0, part: { ...part, text: '' } },
+        { type: 'response.output_text.delta', item_id: id, output_index: 0, content_index: 0, delta: next.content },
+        { type: 'response.output_text.done', item_id: id, output_index: 0, content_index: 0, text: next.content },
+        { type: 'response.content_part.done', item_id: id, output_index: 0, content_index: 0, part },
+        { type: 'response.output_item.done', output_index: 0, item: done },
+      );
+      output.push(done);
+    }
+    if (next.kind === 'tools') {
+      next.calls.forEach((c, index) => {
+        const callId = c.id ?? `call-${++callIds}`;
+        const id = `fc-${callId}`;
+        const done = { id, type: 'function_call', call_id: callId, name: c.name, arguments: c.arguments, status: 'completed' };
+        events.push(
+          { type: 'response.output_item.added', output_index: index, item: { ...done, arguments: '', status: 'in_progress' } },
+          { type: 'response.function_call_arguments.delta', item_id: id, output_index: index, delta: c.arguments },
+          { type: 'response.function_call_arguments.done', item_id: id, output_index: index, arguments: c.arguments, name: c.name },
+          { type: 'response.output_item.done', output_index: index, item: done },
+        );
+        output.push(done);
+      });
+    }
+    events.push({
+      type: cutOff ? 'response.incomplete' : 'response.completed',
+      response: { ...about, status: cutOff ? 'incomplete' : 'completed', output, usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } },
+    });
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    events.forEach((event, sequenceNumber) => {
+      response.write(`event: ${event.type}\ndata: ${JSON.stringify({ ...event, sequence_number: sequenceNumber })}\n\n`);
+    });
+    response.end();
+  }
+
   const server = createServer((request, response) => {
     const path = new URL(request.url ?? '/', 'http://model').pathname;
     if (path === '/v1/models' && request.method === 'GET') {
       sendJson(response, 200, { data: [{ id: SCRIPTED_MODEL_ID }] });
       return;
     }
-    if (path !== '/v1/chat/completions' || request.method !== 'POST') {
+    const responsesApi = path === '/v1/responses';
+    if ((path !== '/v1/chat/completions' && !responsesApi) || request.method !== 'POST') {
       sendJson(response, 404, { error: 'not_found' });
       return;
     }
     bodyText(request)
       .then((body) => {
-        requests.push(parseOrUndefined(body));
+        const parsed = parseOrUndefined(body);
+        requests.push(parsed);
         options.onRequest?.(requests.length);
         const next = queue.shift() ?? options.whenEmpty;
         if (next === undefined) {
@@ -222,7 +289,11 @@ export async function startScriptedModel(
           sendJson(response, 500, { error: 'the script has no more answers' });
           return;
         }
-        answer(response, next);
+        if (responsesApi) {
+          answerAsResponse(response, next);
+        } else {
+          answer(response, next);
+        }
       })
       .catch(() => {
         response.destroy();
@@ -235,13 +306,27 @@ export async function startScriptedModel(
   const baseUrl = `${url}/v1`;
   return {
     baseUrl,
-    model: createChatModel({ baseUrl, apiKey: 'test-key', modelId: SCRIPTED_MODEL_ID, temperature: 0, maxTokens: 256, seed: 1 }),
+    settings: { baseUrl, apiKey: 'test-key', modelId: SCRIPTED_MODEL_ID, temperature: 0, maxTokens: 256, seed: 1 },
     requests,
     unexpectedRequests: () => unexpected,
   };
 }
 
-// The parts of a chat request the tests look at.
+// What a request to the model carried, read the same way from either API, so one assertion covers
+// both agents. Nothing is rewritten on the way: a tool result is given exactly as the model was sent it.
+export type ModelRequest = {
+  system: string | undefined;
+  // The text of each user message, in order.
+  user: string[];
+  // The ids of the tool calls sent back as the assistant's own, in order.
+  callIds: string[];
+  // What the model was told about each call, in order.
+  results: Array<{ callId: string; told: string }>;
+  // The names of the tools offered.
+  tools: string[];
+};
+
+// POST /v1/chat/completions, as the hand-written agent sends it.
 const chatRequestSchema = z.object({
   messages: z.array(
     z.object({
@@ -254,12 +339,47 @@ const chatRequestSchema = z.object({
   tools: z.array(z.object({ function: z.object({ name: z.string() }) })),
 });
 
-export type ChatRequest = z.infer<typeof chatRequestSchema>;
+// POST /v1/responses, as Strands sends it.
+const responsesRequestSchema = z.object({
+  instructions: z.string().optional(),
+  input: z.array(
+    z.union([
+      z.object({ role: z.literal('user'), content: z.array(z.object({ type: z.literal('input_text'), text: z.string() })) }),
+      z.object({ role: z.literal('assistant'), content: z.string() }),
+      z.object({ type: z.literal('function_call'), call_id: z.string() }),
+      z.object({ type: z.literal('function_call_output'), call_id: z.string(), output: z.string() }),
+    ]),
+  ),
+  tools: z.array(z.object({ type: z.literal('function'), name: z.string() })),
+});
 
-export function chatRequest(model: ScriptedModel, index: number): ChatRequest {
+export function modelRequest(model: ScriptedModel, index: number): ModelRequest {
   const body = model.requests[index];
   assert.notEqual(body, undefined, `The model received no request number ${index + 1}`);
-  return chatRequestSchema.parse(body);
+  if (prop(body, 'input') === undefined) {
+    const { messages, tools } = chatRequestSchema.parse(body);
+    return {
+      system: messages.find((m) => m.role === 'system')?.content ?? undefined,
+      user: messages.filter((m) => m.role === 'user').map((m) => m.content ?? ''),
+      callIds: messages.flatMap((m) => m.tool_calls ?? []).map((c) => c.id),
+      results: messages.filter((m) => m.role === 'tool').map((m) => ({ callId: m.tool_call_id ?? '', told: m.content ?? '' })),
+      tools: tools.map((tool) => tool.function.name),
+    };
+  }
+  const { instructions, input, tools } = responsesRequestSchema.parse(body);
+  const read: ModelRequest = { system: instructions, user: [], callIds: [], results: [], tools: tools.map((tool) => tool.name) };
+  for (const entry of input) {
+    if ('type' in entry) {
+      if (entry.type === 'function_call') {
+        read.callIds.push(entry.call_id);
+      } else {
+        read.results.push({ callId: entry.call_id, told: entry.output });
+      }
+    } else if (entry.role === 'user') {
+      read.user.push(entry.content.map((part) => part.text).join(''));
+    }
+  }
+  return read;
 }
 
 // --- Test double 2: the reply-dropping proxy -------------------------------------------------------
@@ -287,7 +407,17 @@ function toolCallName(body: unknown): string | undefined {
   return typeof name === 'string' ? name : undefined;
 }
 
-export async function startDroppingProxy(t: TestContext, upstreamMcpUrl: string, drop: DropRule = () => false): Promise<DroppingProxy> {
+export type ProxyOptions = {
+  // Called with the MCP method of each request as it arrives (initialize, tools/list, tools/call).
+  onMethod?: (method: string) => void;
+};
+
+export async function startDroppingProxy(
+  t: TestContext,
+  upstreamMcpUrl: string,
+  drop: DropRule = () => false,
+  options: ProxyOptions = {},
+): Promise<DroppingProxy> {
   const counts = new Map<string, number>();
   let droppedCount = 0;
 
@@ -300,18 +430,23 @@ export async function startDroppingProxy(t: TestContext, upstreamMcpUrl: string,
         headers[name] = value;
       }
     }
-    const tool = toolCallName(parseOrUndefined(body));
+    const parsedBody = parseOrUndefined(body);
+    const method = prop(parsedBody, 'method');
+    if (typeof method === 'string') {
+      options.onMethod?.(method);
+    }
+    const tool = toolCallName(parsedBody);
     let dropThis = false;
     if (tool !== undefined) {
       const nth = (counts.get(tool) ?? 0) + 1;
       counts.set(tool, nth);
       dropThis = drop(tool, nth);
     }
-    const method = request.method ?? 'GET';
+    const verb = request.method ?? 'GET';
     const upstream = await fetch(upstreamMcpUrl, {
-      method,
+      method: verb,
       headers,
-      body: method === 'GET' || method === 'HEAD' ? undefined : body,
+      body: verb === 'GET' || verb === 'HEAD' ? undefined : body,
     });
     const answer = await upstream.text();
     if (dropThis) {
@@ -363,9 +498,7 @@ export async function startCaseSystem(t: TestContext): Promise<CaseSystem> {
   return { store, mcpUrl: `${agentUrl}/mcp`, reviewUrl };
 }
 
-// --- The agent under test --------------------------------------------------------------------------
-
-export const IDENTITY: AgentIdentity = { id: 'intake-handwritten-test', implementation: 'hand-written loop' };
+// --- The agents under test -------------------------------------------------------------------------
 
 export const AGENT_START = '2026-03-01T10:00:00.000Z';
 
@@ -376,32 +509,123 @@ export function message(id: string, textBody: string, receivedAt = '2026-03-01T0
 }
 
 export type RunOptions = {
-  model: ChatModel;
+  model: ModelSettings;
   mcpUrl: string;
   clock?: AgentClock;
   limits?: Partial<Limits>;
-  // Called after the real connection to the case system has been made.
-  afterConnect?: () => void;
+  // The hand-written loop only: each wait between two requests to the model is added here, and the
+  // agent's clock is moved on by it. No test waits in real time. Strands and the OpenAI client wait
+  // for themselves, in real time.
+  waits?: number[];
+  // The hand-written loop only: what its source of randomness gives. 1 unless said, the longest wait.
+  random?: number;
 };
 
-// Runs the hand-written loop once with the real case-system client, and checks the response keeps
-// to the agent contract.
-export async function runAgent(options: RunOptions, inbound: InboundMessage): Promise<InvocationResponse> {
-  const clock = options.clock ?? agentClock(AGENT_START);
-  const deps: IntakeDeps = {
-    identity: IDENTITY,
-    model: options.model,
-    connectTools: async (m, timeoutMs): Promise<Connected> => {
-      const connected = await connectCaseTools(options.mcpUrl, m, IDENTITY.id, timeoutMs);
-      options.afterConnect?.();
-      return connected;
-    },
-    now: clock.now,
-    limits: { ...LIMITS, ...options.limits },
-  };
-  const response = await handleInquiry(deps, inbound);
-  return invocationResponseSchema.parse(response);
-}
+// One implementation of the intake agent, as the behaviour table drives it. `run` handles one
+// message with the real case-system connection and checks the response keeps to the agent contract.
+// The other fields are the differences between the implementations that the table names outright;
+// every other row of the table holds for both.
+export type Implementation = {
+  name: string;
+  identity: AgentIdentity;
+  run(options: RunOptions, inbound: InboundMessage): Promise<InvocationResponse>;
+  // What this implementation records as the way a model turn ended. The hand-written loop records
+  // the server's own words; Strands replaces them with its own before any hook sees them.
+  finish: { stop: string; length: string };
+  // Tool arguments that are not JSON. The hand-written loop tells the model and carries on.
+  // Strands stops the run with an error. Nothing is called in either.
+  argumentsNotJson: 'told_to_model' | 'run_fails';
+  // Whether a turn that is asked again (lost to thinking) uses up one of the run's turns.
+  // Strands does not count a model call it retries.
+  retriedTurnCounts: boolean;
+  // What stands in front of a tool result that is an error when the model is told it. The
+  // hand-written loop sends the result as it is. Strands marks it.
+  errorResultPrefix: '' | '[ERROR] ';
+  // How a request says the model should not think first. The hand-written loop speaks chat
+  // completions, where the model server takes it as a setting for the model's chat template.
+  // Strands speaks the Responses API, which has a setting of its own.
+  thinkingOff: { key: string; value: unknown };
+  // A reply cut off part way by the output allowance. The hand-written loop returns what was
+  // written. Strands treats the turn as an error, so no reply is returned; what was written is kept
+  // in the step.
+  cutOffReply: 'returned' | 'not_returned';
+  // Whether a failed request to the model that is sent again leaves an error step. The hand-written
+  // loop sends it again itself and records each failure. For Strands the OpenAI client sends it
+  // again inside itself, and no hook hears of it.
+  retriedRequestRecorded: boolean;
+  // How many requests a model that never answers is sent, when the run has time for two and a half.
+  // The hand-written loop does not send a timed-out request again. The OpenAI client inside Strands
+  // does, and the run's time limit cuts the second one short.
+  requestsToSilentModel: 1 | 2;
+  // Three requests in a row answered 429. The hand-written loop has asked its three times and fails
+  // the run. For Strands that was only the OpenAI client's three: Strands' own retry then waits and
+  // has the client ask again.
+  afterThreeThrottled: 'run_fails' | 'asks_again';
+};
+
+export const HANDWRITTEN: Implementation = {
+  name: 'hand-written',
+  identity: { id: 'intake-handwritten-test', implementation: 'hand-written loop' },
+  finish: { stop: 'stop', length: 'length' },
+  argumentsNotJson: 'told_to_model',
+  retriedTurnCounts: true,
+  errorResultPrefix: '',
+  thinkingOff: { key: 'chat_template_kwargs', value: { enable_thinking: false } },
+  cutOffReply: 'returned',
+  retriedRequestRecorded: true,
+  requestsToSilentModel: 1,
+  afterThreeThrottled: 'run_fails',
+  async run(options, inbound) {
+    const clock = options.clock ?? agentClock(AGENT_START);
+    const response = await handleByHand(
+      {
+        identity: this.identity,
+        model: createChatModel(options.model),
+        connectTools: (m, timeoutMs) => connectCaseTools(options.mcpUrl, m, this.identity.id, timeoutMs),
+        now: clock.now,
+        sleep: (ms) => {
+          clock.advance(ms);
+          options.waits?.push(ms);
+          return Promise.resolve();
+        },
+        random: () => options.random ?? 1,
+        limits: { ...LIMITS, ...options.limits },
+      },
+      inbound,
+    );
+    return invocationResponseSchema.parse(response);
+  },
+};
+
+const STRANDS: Implementation = {
+  name: 'strands',
+  identity: { id: 'intake-strands-test', implementation: 'Strands' },
+  finish: { stop: 'endTurn', length: 'maxTokens' },
+  argumentsNotJson: 'run_fails',
+  retriedTurnCounts: false,
+  errorResultPrefix: '[ERROR] ',
+  thinkingOff: { key: 'reasoning', value: { effort: 'none' } },
+  cutOffReply: 'not_returned',
+  retriedRequestRecorded: false,
+  requestsToSilentModel: 2,
+  afterThreeThrottled: 'asks_again',
+  async run(options, inbound) {
+    const clock = options.clock ?? agentClock(AGENT_START);
+    const response = await handleWithStrands(
+      {
+        identity: this.identity,
+        model: options.model,
+        caseMcpUrl: options.mcpUrl,
+        now: clock.now,
+        limits: { ...LIMITS, ...options.limits },
+      },
+      inbound,
+    );
+    return invocationResponseSchema.parse(response);
+  },
+};
+
+export const IMPLEMENTATIONS: readonly Implementation[] = [HANDWRITTEN, STRANDS];
 
 // --- Reading steps ---------------------------------------------------------------------------------
 

@@ -1,8 +1,6 @@
 // What both implementations of an agent share when they record a run: a clock for each step and a
 // deadline for the whole run. Kept out of the loop so the two loops differ only in how they loop.
 
-import type { Step } from '../../../shared/agent-contract.ts';
-
 export type Timed<Value> = { value: Value; started_at: string; duration_ms: number };
 
 export async function timed<Value>(now: () => Date, work: () => Promise<Value>): Promise<Timed<Value>> {
@@ -33,8 +31,4 @@ export class Deadline {
   within(limitMs: number): number {
     return Math.min(limitMs, this.remainingMs());
   }
-}
-
-export function errorStep(now: () => Date, message: string): Step {
-  return { kind: 'error', started_at: now().toISOString(), duration_ms: 0, message };
 }

@@ -21,7 +21,11 @@ services:
         [{"id": "intake-handwritten",
           "name": "Intake agent, hand-written loop",
           "description": "Records adverse events as cases. Its loop is written by hand. It does not answer clinical questions.",
-          "url": "http://intake-handwritten:8080"}]
+          "url": "http://intake-handwritten:8080"},
+         {"id": "intake-strands",
+          "name": "Intake agent, on Strands",
+          "description": "The same intake agent, with the same prompt and rules. Strands runs its loop. It does not answer clinical questions.",
+          "url": "http://intake-strands:8080"}]
     ports:
       # Published on this machine only.
       - "127.0.0.1:3000:3000"
