@@ -43,14 +43,11 @@ export function buildMcpServer(engine: Engine, index: string): McpServer {
       inputSchema: {
         set_id: z.string().describe("The label's set id, from find_labels."),
         query: z.string().describe('The words to search for, as plain words.'),
-        part: z.enum(['body', 'highlights']).optional().describe('"body" for the full text, "highlights" for the Highlights summary; leave out for both.'),
-        max_results: z
-          .number()
-          .int()
-          .min(1)
-          .max(MAX_RESULTS)
-          .optional()
-          .describe(`How many passages, from 1 to ${MAX_RESULTS}. Default ${DEFAULT_RESULTS}.`),
+        // Types only: the allowed values are checked by searchLabel itself, so a value outside them is answered with
+        // this service's own invalid_input result, in the same { error, detail } shape as every other failure, not
+        // with the protocol layer's own words.
+        part: z.string().optional().describe('"body" for the full text, "highlights" for the Highlights summary; leave out for both.'),
+        max_results: z.number().optional().describe(`How many passages, a whole number from 1 to ${MAX_RESULTS}. Default ${DEFAULT_RESULTS}.`),
       },
     },
     async (args) => reply(await searchLabel(engine, index, args)),

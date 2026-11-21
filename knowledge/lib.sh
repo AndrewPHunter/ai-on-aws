@@ -42,18 +42,31 @@ build_image() {
   fi
 }
 
-# run_tool <network> <corpus mount: ro or rw> <tool arguments...>
+# run_tool <network> <mounts> <tool arguments...>
+#   <mounts>: rw         knowledge/corpus and knowledge/data writable
+#             ro         knowledge/corpus read-only, knowledge/data writable
+#             read-only  both read-only (a tool that only reads, such as the index command)
 run_tool() {
   network=$1
-  corpus_mode=$2
+  mounts=$2
   shift 2
   corpus_mount="type=bind,source=$knowledge_dir/corpus,target=/corpus"
-  if [ "$corpus_mode" = ro ]; then
-    corpus_mount="$corpus_mount,readonly"
-  fi
+  data_mount="type=bind,source=$knowledge_dir/data,target=/data"
+  case "$mounts" in
+    rw) ;;
+    ro) corpus_mount="$corpus_mount,readonly" ;;
+    read-only)
+      corpus_mount="$corpus_mount,readonly"
+      data_mount="$data_mount,readonly"
+      ;;
+    *)
+      say "run_tool: unknown mounts $mounts"
+      exit 2
+      ;;
+  esac
   mkdir -p -- "$knowledge_dir/corpus" "$knowledge_dir/data"
   docker run --rm --network "$network" --read-only --tmpfs /tmp --cap-drop ALL \
     --security-opt no-new-privileges --user "$(id -u):$(id -g)" \
-    --mount "$corpus_mount" --mount "type=bind,source=$knowledge_dir/data,target=/data" \
+    --mount "$corpus_mount" --mount "$data_mount" \
     -w /repo "$KNOWLEDGE_IMAGE" node knowledge/src/main.ts "$@"
 }

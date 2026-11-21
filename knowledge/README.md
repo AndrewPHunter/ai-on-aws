@@ -153,7 +153,7 @@ Two services in `knowledge/compose.yaml`, started with the rest of the lab by th
 
 | | What it is |
 |---|---|
-| `search` | OpenSearch 3.9.0, released 2026-09-29: the newest stable 3.x release published at least 14 days before it was pinned. Pinned by the digest of its multi-architecture index (linux/amd64, linux/arm64). It has the score ranker processor that hybrid search with rank fusion needs (a search pipeline using it was accepted by the running engine), though nothing here uses it yet. One node, a 1 GB heap, its data in the named volume `search-data`. It publishes no port: only containers on the stack's network reach it. Healthy once the cluster answers and is not red |
+| `search` | OpenSearch 3.9.0, released 2026-09-29: the newest stable 3.x release published at least 14 days before it was pinned. Pinned by the digest of its multi-architecture index (linux/amd64, linux/arm64). One node, a 1 GB heap, its data in the named volume `search-data`. It publishes no port: only containers on the stack's network reach it. Healthy once the cluster answers and is not red |
 | `knowledge` | The retrieval service, built from `knowledge/src/` with the `run` stage of `toolchain/Dockerfile`. MCP at `POST /mcp` and `GET /ping` on port 8000, published at `127.0.0.1:8002` |
 | `knowledge/index.sh <compose-project>` | Loads the chunks into the stack's search engine, from a container on its network |
 | `knowledge/gate.sh <compose-project>` | Checks the retrieval path of a running stack whose index is built |
@@ -162,16 +162,17 @@ Start-up, from the repository root: `knowledge/fetch.sh`, `knowledge/parse.sh` a
 
 ### Indexing
 
-- The index is named `labels-` and 16 hex characters of a SHA-256 of the chunk report's bytes and of the index definition below. A different set of chunks, or a different mapping, is a different index.
-- It creates the index with the explicit definition and loads every chunk once, in bulk requests of 500, using each chunk's id as the document id. If the engine reports an error for any item of a bulk request, the run fails whatever the count, and the output gives the number of items refused and the first one's error type. Otherwise it checks that the engine's count of documents equals the number of chunks read. Only then does it point the alias `labels` at the new index. On a refused item or a count that differs, it leaves the alias where it was, removes the index it made, and exits 1.
+- The index is named `labels-` and 16 hex characters of a SHA-256 of the chunk report's bytes and of the index definition below. The chunk report records the SHA-256 of each label's chunk file, and the index command checks each file against it before sending anything, so a change to any chunk's bytes, or to the mapping, is a different index. A report written before it recorded the hashes is refused: run `knowledge/chunk.sh` again.
+- It reads `knowledge/data/` through a read-only mount.
+- It creates the index with the explicit definition and loads every chunk once, in bulk requests of 500, using each chunk's id as the document id. If the engine reports an error for any item of a bulk request, the run fails whatever the count, and the output gives the number of items refused and the first one's error type. Otherwise it checks that the engine's count of documents equals the number of chunks read. Only then does it point the alias `labels` at the new index. On a refused item or a count that differs, it leaves the alias where it was, removes the index it made, and exits 1. On any other failure once the index may exist (the create, a bulk request refused as a whole or not answered, the refresh, the count, the alias move), it also removes the index and leaves the alias, and exits 2. If the removal fails, it says so and names the index left behind. An index the alias points at is never removed: after an alias move whose answer was lost, the alias is read again first.
 - If the index for this hash already exists with the right count and the alias points at it, it changes nothing and says so. With the right count and the alias elsewhere, it only moves the alias.
 - Older indexes are left in place and listed in the output.
 
 | Exit code | `index.sh` |
 |---|---|
 | 0 | The alias points at a complete index, built now or already |
-| 1 | The engine refused an item of a bulk request, or its count differed from the chunks read; the new index was removed and the alias left as it was |
-| 2 | Could not run: no such stack, the chunk files disagree with the chunk report, or the engine could not be asked |
+| 1 | Items refused: the engine refused an item of a bulk request. Or the count differed from the chunks read. The new index was removed and the alias left as it was |
+| 2 | Could not run: no such stack; no chunk report; a chunk report that is not JSON or has no chunk file hashes; a chunk file that is missing, does not match its hash, or holds a line that is not JSON (the file and line are named, the line is not quoted); the chunk files disagree with the report's count; or the engine could not be asked or answered in a way that stops the run. Any index the run made was removed, or named if it could not be |
 
 The mapping is strict: a chunk with a field not named here is refused.
 
@@ -189,7 +190,7 @@ The index has one shard and no replica.
 
 ### The retrieval service
 
-Settings, each required and read by name: `SEARCH_URL` (`http://search:9200`), `SEARCH_INDEX` (`labels`), and `AUTH_DISCOVERY_URL`, `AUTH_ISSUER`, `AUTH_ALLOWED_AUDIENCE` (`lab-knowledge`), `AUTH_ALLOWED_CLIENTS` (`desk`) and `AUTH_ROLES_CLAIM` (`roles`), in the form the case system uses. Every route but `GET /ping` requires a valid access token, checked with `shared/access-token.ts` before the body is read. A refusal is 401 with `WWW-Authenticate` and `{error, reason, detail}`; a provider that cannot be asked is 503.
+Settings, each required and read by name: `SEARCH_URL` (`http://search:9200`), `SEARCH_INDEX` (`labels`), and `AUTH_DISCOVERY_URL`, `AUTH_ISSUER`, `AUTH_ALLOWED_AUDIENCE` (`lab-knowledge`), `AUTH_ALLOWED_CLIENTS` (`desk`) and `AUTH_ROLES_CLAIM` (`roles`), in the form the case system uses. Every request but `GET /ping` requires a valid access token, checked with `shared/access-token.ts` before anything else of the request is read: the target, then the body. A refusal is 401 with `WWW-Authenticate` and `{error, reason, detail}`; a provider that cannot be asked is 503. With a valid token, a target that cannot be read as a path is 400, and a body over 100 kB or not JSON is 400.
 
 It talks to the engine with `fetch` and its REST API, with no client library. Each request may take 5 seconds.
 
@@ -202,7 +203,7 @@ How the input is held:
 
 - The query goes only into a full-text match. The engine never reads it as a query language, so operator characters, field names and other set ids in it have no effect.
 - The set id (and the part) are exact filters, set by code from the tool's arguments.
-- Input outside the limits is refused before anything is sent: an empty query, `max_results` outside 1 to 10, an unknown `part`, or a set id that is not a lowercase GUID.
+- Input outside the limits is refused before anything is sent, with `invalid_input`: an empty query or one over 1,000 characters, an empty drug name or one over 200 characters (counted after surrounding white space is removed), `max_results` that is not a whole number from 1 to 10, an unknown `part`, or a set id that is not a lowercase GUID. The tools' input schemas give only types for `part` and `max_results`, so a value outside these limits reaches the service's own check and is answered in the same `{error, detail}` shape as every other failure. An argument of the wrong type (a number for `drug`, say) is still refused by the MCP layer in its own words.
 
 Every failure is an error result that says which; none is ever an empty list.
 
@@ -211,10 +212,12 @@ Every failure is an error result that says which; none is ever an empty list.
 | `invalid_input` | The input is outside the limits |
 | `label_not_found` | No document has that set id. The error names it, so "no such label" cannot be read as "the label says nothing" |
 | `index_not_built` | The alias does not exist: run `knowledge/index.sh` |
-| `search_timed_out` | The engine did not answer in time |
-| `search_unreachable` | The engine could not be reached |
-| `search_error` | The engine answered with an error status |
-| `search_unexpected_answer` | The engine answered in a form the service does not expect |
+| `search_timed_out` | The engine did not answer in time, or answered that its search timed out (`timed_out: true`) |
+| `search_unreachable` | The engine could not be reached, or closed the connection part way through its answer |
+| `search_error` | The engine answered with an error status, or answered that a shard failed |
+| `search_unexpected_answer` | The engine answered in a form the service does not expect: a missing field, a version that is not a whole number of 1 or more, a passage from another label |
+
+Each applies to the count a search with no passages makes as well: a failed count is its own error, never an empty list.
 
 ### The gate
 
@@ -226,8 +229,10 @@ Every failure is an error result that says which; none is ever an empty list.
 4. `search_label` on that label, with a word from one of its chunks, returns at least one passage. Every passage carries that set id and every field listed above, and the scores do not increase down the list.
 5. A query made only of query-language characters, and one naming another field and another set id, each return only passages from the one label, or none, and no error.
 6. A GUID not in the index returns `label_not_found`.
-7. `max_results` 1 returns one passage, 10 at most ten, and 11 is refused.
+7. `max_results` 1 returns one passage, 10 at most ten, and 11 is refused by the service's own check, as `invalid_input`.
 8. 200 benchmark searches, each restricted to the question's own label, answer without an error.
+
+A call to the service that gets no answer (the service stopped, the token refused, the network) stops the gate with exit 2: it is never read as a refusal or as an empty answer. A data file that is missing or not JSON stops it too, naming the file and the line without quoting it.
 
 It also measures, and does not assert, how often a passage from a referenced section is among the first five results. The 200 questions are those whose label is indexed and whose `references` is a list, sorted by `qid` and taken evenly. A hit is a passage among the first five whose section number equals the number a reference starts with, or whose title equals a reference, ignoring case and spacing. The report also gives the median and 95th-percentile time of its `search_label` calls.
 
@@ -287,7 +292,7 @@ The libraries: [yauzl](https://github.com/thejoshwolfe/yauzl) 3.4.0 reads the zi
 
 ## Tests
 
-`knowledge/test/` holds tests F1 to F13 for pinning, fetching and the census, P1 to P21 for parsing, U1 to U18 for chunking, and S1 to S14 for indexing and retrieval, run by `toolchain/check.sh` with everything else. The first use a labelled stand-in for DailyMed and for the benchmark's host, on loopback, serving synthetic labels and zips built in the tests; the parser's and the splitter's tests use synthetic labels in `knowledge/test/support/labels.ts` and `knowledge/test/support/chunking.ts`. The retrieval tests use a labelled stand-in for the search engine that records requests and answers as told: it shows the wiring and the handling of each failure, not ranking. Their tokens are real signed ones from `test-support/issuer.ts`. No real label text is in them.
+`knowledge/test/` holds tests F1 to F13 for pinning, fetching and the census, P1 to P21 for parsing, U1 to U18 for chunking, and S1 to S28 for indexing, retrieval and the gate's reading and calls, run by `toolchain/check.sh` with everything else. The first use a labelled stand-in for DailyMed and for the benchmark's host, on loopback, serving synthetic labels and zips built in the tests; the parser's and the splitter's tests use synthetic labels in `knowledge/test/support/labels.ts` and `knowledge/test/support/chunking.ts`. The retrieval tests use a labelled stand-in for the search engine that records requests and answers as told: it shows the wiring and the handling of each failure, not ranking. Their tokens are real signed ones from `test-support/issuer.ts`. No real label text is in them.
 
 ## Not present
 

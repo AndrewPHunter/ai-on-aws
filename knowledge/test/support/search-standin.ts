@@ -13,7 +13,9 @@ export type SearchReply =
   // Answer nothing until the test lets go (the test aborts the client's deadline meanwhile).
   | 'hold'
   // Close the connection without answering.
-  | 'drop';
+  | 'drop'
+  // Send the status, the headers and the start of a body, then close the connection part way through it.
+  | 'cut';
 
 export type SearchStandIn = {
   url: string;
@@ -49,6 +51,14 @@ export async function startSearchStandIn(t: TestContext): Promise<SearchStandIn>
       const reply = handler(recorded);
       if (reply === 'drop') {
         request.socket.destroy();
+        return;
+      }
+      if (reply === 'cut') {
+        // A length promised and not delivered: the client sees the body end early.
+        response.writeHead(200, { 'content-type': 'application/json', 'content-length': '1000', 'x-stand-in': 'test' });
+        response.write('{"count":', () => {
+          setImmediate(() => request.socket.destroy());
+        });
         return;
       }
       if (reply === 'hold') {

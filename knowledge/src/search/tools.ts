@@ -66,12 +66,34 @@ function failure<T>(answer: Exclude<EngineAnswer, { kind: 'answer'; status: 200 
   return fail('search_error', `The search engine answered with status ${answer.status}.`);
 }
 
+// An answer of status 200 can still say that it is not whole: the search ran out of time, or a shard failed. Such an
+// answer is not read as a result, in a search or a count.
+const completenessSchema = z.object({
+  timed_out: z.boolean().optional(),
+  _shards: z.object({ failed: z.number().optional() }).optional(),
+});
+
+function incomplete<T>(body: unknown): Outcome<T> | undefined {
+  const flags = completenessSchema.safeParse(body);
+  if (!flags.success) return undefined;
+  if (flags.data.timed_out === true) return fail('search_timed_out', 'The search engine ran out of time and answered with part of a result.');
+  if ((flags.data._shards?.failed ?? 0) > 0) return fail('search_error', 'The search engine answered with a result from which a shard failed.');
+  return undefined;
+}
+
 const hitsSchema = <S extends z.ZodTypeAny>(source: S) =>
   z.object({ hits: z.object({ hits: z.array(z.object({ _score: z.number().nullable().optional(), _source: source })) }) });
 
+// A label's version as the index holds it (a keyword, so it may come back as text): a whole number of 1 or more, or
+// the document is not one this service can answer with.
+const version = z
+  .union([z.number(), z.string().regex(/^\d+$/)])
+  .transform(Number)
+  .pipe(z.number().int().positive());
+
 const labelSource = z.object({
   setId: z.string(),
-  version: z.union([z.number(), z.string()]),
+  version,
   effectiveTime: z.string(),
   kind: z.string(),
   format: z.string(),
@@ -87,7 +109,7 @@ const passageSource = z.object({
   section: z.object({ number: z.string().nullable(), title: z.string().nullable(), path: z.array(z.string()) }),
   position: z.record(z.string(), z.number()),
   setId: z.string(),
-  version: z.union([z.number(), z.string()]),
+  version,
   effectiveTime: z.string(),
   kind: z.string(),
   source: z.string(),
@@ -116,6 +138,8 @@ export async function findLabels(engine: Engine, index: string, input: { drug?: 
   ] as const) {
     const answer = await engine.send('POST', `/${index}/_search`, request(match));
     if (answer.kind !== 'answer' || answer.status !== 200) return failure(answer as Exclude<EngineAnswer, { kind: 'answer'; status: 200 }>, index);
+    const partial = incomplete<FindLabelsResult>(answer.body);
+    if (partial !== undefined) return partial;
     const parsed = hitsSchema(labelSource).safeParse(answer.body);
     if (!parsed.success) return fail('search_unexpected_answer', 'The search engine answered in a form this service does not expect.');
     const hits = parsed.data.hits.hits;
@@ -186,6 +210,8 @@ export async function searchLabel(engine: Engine, index: string, input: SearchLa
 
   const answer = await engine.send('POST', `/${index}/_search`, searchRequest(setId, query, part, size));
   if (answer.kind !== 'answer' || answer.status !== 200) return failure(answer as Exclude<EngineAnswer, { kind: 'answer'; status: 200 }>, index);
+  const partial = incomplete<SearchLabelResult>(answer.body);
+  if (partial !== undefined) return partial;
   const parsed = hitsSchema(passageSource).safeParse(answer.body);
   if (!parsed.success) return fail('search_unexpected_answer', 'The search engine answered in a form this service does not expect.');
   const hits = parsed.data.hits.hits;
@@ -197,6 +223,8 @@ export async function searchLabel(engine: Engine, index: string, input: SearchLa
     // No passage: is the label there at all? "No such label" must not read as "the label says nothing".
     const counted = await engine.send('POST', `/${index}/_count`, { query: { term: { setId } } });
     if (counted.kind !== 'answer' || counted.status !== 200) return failure(counted as Exclude<EngineAnswer, { kind: 'answer'; status: 200 }>, index);
+    const partialCount = incomplete<SearchLabelResult>(counted.body);
+    if (partialCount !== undefined) return partialCount;
     const count = countSchema.safeParse(counted.body);
     if (!count.success) return fail('search_unexpected_answer', 'The search engine answered in a form this service does not expect.');
     if (count.data.count === 0) return fail('label_not_found', `No label with set id ${setId} is in the index.`);

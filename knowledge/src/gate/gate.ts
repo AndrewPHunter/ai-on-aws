@@ -10,13 +10,16 @@
 // identifiers, codes and counts only.
 
 import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 import { signInFormAction } from '../../../platform/identity/src/login-form.ts';
 import { codeChallengeS256, codeVerifier } from '../../../platform/identity/src/pkce.ts';
+import { CouldNotRun, readData, readQuestions } from './data.ts';
+import type { Question } from './data.ts';
+import { call as callTool, refusedByService } from './service.ts';
+import type { Reply } from './service.ts';
 
 const KNOWLEDGE = 'http://knowledge:8000';
 const SEARCH = 'http://search:9200';
@@ -33,8 +36,6 @@ const TOP = 5;
 const ABSENT_SET_ID = '00000000-0000-4000-8000-000000000000';
 const DATA = '/data';
 const CORPUS = '/corpus';
-
-class CouldNotRun extends Error {}
 
 const held: string[] = [];
 const failed: string[] = [];
@@ -126,55 +127,14 @@ async function accessToken(): Promise<string> {
   return token;
 }
 
-// ---------- the data the index was built from ----------
-
-type Chunk = { id: string; setId: string; drug: string[]; text: string };
-
-function readData(): { totalChunks: number; indexed: Set<string>; firstSetId: string; manifestOrder: string[]; chunksBySetId: Map<string, Chunk[]> } {
-  const report = JSON.parse(readFileSync(`${DATA}/chunk-report.json`, 'utf8')) as {
-    chunks: { total: number };
-    labels: { setId: string; version: number; status: string }[];
-  };
-  const manifest = JSON.parse(readFileSync(`${CORPUS}/manifest.json`, 'utf8')) as { labels: { setId: string }[] };
-  const chunksBySetId = new Map<string, Chunk[]>();
-  for (const label of report.labels) {
-    if (label.status !== 'chunked') continue;
-    const lines = readFileSync(`${DATA}/chunks/${label.setId}/${label.version}.jsonl`, 'utf8').split('\n').filter((line) => line !== '');
-    chunksBySetId.set(label.setId, lines.map((line) => JSON.parse(line) as Chunk));
-  }
-  const firstSetId = manifest.labels.find((label) => (chunksBySetId.get(label.setId)?.[0]?.drug.length ?? 0) > 0)?.setId;
-  if (firstSetId === undefined) throw new CouldNotRun('no label in the manifest has chunks with a drug name');
-  const manifestOrder = manifest.labels.map((label) => label.setId).filter((id) => chunksBySetId.has(id));
-  return { totalChunks: report.chunks.total, indexed: new Set(chunksBySetId.keys()), firstSetId, manifestOrder, chunksBySetId };
-}
-
 // ---------- the service ----------
 
-type Reply = { isError: boolean; payload: Record<string, unknown> };
-
+// The time of every search_label call, for the report's measure.
 const timings: number[] = [];
 
-async function call(client: Client, name: string, args: Record<string, unknown>): Promise<Reply> {
-  const started = process.hrtime.bigint();
-  let result: Awaited<ReturnType<Client['callTool']>>;
-  try {
-    result = await client.callTool({ name, arguments: args });
-  } catch {
-    // The MCP layer refused the call outright (for example, arguments outside the input schema).
-    return { isError: true, payload: { error: 'refused_by_protocol' } };
-  }
-  if (name === 'search_label') timings.push(Number(process.hrtime.bigint() - started) / 1e6);
-  const content: unknown = result.content;
-  const first: unknown = Array.isArray(content) ? content[0] : undefined;
-  const text: unknown = typeof first === 'object' && first !== null ? Reflect.get(first, 'text') : undefined;
-  let payload: Record<string, unknown> = {};
-  try {
-    payload = typeof text === 'string' ? (JSON.parse(text) as Record<string, unknown>) : {};
-  } catch {
-    payload = { unparsed: true };
-  }
-  return { isError: result.isError === true, payload };
-}
+// A call that throws stops the gate as "could not run" (service.ts); only an answer is read by a statement.
+const call = (client: Client, name: string, args: Record<string, unknown>): Promise<Reply> =>
+  callTool(client, name, args, name === 'search_label' ? timings : undefined);
 
 type Passage = {
   chunk_id: unknown;
@@ -223,7 +183,7 @@ const percentile = (values: number[], p: number): number => {
 const normalise = (text: string): string => text.toLowerCase().replace(/\s+/g, ' ').trim();
 
 async function main(): Promise<number> {
-  const data = readData();
+  const data = readData(DATA, CORPUS);
   const token = await accessToken();
 
   // 1. The token check, and /ping.
@@ -341,14 +301,14 @@ async function main(): Promise<number> {
   const ten = await call(client, 'search_label', { set_id: setId, query: word, max_results: 10 });
   statement(!ten.isError && passagesOf(ten).length <= 10, '7. max_results 10 returns at most 10 passages', `${passagesOf(ten).length} passages`);
   const eleven = await call(client, 'search_label', { set_id: setId, query: word, max_results: 11 });
-  statement(eleven.isError, '7. max_results 11 is refused');
+  statement(
+    refusedByService(eleven),
+    "7. max_results 11 is refused by the service's own check (invalid_input)",
+    eleven.isError ? `error ${String(eleven.payload.error)}` : 'it was answered',
+  );
 
   // 8. A rough measure: is a passage from a referenced section among the first five?
-  type Question = { qid: string | number; set_id: string; question: string; references: unknown };
-  const questions = readFileSync(`${DATA}/benchmark/qa.jsonl`, 'utf8')
-    .split('\n')
-    .filter((line) => line !== '')
-    .map((line) => JSON.parse(line) as Question)
+  const questions = readQuestions(DATA)
     .filter((q) => data.indexed.has(q.set_id) && Array.isArray(q.references) && q.references.length > 0 && q.references.every((r) => typeof r === 'string'))
     .sort((a, b) => (String(a.qid) < String(b.qid) ? -1 : String(a.qid) > String(b.qid) ? 1 : 0));
   const chosen = Array.from({ length: Math.min(QUESTIONS, questions.length) }, (_, i) => questions[Math.floor((i * questions.length) / Math.min(QUESTIONS, questions.length))]).filter(
@@ -399,7 +359,10 @@ main().then(
     process.exitCode = code;
   },
   (error: unknown) => {
-    process.stderr.write(`knowledge-gate: could not run: ${error instanceof Error ? error.message : 'unknown error'}\n`);
+    // Only the gate's own messages are written: they name files, lines, statuses and identifiers. Any other error's
+    // message could quote what it was reading, so only its kind is given.
+    const said = error instanceof CouldNotRun ? error.message : `an unexpected ${error instanceof Error ? error.name : 'error'}`;
+    process.stderr.write(`knowledge-gate: could not run: ${said}\n`);
     process.exitCode = 2;
   },
 );

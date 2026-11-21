@@ -207,13 +207,17 @@ The agent that calls these two tools is the label expert: [expert-agent.md](expe
 26. A chunk id is unique within its label and depends only on the set id, version, section and the chunk's position in the section.
 27. A table that is not splittable is one chunk, whatever its size. A split table's chunks each hold the caption, every header row and the group label in force: the first holds the caption and header rows in their place, and each later one repeats them and lists them in `repeated`. No chunk ends on a group label or inside a row span.
 28. A chunk holds text or a table, never both.
-29. The alias `labels` points only at an index into which the engine accepted every item, and whose count of documents equals the number of chunks read. A refused item, or a count that differs, leaves the alias where it was and removes the new index.30. An index's name is a hash of the chunk report and the mapping. Indexing unchanged chunks changes nothing.
+29. The alias `labels` points only at an index into which the engine accepted every item, and whose count of documents equals the number of chunks read. Any failure once the run may have made a new index (a refused item, a count that differs, a create, bulk request, refresh, count or alias move that fails or gets no answer) leaves the alias where it was and removes the new index; if the removal fails, the run names the index left behind. An index the alias points at is never removed.
+30. An index's name is a hash of the chunk report and the mapping. The chunk report records the SHA-256 of every chunk file, and the index command refuses a chunk file that does not match it, so a change to any chunk's bytes is a new index. Indexing unchanged chunks changes nothing.
 31. The search engine publishes no port. Only containers on the stack's network reach it.
-32. Every route of the retrieval service but `GET /ping` needs a valid access token with audience `lab-knowledge`, judged before the body is read.
-33. `search_label` searches one label only. The set id filter is set by code and is exact, and the query goes only into a full-text match, never a query language. Input outside the limits is refused before anything is sent.
-34. No failure of the engine reads as an empty answer: each is an error result naming its kind. A set id with no documents is the error `label_not_found`.
-35. The retrieval service reaches the engine only with `fetch` and its REST API, and each request has a time limit.
-36. Every gate image and gate compose project is named for the checkout it was built from, so a gate run from one checkout never runs an image another checkout built.
+32. Every request to the retrieval service but `GET /ping` needs a valid access token with audience `lab-knowledge`, judged before anything else of the request is read: the target, then the body.
+33. `search_label` searches one label only. The set id filter is set by code and is exact, and the query goes only into a full-text match, never a query language. Input outside the limits (a query over 1,000 characters, a drug name over 200, `max_results` outside 1 to 10, an unknown part, a set id that is not a lowercase GUID) is refused with `invalid_input` before anything is sent. A request body over 100 kB is refused with 400.
+34. An engine answer is read as a result only when it is whole: one that says it timed out or that a shard failed, or holds a version that is not a whole number of 1 or more, is an error result.
+35. No parser's message about label data reaches the index command's or the gate's output: a line that is not JSON is named by its file and line number.
+36. No failure of the engine reads as an empty answer: each is an error result naming its kind. A set id with no documents is the error `label_not_found`.
+37. The retrieval service reaches the engine only with `fetch` and its REST API, and each request has a time limit.
+38. A call from the gate to the retrieval service that gets no answer stops the gate (exit 2). A refusal counts only when it is the service's own `invalid_input` result.
+39. Every gate image and gate compose project is named for the checkout it was built from, so a gate run from one checkout never runs an image another checkout built.
 
 ## Where each step runs
 
@@ -225,11 +229,11 @@ The agent that calls these two tools is the label expert: [expert-agent.md](expe
 | `census` | The same | None | `corpus/` read-only, `data/` read-write |
 | `parse` | The same | None | `corpus/` read-only, `data/` read-write |
 | `chunk` | The same | None | `corpus/` read-only, `data/` read-write |
-| `index` | The same image, on the stack's network | The search engine only | `corpus/` read-only, `data/` read-write (read only) |
+| `index` | The same image, on the stack's network | The search engine only | `corpus/` and `data/` read-only |
 | `search` service | OpenSearch, no capabilities, no new privileges, not read-only (it writes its keystore at start) | The stack's network, no published port | None; a named volume for its data |
 | `knowledge` service | The `run` stage image, read-only, no capabilities | The stack's network; `127.0.0.1:8002` | None |
 | Gate | The same image, on the stack's network, through `knowledge/gate/compose.yaml` | The stack's network | `data/`, `corpus/` and `platform/identity/src/`, read-only |
-| Tests F1 to F13, P1 to P21, U1 to U18, S1 to S14 | `toolchain/check.sh` | None; the stand-in listens on loopback | None |
+| Tests F1 to F13, P1 to P21, U1 to U18, S1 to S28 | `toolchain/check.sh` | None; the stand-in listens on loopback | None |
 
 ## Parsing: problems and what follows
 

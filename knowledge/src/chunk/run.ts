@@ -1,12 +1,13 @@
 // The chunk command: every label in the manifest, from its parsed document to a chunk file and one entry in the
-// chunk report. The report holds numbers, codes and identifiers only. A label that fails the check gets no chunk
+// chunk report. The report holds numbers, codes, identifiers and the sha256 of each chunk file written, so the
+// report changes whenever any chunk's bytes change (the index is named from it). A label that fails the check gets no chunk
 // file (one left by an earlier run is removed).
 
 import { readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { readManifest } from '../fetch.ts'
-import { writeIfChanged } from '../files.ts'
+import { sha256, writeIfChanged } from '../files.ts'
 import type { ParsedDocument } from '../parse/model.ts'
 import { parsedPath } from '../parse/run.ts'
 import { isGuid } from '../schema.ts'
@@ -45,7 +46,8 @@ export type ChunkReport = {
   splits: { paragraphsSplitAtSentences: number; sentencesSplitBetweenWords: number; listsSplitBetweenItems: number; itemsSplit: number }
   sectionsImageOnlySkipped: number
   largest: { id: string; type: Chunk['type']; words: number }[]
-  labels: { setId: string; version: number; status: 'chunked' | 'not-chunked'; chunks: number }[]
+  // sha256: of the chunk file's bytes, for a label that was chunked.
+  labels: { setId: string; version: number; status: 'chunked' | 'not-chunked'; chunks: number; sha256?: string }[]
 }
 
 // Nearest-rank percentiles of a list of sizes.
@@ -113,10 +115,11 @@ export async function runChunk(options: ChunkOptions): Promise<ChunkReport> {
       report.labels.push({ setId: entry.setId, version: entry.version, status: 'not-chunked', chunks: 0 })
       continue
     }
-    await writeIfChanged(target, result.chunks.map((chunk) => `${JSON.stringify(chunk)}\n`).join(''))
+    const content = result.chunks.map((chunk) => `${JSON.stringify(chunk)}\n`).join('')
+    await writeIfChanged(target, content)
     all.push(...result.chunks)
     stats.push(result.stats)
-    report.labels.push({ setId: entry.setId, version: entry.version, status: 'chunked', chunks: result.chunks.length })
+    report.labels.push({ setId: entry.setId, version: entry.version, status: 'chunked', chunks: result.chunks.length, sha256: sha256(Buffer.from(content, 'utf8')) })
   }
 
   report.counts.chunked = report.labels.filter((label) => label.status === 'chunked').length

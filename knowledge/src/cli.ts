@@ -16,9 +16,10 @@
 //                 --zip-max-bytes <n> --xml-max-bytes <n>
 //
 // Exit codes: 0 done (for parse and chunk: ran to the end, whatever the labels' results); 1 done, with labels or files
-//             refused (fetch, census), a request that failed (pin), or an index whose count differed (index);
-//             2 could not run (flags, tracked files that do not pass the schema, or a search engine that could not
-//             be asked).
+//             refused (fetch, census), a request that failed (pin), or items the engine refused or a count that
+//             differed (index); 2 could not run (flags, tracked files that do not pass the schema; for index, a chunk
+//             report or chunk file that is missing, not JSON or not matching its hash, or a search engine that could
+//             not be asked or stopped the run).
 
 import { runCensus } from './census.ts'
 import { runChunk } from './chunk/run.ts'

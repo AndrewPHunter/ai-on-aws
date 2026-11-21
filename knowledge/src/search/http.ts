@@ -1,5 +1,5 @@
-// The retrieval service's HTTP server: MCP at POST /mcp, and GET /ping. Every route but GET /ping requires a
-// valid access token, checked before the body is read, as the case system's agent server does.
+// The retrieval service's HTTP server: MCP at POST /mcp, and GET /ping. Every request but GET /ping requires a
+// valid access token, checked before anything else of the request is read: the target, then the body.
 
 import { createServer } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
@@ -53,13 +53,19 @@ export function createRetrievalServer(engine: Engine, index: string, checkToken:
   });
 
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    const { pathname } = new URL(request.url ?? '/', 'http://knowledge');
+    // A target that cannot be parsed is answered only after the token is judged; it is never GET /ping.
+    let pathname: string | undefined;
+    try {
+      pathname = new URL(request.url ?? '/', 'http://knowledge').pathname;
+    } catch {
+      pathname = undefined;
+    }
     if (pathname === '/ping' && request.method === 'GET') {
       sendJson(response, 200, { status: 'Healthy' });
       return;
     }
 
-    // The token is judged before anything of the body is read.
+    // The token is judged before anything else of the request is read: the target, then the body.
     const checked = await checkToken(request.headers.authorization);
     if (checked.kind !== 'caller') {
       if (checked.kind === 'refused') {
@@ -72,6 +78,11 @@ export function createRetrievalServer(engine: Engine, index: string, checkToken:
       return;
     }
 
+    if (pathname === undefined) {
+      request.resume();
+      sendJson(response, 400, { error: 'bad_request', detail: 'The request target is not a path this service can read.' });
+      return;
+    }
     if (pathname !== '/mcp') {
       request.resume();
       sendJson(response, 404, { error: 'not_found' });

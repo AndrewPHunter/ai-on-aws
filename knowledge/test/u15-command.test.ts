@@ -36,10 +36,11 @@ test('U15. chunk files, the report, and a second run', async (t) => {
   const report = JSON.parse(text) as { notChunked: { setId: string; reason: string }[]; labels: unknown[] }
   assert.deepEqual(report.notChunked.map((item) => [item.setId, item.reason]), [[P8_CLASH.setId, 'no-parsed-file']])
   assert.equal(report.labels.length, 3)
-  // Identifiers and codes only: set ids, chunk ids, and the report's own codes.
+  // Identifiers and codes only: set ids, chunk ids, the report's own codes, and the sha256 of each chunk file.
   const codes = new Set(['text', 'table', 'table-rows', 'chunked', 'not-chunked', 'no-parsed-file', 'check-failed'])
   const strange = strings(report).filter(
-    (value) => !codes.has(value) && !labels.some((label) => value === label.setId || value.startsWith(`${label.setId}/`)),
+    (value) =>
+      !codes.has(value) && !/^[0-9a-f]{64}$/.test(value) && !labels.some((label) => value === label.setId || value.startsWith(`${label.setId}/`)),
   )
   assert.deepEqual(strange, [])
   assert.ok(!text.includes('Invented'))
