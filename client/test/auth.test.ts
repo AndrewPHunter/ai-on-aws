@@ -55,14 +55,18 @@ async function bodyOf(request: IncomingMessage): Promise<unknown> {
   return text === '' ? null : (JSON.parse(text) as unknown);
 }
 
-async function startRecorder(t: TestContext, answer: (request: Recorded) => unknown): Promise<Recorder> {
+async function startRecorder(
+  t: TestContext,
+  answer: (request: Recorded) => unknown,
+  statusFor: (request: Recorded) => number = () => 200,
+): Promise<Recorder> {
   const received: Recorded[] = [];
   const server = createServer((request: IncomingMessage, response: ServerResponse) => {
     bodyOf(request)
       .then((body) => {
         const recorded = { method: request.method ?? '', path: request.url ?? '', authorization: request.headers.authorization, body };
         received.push(recorded);
-        response.writeHead(200, { 'content-type': 'application/json' });
+        response.writeHead(statusFor(recorded), { 'content-type': 'application/json' });
         response.end(JSON.stringify(answer(recorded)));
       })
       .catch((error: unknown) => {
@@ -348,15 +352,13 @@ test('C8. list, get and review carry the bearer token; health checks carry no Au
   assert.deepEqual(pings(agent).map((entry) => entry.authorization), [undefined]);
 });
 
-test('C9. a review goes out under the signed-in reviewer; a body naming a reviewer is 400; a non-reviewer is 403', async (t) => {
+test('C9. a review goes out with no reviewer field, for the case system to take from the token; a body naming a reviewer is 400; a non-reviewer is 403', async (t) => {
   const cases = await startCaseSystem(t);
   const reviewer = await startClient(t, { agents: [], caseReviewUrl: cases.url, webRoot: tempDir(t), user: RILEY });
   const review = `${reviewer.url}/api/cases/AE-000001/review`;
 
   assert.equal((await postJson(review, { decision: 'reject', note: 'Not an adverse event.' })).status, 200);
-  assert.deepEqual(cases.received.map((entry) => entry.body), [
-    { decision: 'reject', note: 'Not an adverse event.', reviewer: 'Riley Reviewer' },
-  ]);
+  assert.deepEqual(cases.received.map((entry) => entry.body), [{ decision: 'reject', note: 'Not an adverse event.' }]);
 
   const named = await postJson(review, { decision: 'approve', reviewer: 'Someone Else' });
   assert.equal(named.status, 400);
@@ -578,4 +580,32 @@ test('C17. a callback completes a sign-in only in the browser that started it, b
   await completed.body?.cancel();
   assert.match(cookiePair(setCookie(completed, 'desk_session')), /^desk_session=.+/);
   assert.equal(setCookie(completed, 'desk_signin'), 'desk_signin=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0');
+});
+
+test('C18. a decision reaches the case system as { decision, note? } with the bearer token and no reviewer; its 403 comes back unchanged', async (t) => {
+  const refusal = { error: 'not_a_reviewer', detail: 'Deciding a case needs the reviewer role.' };
+  const cases = await startRecorder(
+    t,
+    (request) => (request.path === '/ping' ? { status: 'Healthy' } : request.path.endsWith('/review') && request.path.includes('AE-000002') ? refusal : { case: { case_id: 'AE-000001' } }),
+    (request) => (request.path.endsWith('/review') && request.path.includes('AE-000002') ? 403 : 200),
+  );
+  const client = await startClient(t, { agents: [], caseReviewUrl: cases.url, webRoot: tempDir(t), user: RILEY });
+
+  assert.equal((await postJson(`${client.url}/api/cases/AE-000001/review`, { decision: 'approve' })).status, 200);
+  assert.equal(
+    (await postJson(`${client.url}/api/cases/AE-000001/review`, { decision: 'request_information', note: 'Which dose?' })).status,
+    200,
+  );
+  const bearer = `Bearer ${lastIssued(client).access_token}`;
+  assert.deepEqual(
+    cases.received.map((entry) => [entry.path, entry.authorization, entry.body]),
+    [
+      ['/cases/AE-000001/review', bearer, { decision: 'approve' }],
+      ['/cases/AE-000001/review', bearer, { decision: 'request_information', note: 'Which dose?' }],
+    ],
+  );
+
+  const passedBack = await postJson(`${client.url}/api/cases/AE-000002/review`, { decision: 'approve' });
+  assert.equal(passedBack.status, 403);
+  assert.deepEqual(passedBack.body, refusal);
 });

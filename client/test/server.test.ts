@@ -16,6 +16,7 @@ import { InquiryStore } from '../src/store.ts';
 import {
   EXAMPLE_RESPONSE,
   RILEY,
+  caseSystemCheck,
   clientConfig,
   deadUrl,
   eventually,
@@ -426,7 +427,9 @@ test('an unexpected failure is a 500 internal_error with no stack trace', async 
 test('status reports the case system and each agent as up when they answer the health check', async (t) => {
   const agent = await startStandInAgent(t, 'correct');
   const caseStore = new CaseStore(':memory:', () => new Date('2026-01-01T00:00:00Z'));
-  const reviewServer = createReviewServer(caseStore);
+  // Only its health check is asked, which needs no token; its token check is never reached.
+  const unusedIdentity = { issuer: await startIssuer(t, settableClock('2026-01-01T00:00:00Z')), clock: settableClock('2026-01-01T00:00:00Z') };
+  const reviewServer = createReviewServer(caseStore, caseSystemCheck(unusedIdentity.issuer, unusedIdentity.clock), 'reviewer');
   t.after(() => {
     stop(reviewServer);
     caseStore.close();

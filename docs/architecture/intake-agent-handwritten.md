@@ -227,6 +227,7 @@ A refusal is 401 with `WWW-Authenticate: Bearer error="invalid_token"` and `{"er
 2. The model makes no call. Every call to the case system goes through `runToolCall`, or is the one repeat that `runToolCall` makes itself.
 3. The message identifier, the receipt time, the sender and the agent's name reach the case system as headers set by code when the connection is opened, with the caller's access token beside them. None is in the tool descriptions, so the model cannot supply them.
 3a. No handler runs, and no body is read, for a request without an accepted access token. A token is accepted only if it has at least the run's 150 s left, so it cannot expire during the run it starts.
+3b. The case system checks the token the agent passes on, before it reads the request. A refusal when the agent connects fails the run with "The case system refused the caller's token."; a case system that cannot check tokens, with "The case system could not check the caller's token." The model is not asked in either case.
 4. A run opens or finds at most one case for its message and adds no version to that case.
 5. A lookup returns only cases the message's sender has reported on, and a follow-up is accepted only on such a case. The case system enforces both from the sender header. A case from another sender is answered exactly as a case that does not exist.
 6. A write that got no answer is repeated at most once, by code, with identical content. The model is not asked to repeat it.
@@ -264,7 +265,9 @@ Each row is a control this agent does not have, where it would sit in the flow, 
 |---|---|---|
 | Proof of who sent the message | The request | `sender` is free text from the caller. The reporter recorded in a case is whatever was typed. The limit on lookups and follow-ups rests on this text: a caller that supplies another sender's exact text can find and add to that sender's cases |
 | A check of the identifier and receipt time | `invoke` | Both are forwarded as given. A second identifier for the same message opens a second case. A receipt time in the past is accepted, so the start of the reporting clock can be set by the caller |
-| A check of the token by the case system | The case system's MCP endpoint | The agent sends the caller's token, but the case system does not check it. The agent's name is still a header it claims, and anything that can reach the case system can claim it |
+| Proof of which agent is calling | The case system's MCP endpoint | The case system checks the caller's token, but the agent's name (`x-agent-id`) is still a header it claims: anything holding a valid token can claim to be any agent |
+| A narrower token for the case system | `connectCaseTools` | The caller's token is passed on unchanged, not exchanged for one limited to this agent and this run, so the case system accepts it for anything that user may do there |
+| Special handling of a token refused mid-run | `ToolSet.call` | A tool call the case system refuses (401) or cannot check (503) after the connection was accepted falls under the rules for a call that got no answer (see "One tool call") |
 | A check of the caller's roles | `invoke` | Any accepted token may submit a message; the roles are given to the handler and not used |
 | Encryption between the pieces | All three hops | Plain HTTP. The model server's key crosses the local network unencrypted |
 | Rotation of the model server's key | `serve.ts` | One long-lived key, read from a file into an environment variable |

@@ -457,7 +457,8 @@ export function createClientServer(deps: ClientDeps): Server {
     };
   }
 
-  // The reviewer is whoever is signed in, never a name the browser sends.
+  // The reviewer is whoever is signed in, never a name the browser sends: the case system takes it from
+  // the access token. A non-reviewer is stopped here, and behind this by the case system.
   function reviewRoute(caseId: string): Route {
     return {
       POST: async (request, response, _url, session) => {
@@ -468,7 +469,9 @@ export function createClientServer(deps: ClientDeps): Server {
         if (field(body, 'reviewer') !== undefined) {
           throw badRequest('"reviewer" is set by the server to whoever is signed in. Do not send it.');
         }
-        const review: Record<string, unknown> = { ...(body as Record<string, unknown>), reviewer: session.user.name };
+        const decision = field(body, 'decision');
+        const note = field(body, 'note');
+        const review: Record<string, unknown> = note === undefined ? { decision } : { decision, note };
         const token = await accessToken(session, CASE_TOKEN_MIN_LIFE_MS);
         sendForwarded(response, await postReview(config.caseReviewUrl, caseId, review, token));
       },

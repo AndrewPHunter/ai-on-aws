@@ -139,7 +139,8 @@ Against the local model (Qwen3.5-9B on vLLM), through the client, on the seven p
 
 ## Known limits
 
-- **The case system does not check the token the agent sends,** and the agent trusts the case system's address. The agent's name is still a header it claims.
+- **The case system checks the token the agent passes on.** If it refuses the token when the agent connects, the run fails with "The case system refused the caller's token."; if it cannot check tokens, with "The case system could not check the caller's token." A refusal on a later tool call in the same run is not told apart: it is handled as a call that got no answer.
+- **The agent's name is still a header it claims,** and the token is passed on unchanged, not exchanged for a narrower one. The agent trusts the case system's address.
 - **The caller's roles are read but not used:** any accepted token may submit a message.
 - **The token check has run in tests only,** against a stand-in issuer, not yet in an agent container against the lab's Keycloak.
 - **The message text is put between `<message>` tags.** A message that contains the closing tag has not been tried.

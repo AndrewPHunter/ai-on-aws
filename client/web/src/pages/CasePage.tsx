@@ -224,7 +224,8 @@ export function CasePage() {
               <li key={entry.seq} className={`audit__entry audit__entry--${entry.actor_kind}`}>
                 <p className="audit__what">{auditLabel(entry.action)}</p>
                 <p className="audit__who">
-                  {entry.actor_kind === 'reviewer' ? 'Reviewer' : 'Agent'} {entry.actor}, {formatDateTime(entry.at)}
+                  {entry.actor_kind === 'reviewer' ? 'Reviewer' : 'Agent'} {entry.actor}
+                  {entry.acting_for === null ? '' : `, for ${entry.acting_for.name}`}, {formatDateTime(entry.at)}
                 </p>
                 <details>
                   <summary>Recorded detail</summary>

@@ -1,22 +1,32 @@
-// Starts the case system: one store, the agent server on 8000 and the review server on 8001.
+// Starts the case system: one store, the agent server on 8000 and the review server on 8001. Both
+// require a valid access token on every route but GET /ping.
 
+import { createAccessTokenCheck } from '../../../shared/access-token.ts';
 import { createAgentServer, createReviewServer } from './http.ts';
+import { settingsFrom } from './settings.ts';
+import type { CaseSystemSettings } from './settings.ts';
 import { CaseStore } from './store.ts';
 
 const AGENT_PORT = 8000;
 const REVIEW_PORT = 8001;
 const HOST = '0.0.0.0';
+// After a token names a key not yet seen, the provider's keys are fetched again at most this often.
+const KEY_REFETCH_WAIT_MS = 30_000;
+const IDENTITY_TIMEOUT_MS = 5_000;
 
-const databasePath = process.env['CASE_DB_PATH'];
-if (databasePath === undefined || databasePath === '') {
-  console.error('CASE_DB_PATH is not set. It is the path of the SQLite file that holds the cases.');
+let settings: CaseSystemSettings;
+try {
+  settings = settingsFrom(process.env);
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
   process.exit(2);
 }
 
 const now = (): Date => new Date();
-const store = new CaseStore(databasePath, now);
-const agentServer = createAgentServer(store, now);
-const reviewServer = createReviewServer(store);
+const store = new CaseStore(settings.databasePath, now);
+const checkToken = createAccessTokenCheck(settings.auth, { now, keyRefetchWaitMs: KEY_REFETCH_WAIT_MS, timeoutMs: IDENTITY_TIMEOUT_MS });
+const agentServer = createAgentServer(store, now, checkToken);
+const reviewServer = createReviewServer(store, checkToken, settings.reviewerRole);
 
 agentServer.listen(AGENT_PORT, HOST, () => {
   console.log(`Agent server (MCP at /mcp) listening on ${HOST}:${AGENT_PORT}`);

@@ -62,7 +62,7 @@ import type { InboundMessage, InvocationResponse } from '../../../shared/agent-c
 import type { AgentIdentity } from '../contract/server.ts';
 import { MODEL_UNREACHABLE, modelAnsweredWithStatus, modelDidNotAnswerWithin } from '../model/served.ts';
 import type { ModelSettings } from '../model/served.ts';
-import { CASE_SYSTEM_UNREACHABLE, caseSystemHeaders, noAnswerWithin, payloadOf } from '../tools/case-system.ts';
+import { caseSystemHeaders, connectionFailure, noAnswerWithin, payloadOf } from '../tools/case-system.ts';
 import type { ToolOutcome } from '../tools/tool-set.ts';
 import { SYSTEM_PROMPT, userTurn } from './prompt.ts';
 import {
@@ -195,9 +195,10 @@ export async function handleInquiry(deps: StrandsDeps, message: InboundMessage, 
         await mcp.connect();
         return mcp.listTools();
       });
-    } catch {
-      recordError(run, CASE_SYSTEM_UNREACHABLE);
-      return failed(run, CASE_SYSTEM_UNREACHABLE);
+    } catch (error) {
+      const reason = connectionFailure(error);
+      recordError(run, reason);
+      return failed(run, reason);
     }
     return await converse(run, deps, mcp, listed, message);
   } finally {

@@ -5,8 +5,8 @@ The contracts between pieces: the shapes one piece sends and another reads. A pi
 | File | Contract | Produced by | Read by |
 |---|---|---|---|
 | [`agent-contract.ts`](agent-contract.ts) | What an agent is sent at `POST /invocations` and what it returns: the reply, the label passages it cites, what it did to cases, and every step it took | Agents | The client, and later the evaluation harness |
-| [`case-contract.ts`](case-contract.ts) | Cases, their versions, their audit trail, and a review decision | The case system | The client |
-| [`access-token.ts`](access-token.ts) | The check of an access token presented as `Authorization: Bearer`: signature against the identity provider's keys (RS256 only), issuer, audience, allowed `client_id`, expiry and a minimum remaining life. Gives the caller, a named refusal, or "unavailable" when the provider cannot be asked | The identity provider's tokens | The agents |
+| [`case-contract.ts`](case-contract.ts) | Cases, their versions, their audit trail (with whom an agent acted for, and a reviewer's subject), and a review decision (`{ decision, note? }`: the reviewer comes from the access token) | The case system | The client |
+| [`access-token.ts`](access-token.ts) | The check of an access token presented as `Authorization: Bearer`: signature against the identity provider's keys (RS256 only), issuer, audience, allowed `client_id`, expiry and a minimum remaining life. Gives the caller, a named refusal, or "unavailable" when the provider cannot be asked | The identity provider's tokens | The agents and the case system |
 
 `agent-contract.ts` is schemas as well as types: whatever calls an agent checks the answer against them.
 

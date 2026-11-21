@@ -12,6 +12,8 @@ import { join } from 'node:path';
 import type { TestContext } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 
+import { createAccessTokenCheck } from '../../shared/access-token.ts';
+import type { AccessTokenCheck } from '../../shared/access-token.ts';
 import type { InvocationResponse } from '../../shared/agent-contract.ts';
 import { startStandInIssuer } from '../../test-support/issuer.ts';
 import type { ScriptedUser, StandInIssuer } from '../../test-support/issuer.ts';
@@ -105,8 +107,8 @@ export function fetchAs(url: string, init: RequestInit = {}): Promise<Response> 
   return fetch(url, { ...init, headers });
 }
 
-export async function getJson(url: string): Promise<Answer> {
-  const response = await fetchAs(url);
+export async function getJson(url: string, headers: Record<string, string> = {}): Promise<Answer> {
+  const response = await fetchAs(url, { headers });
   const body: unknown = await response.json();
   return { status: response.status, headers: response.headers, body };
 }
@@ -207,6 +209,37 @@ export async function startIssuer(t: TestContext, clock: SettableClock, issuer: 
   });
   t.after(() => standIn.close());
   return standIn;
+}
+
+// The check the case system makes, configured as in the lab (audience lab-case-system, client desk), trusting
+// the given stand-in issuer.
+export function caseSystemCheck(issuer: StandInIssuer, clock: SettableClock): AccessTokenCheck {
+  return createAccessTokenCheck(
+    {
+      discoveryUrl: issuer.discoveryUrl,
+      issuer: issuer.issuer,
+      audience: 'lab-case-system',
+      allowedClients: [CLIENT_ID],
+      rolesClaim: 'roles',
+      minRemainingSeconds: 0,
+    },
+    { now: clock.now, keyRefetchWaitMs: 30_000, timeoutMs: 2000 },
+  );
+}
+
+// An access token for a user, minted directly by the stand-in, with the lab's claims.
+export function tokenFor(issuer: StandInIssuer, user: ScriptedUser): Promise<string> {
+  return issuer.mintAccessToken({
+    lifetimeSeconds: 600,
+    claims: {
+      aud: ['lab-agents', 'lab-case-system'],
+      client_id: CLIENT_ID,
+      sub: user.sub,
+      preferred_username: user.preferred_username,
+      name: user.name,
+      roles: user.roles,
+    },
+  });
 }
 
 export function oidcConfig(discoveryUrl: string, revocationEndpoint: string | null): OidcConfig {
@@ -314,6 +347,9 @@ export type ClientOptions = {
   discoveryUrl?: string;
   // Where the client revokes refresh tokens. Default: the stand-in's real revocation endpoint.
   revocationEndpoint?: string | null;
+  // A stand-in issuer and its clock to use, when another server in the test must trust the same issuer.
+  // Default: a new one.
+  identity?: { issuer: StandInIssuer; clock: SettableClock };
 };
 
 export type RunningClient = { url: string; store: InquiryStore; issuer: StandInIssuer; clock: SettableClock };
@@ -322,8 +358,8 @@ export type RunningClient = { url: string; store: InquiryStore; issuer: StandInI
 // stand-in go by a separate settable clock, so signing in and renewing never shift a record's time.
 export async function startClient(t: TestContext, options: ClientOptions): Promise<RunningClient> {
   const now = steppingClock(CLIENT_START);
-  const clock = settableClock(CLIENT_START);
-  const issuer = await startIssuer(t, clock);
+  const clock = options.identity?.clock ?? settableClock(CLIENT_START);
+  const issuer = options.identity?.issuer ?? (await startIssuer(t, clock));
   const store = new InquiryStore(options.dbPath ?? ':memory:', now);
   const config = clientConfig({
     ...options,

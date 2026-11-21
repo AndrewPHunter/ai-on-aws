@@ -1,4 +1,5 @@
-// Case review through the client, against the real case system run in this process.
+// Case review through the client, against the real case system run in this process. Both trust one
+// stand-in issuer: the client signs in through it, and the case system checks the tokens it issues.
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -9,9 +10,25 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 
 import { CONTEXT_HEADERS, createAgentServer, createReviewServer } from '../../tools/case-system/src/http.ts';
 import { CaseStore } from '../../tools/case-system/src/store.ts';
-import { deadUrl, getJson, listen, postJson, prop, startClient, stop, tempDir } from './helpers.ts';
+import {
+  CLIENT_START,
+  DANA,
+  caseSystemCheck,
+  deadUrl,
+  getJson,
+  listen,
+  postJson,
+  prop,
+  settableClock,
+  startClient,
+  startIssuer,
+  stop,
+  tempDir,
+  tokenFor,
+} from './helpers.ts';
 
-type Running = { clientUrl: string; reviewUrl: string };
+// direct: the headers for calling the review server directly, as the signed-in user.
+type Running = { clientUrl: string; reviewUrl: string; direct: Record<string, string> };
 
 const COMPLETE = {
   patient: 'JD, 54, male',
@@ -25,8 +42,11 @@ const COMPLETE = {
 async function start(t: TestContext): Promise<Running> {
   let seconds = 0;
   const store = new CaseStore(':memory:', () => new Date(Date.UTC(2026, 0, 1, 0, 0, seconds++)));
-  const agentServer = createAgentServer(store, () => new Date('2026-01-01T00:00:00Z'));
-  const reviewServer = createReviewServer(store);
+  const clock = settableClock(CLIENT_START);
+  const issuer = await startIssuer(t, clock);
+  const check = caseSystemCheck(issuer, clock);
+  const agentServer = createAgentServer(store, () => new Date('2026-01-01T00:00:00Z'), check);
+  const reviewServer = createReviewServer(store, check, 'reviewer');
   t.after(() => {
     stop(agentServer);
     stop(reviewServer);
@@ -43,6 +63,8 @@ async function start(t: TestContext): Promise<Running> {
         [CONTEXT_HEADERS.receivedAt]: '2025-12-31T23:00:00Z',
         [CONTEXT_HEADERS.agentId]: 'intake-agent',
         [CONTEXT_HEADERS.sender]: encodeURIComponent('Dr A. Rivera, a.rivera@example.org'),
+        // The agent passes on the token of the user it acts for.
+        authorization: `Bearer ${await tokenFor(issuer, DANA)}`,
       },
     },
   });
@@ -51,16 +73,17 @@ async function start(t: TestContext): Promise<Running> {
   assert.notEqual(created.isError, true);
   await mcp.close();
 
-  const client = await startClient(t, { agents: [], caseReviewUrl: reviewUrl, webRoot: tempDir(t) });
-  return { clientUrl: client.url, reviewUrl };
+  const client = await startClient(t, { agents: [], caseReviewUrl: reviewUrl, webRoot: tempDir(t), identity: { issuer, clock } });
+  const signedIn = client.issuer.issued.at(-1)?.access_token ?? '';
+  return { clientUrl: client.url, reviewUrl, direct: { authorization: `Bearer ${signedIn}` } };
 }
 
 test('cases are listed through the client exactly as the review server lists them', async (t) => {
-  const { clientUrl, reviewUrl } = await start(t);
+  const { clientUrl, reviewUrl, direct } = await start(t);
 
   const listed = await getJson(`${clientUrl}/api/cases`);
   assert.equal(listed.status, 200);
-  assert.deepEqual(listed.body, (await getJson(`${reviewUrl}/cases`)).body);
+  assert.deepEqual(listed.body, (await getJson(`${reviewUrl}/cases`, direct)).body);
   const cases = prop(listed.body, 'cases');
   assert.ok(Array.isArray(cases));
   assert.deepEqual(
@@ -73,15 +96,15 @@ test('cases are listed through the client exactly as the review server lists the
 
   const bogus = await getJson(`${clientUrl}/api/cases?status=bogus`);
   assert.equal(bogus.status, 400);
-  assert.deepEqual(bogus.body, (await getJson(`${reviewUrl}/cases?status=bogus`)).body);
+  assert.deepEqual(bogus.body, (await getJson(`${reviewUrl}/cases?status=bogus`, direct)).body);
 });
 
 test('one case is read through the client with its versions and audit trail; a missing one is 404', async (t) => {
-  const { clientUrl, reviewUrl } = await start(t);
+  const { clientUrl, reviewUrl, direct } = await start(t);
 
   const record = await getJson(`${clientUrl}/api/cases/AE-000001`);
   assert.equal(record.status, 200);
-  assert.deepEqual(record.body, (await getJson(`${reviewUrl}/cases/AE-000001`)).body);
+  assert.deepEqual(record.body, (await getJson(`${reviewUrl}/cases/AE-000001`, direct)).body);
   assert.equal(prop(prop(record.body, 'case'), 'case_id'), 'AE-000001');
 
   const missing = await getJson(`${clientUrl}/api/cases/AE-999999`);

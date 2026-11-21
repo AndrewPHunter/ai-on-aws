@@ -2,7 +2,7 @@
 
 The lab's OpenID Connect provider: Keycloak in development mode, one realm, imported from a file at every start. It stands in for the identity provider that AgentCore's JWT authorizer trusts. To use it, see [platform/identity/README.md](../../platform/identity/README.md).
 
-Two pieces consume its tokens. The client's server signs desk staff in, keeps their tokens, and sends the access token on every call to an agent and to the case system. The agents require a valid access token on `POST /invocations` and pass it on to the case system. The case system accepts a call with or without a token and checks nothing.
+Three pieces consume its tokens. The client's server signs desk staff in, keeps their tokens, and sends the access token on every call to an agent and to the case system. The agents require a valid access token on `POST /invocations` and pass it on to the case system. The case system requires a valid access token on every request but `/ping`, records the user an agent acted for, and takes the reviewer and the reviewer role from the token.
 
 ## Terms
 
@@ -210,6 +210,54 @@ The discovery document and keys are fetched on first need and kept; a failure is
 | Custom-claim rule (optional) | `AUTH_ROLES_CLAIM` names the claim; no rule is applied | `roles` |
 | — | Minimum remaining life | 150 s |
 
+## The case system
+
+Both case-system servers check the access token with `shared/access-token.ts` before anything else, with the agents' checks in the same order, audience `lab-case-system` and no minimum remaining life. A refusal is 401 with `WWW-Authenticate: Bearer error="invalid_token"`; a provider that cannot be asked is 503 `identity_unavailable`. Nothing reaches the MCP server or the store before the token is accepted.
+
+| Server | Route | Needs | Takes from the token |
+|---|---|---|---|
+| Agent server | `POST /mcp` | A valid token | The user the agent acts for: `name` and `sub`, recorded on every audit entry of the agent's change beside the agent's name |
+| Review server | `GET /cases`, `GET /cases/<id>` | A valid token | — |
+| Review server | `POST /cases/<id>/review` | A valid token whose `roles` hold `reviewer`; checked before the case is looked up (403 `not_a_reviewer`) | The reviewer: `name` as the audit actor, `sub` as `actor_subject`. A body naming a `reviewer` is 400 |
+| Both | `GET /ping` | Nothing | — |
+
+## From sign-in to an audit entry
+
+```mermaid
+sequenceDiagram
+  participant B as Browser
+  participant C as client
+  participant K as identity
+  participant A as Agent
+  participant S as Case system
+  B->>C: sign in (Authorization Code with PKCE, see above)
+  C->>K: code, verifier, client secret
+  K-->>C: access token (aud lab-agents, lab-case-system; client_id desk; roles), ID token
+  C-->>B: session cookie
+  B->>C: POST /api/inquiries (cookie)
+  C->>C: session; token has 180 s left, or renew; record who entered it
+  C->>A: POST /invocations, Authorization: Bearer token
+  A->>K: discovery and keys (first need only)
+  A->>A: check token: RS256 signature, iss, aud lab-agents, client_id, 150 s left
+  A->>S: MCP initialize, tools/list, tools/call, Bearer token (unchanged) and the four context headers
+  S->>S: check token: RS256 signature, iss, aud lab-case-system, client_id
+  S->>S: write the case; audit entry: actor = agent's name (header), acting_for = token's name and sub
+  S-->>A: result
+  A-->>C: response inside the agent contract
+  B->>C: POST /api/cases/<id>/review (cookie)
+  C->>C: reviewer role in the ID token, or 403
+  C->>S: POST /cases/<id>/review { decision, note? }, Bearer token
+  S->>S: check token; reviewer role in the token, or 403; audit entry: actor = token's name, actor_subject = sub
+```
+
+### Who checks what
+
+| Checker | What it receives | Audience required | Other checks | What it takes from the token |
+|---|---|---|---|---|
+| Client | The ID token, from the token endpoint at sign-in | `desk` (the ID token's `aud`) | Signature, issuer, nonce, expiry; the browser that started the sign-in | Who the user is, and whether they hold `reviewer` |
+| Agent | The access token, from the client | `lab-agents` | Signature (RS256), issuer, `client_id` `desk`, 150 s left | The caller, given to the handler; the token itself, passed on |
+| Case system | The access token, from an agent or from the client | `lab-case-system` | Signature (RS256), issuer, `client_id` `desk`, not expired | The user an agent acted for; the reviewer and the reviewer role |
+
 ## Where secrets live
 
 | Secret | Written by | Held in | Read by |
@@ -235,8 +283,12 @@ The realm file holds a `${NAME}` placeholder where each secret goes, and no secr
 
 | What | Note |
 |---|---|
-| A check of the access token by the case system | It accepts a call with or without one; the agents send it |
+| Proof of which agent is calling | The agent's own identity is still a header it claims (`x-agent-id`). The case system checks the user's token, not the agent: anything holding a valid token can claim to be any agent |
+| Proof of who sent a message | The sender is still text that the signed-in user vouches for. Lookups and follow-ups are limited by that text |
+| A narrower token downstream | The agent passes the user's access token on unchanged. It is not exchanged for one limited to the agent, the message or the run, so the case system accepts it for anything that user may do there |
+| Special handling of a token refused mid-run | A tool call the case system refuses after it accepted the connection falls under the agents' rules for a call that got no answer |
 | Use of the caller's roles by the agents | The roles are read and given to the handler; nothing is decided on them |
+| Role-based access to reading cases | Any valid token lists and reads every case on the review server |
 | Session expiry of the client's own | A session ends only at sign-out, a failed renewal or a restart |
 | `Secure` on the session cookie | The client is served over HTTP on this machine |
 | HTTPS | HTTP on loopback and the lab's network only |

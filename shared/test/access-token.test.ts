@@ -164,3 +164,15 @@ test('K6. the discovery document and the keys are fetched once for many checks',
   assert.equal(discoveryFetches(r.issuer), 1);
   assert.equal(keyFetches(r.issuer), 1);
 });
+
+test('K7. a correctly signed token lacking sub, preferred_username or name is refused as malformed', async (t) => {
+  const r = await rig(t);
+  for (const missing of ['sub', 'preferred_username', 'name'] as const) {
+    const claims: Record<string, unknown> = { ...CLAIMS };
+    delete claims[missing];
+    const token = await r.issuer.mintAccessToken({ lifetimeSeconds: 600, claims });
+    const { reason, detail } = refusal(await r.check(`Bearer ${token}`));
+    assert.equal(reason, 'malformed', missing);
+    assert.ok(!detail.includes(token), missing);
+  }
+});

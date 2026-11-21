@@ -4,7 +4,7 @@ An OpenID Connect provider for the lab: Keycloak 26.8.2 in development mode, wit
 
 It is a local stand-in for the identity provider that AgentCore's JWT authorizer trusts. On AWS that authorizer is configured with a discovery URL, the allowed audiences (`aud`), the allowed client IDs (read from a claim named `client_id`), and optional rules on custom claims. The tokens issued here carry those claims in that shape, so the code that will check them does not depend on anything particular to Keycloak.
 
-The client is the one piece that asks for tokens: its server signs desk staff in here, validates their ID tokens, and sends their access tokens to the agents and the case system. The agents and the case system do not check those tokens yet.
+Three pieces use its tokens. The client's server signs desk staff in here, validates their ID tokens, and sends their access tokens to the agents and the case system. The agents require a valid access token and pass it on to the case system. The case system requires one on every request, records whom an agent acted for, and takes the reviewer and the reviewer role from it.
 
 How it is put together: [docs/architecture/identity.md](../../docs/architecture/identity.md).
 
@@ -110,6 +110,30 @@ The gate is the browser here, but it runs inside the network, where `localhost:8
 
 It prints a JSON report: the endpoints from discovery, and for each user the token's header and decoded claims. It prints no password, secret, code or token. On the first statement that does not hold it exits 1 and names it in `failed`; if it cannot run, it exits 2.
 
+## The stack gate
+
+`stack-gate.sh` checks the whole running stack end to end, from inside its network, and exits 0 only if every statement holds:
+
+```bash
+platform/identity/stack-gate.sh <compose-project>
+```
+
+It uses the same image as `gate.sh` and joins `<compose-project>_default` the same way. For each of the two users it signs in through the client and Keycloak's own sign-in page, and checks:
+
+1. without a session, `/api/inquiries` is 401 and `/ping` is 200;
+2. `/auth/login` redirects to the provider with the code flow, the client, the redirect URI, `openid`, a state, a nonce and an S256 challenge, and sets the sign-in cookie with its attributes;
+3. Keycloak accepts the password and redirects to the callback; the callback creates a session, sets the session cookie with its attributes and clears the sign-in cookie;
+4. `/api/session` names the user, with `is_reviewer` true for `riley.reviewer` and false for `dana.desk`, and carries no token; `/api/status` lists the identity provider as up;
+5. a replayed callback, and a callback without the sign-in cookie, are 400;
+6. a POST from another origin is 403;
+7. each agent answers 401 `missing` to no token, 401 `malformed` to a token that is not a JWT, 401 to no token with a body outside the contract, and 200 on `/ping`;
+8. the case system's MCP endpoint and review server each answer 401 to no token and 200 on `/ping`;
+9. an inquiry to each agent is accepted and records who entered it, and its run ends with the agent's answer inside the contract, past the case system, recording who started it. It does not need a model server: a run may end at the model;
+10. a review by `dana.desk` of a case that does not exist is 403 `not_a_reviewer`, and by `riley.reviewer` 404 `case_not_found`;
+11. sign-out answers with the provider's end-session address carrying no token, and the same cookie is then 401. After the run, on the Docker host, the script reads the client's output since the gate started and requires no revocation failure in it; only the count of such lines is passed to the report.
+
+Every statement is checked even after one fails. The JSON report lists `held` and `failed`; it carries no password, code or token. Exit 1 if any statement does not hold, 2 if the gate cannot run.
+
 ## Development only
 
 | What | Here | Why it is not for production |
@@ -138,7 +162,8 @@ So the container's own layer holds the rebuilt server, and is discarded with the
 
 | What | Note |
 |---|---|
-| Anything that checks the access tokens | The agents and the case system accept a call with or without one. The client validates ID tokens only |
+| A token exchanged for a narrower one | The agents pass the user's access token on to the case system unchanged |
+| Proof of which agent is calling | An agent's name is still a header it claims; the case system checks the user's token, not the agent |
 | HTTPS | — |
 | Refresh-token policy, session limits, brute-force protection, password policy | Keycloak's defaults for a new realm |
 | Self-registration, password reset, email | Turned off; no mail server |

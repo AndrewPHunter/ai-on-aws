@@ -35,6 +35,47 @@ export function caseSystemHeaders(message: InboundMessage, agentId: string, call
 }
 
 export const CASE_SYSTEM_UNREACHABLE = 'The case system could not be reached.';
+export const CASE_SYSTEM_REFUSED_TOKEN = "The case system refused the caller's token.";
+export const CASE_SYSTEM_COULD_NOT_CHECK = "The case system could not check the caller's token.";
+
+// Every error in a chain: each one, its cause, and the errors an aggregate holds.
+function errorsIn(error: unknown, seen = new Set<unknown>()): unknown[] {
+  if (error === null || error === undefined || seen.has(error)) return [];
+  seen.add(error);
+  const found: unknown[] = [error];
+  if (error instanceof Error) {
+    found.push(...errorsIn(error.cause, seen));
+  }
+  if (error instanceof AggregateError) {
+    for (const inner of error.errors) found.push(...errorsIn(inner, seen));
+  }
+  return found;
+}
+
+// The text an error carries about the answer it came from: its message, and the answer's body where the
+// MCP client keeps it apart (@modelcontextprotocol/client puts it in data.text).
+function textsOf(error: unknown): string[] {
+  const texts = [error instanceof Error ? error.message : String(error)];
+  const data: unknown = typeof error === 'object' && error !== null ? Reflect.get(error, 'data') : undefined;
+  const body: unknown = typeof data === 'object' && data !== null ? Reflect.get(data, 'text') : undefined;
+  if (typeof body === 'string') texts.push(body);
+  return texts;
+}
+
+// Why connecting to the case system failed, as a run's reason. The case system answers a refused token
+// with 401 and {"error":"unauthorized"}, and a token it cannot check with 503 and
+// {"error":"identity_unavailable"}. The hand-written agent's MCP client puts that body in its error's
+// message; the one inside Strands keeps it in the error's data. Anything else is a case system not reached.
+export function connectionFailure(error: unknown): string {
+  const messages = errorsIn(error).flatMap(textsOf);
+  if (messages.some((message) => message.includes('"error":"unauthorized"'))) {
+    return CASE_SYSTEM_REFUSED_TOKEN;
+  }
+  if (messages.some((message) => message.includes('"error":"identity_unavailable"'))) {
+    return CASE_SYSTEM_COULD_NOT_CHECK;
+  }
+  return CASE_SYSTEM_UNREACHABLE;
+}
 
 export function noAnswerWithin(timeoutMs: number): string {
   return `The case system did not answer within ${Math.round(timeoutMs / 100) / 10} s, or the connection failed.`;
@@ -76,9 +117,9 @@ export async function connectCaseTools(
       type: 'function',
       function: { name: tool.name, description: tool.description ?? '', parameters: tool.inputSchema },
     }));
-  } catch {
+  } catch (error) {
     await client.close().catch(() => undefined);
-    return { ok: false, reason: CASE_SYSTEM_UNREACHABLE };
+    return { ok: false, reason: connectionFailure(error) };
   }
 
   return {

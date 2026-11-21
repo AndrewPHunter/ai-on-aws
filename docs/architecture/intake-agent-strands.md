@@ -177,7 +177,7 @@ Each is set in `converse` in `intake/strands.ts`.
 
 ## Not present, in addition
 
-Everything in the hand-written agent's "Not present" list is also absent here. Three more follow from Strands:
+Everything in the hand-written agent's "Not present" list is also absent here, including special handling of a token the case system refuses mid-run: such a tool call falls under the rules for a call that got no answer. The refusal at connection is named in the same two reasons as the hand-written agent's, read from the error Strands' MCP client raises. Three more follow from Strands:
 
 | Missing | What follows |
 |---|---|
@@ -187,7 +187,7 @@ Everything in the hand-written agent's "Not present" list is also absent here. T
 
 ## What was checked
 
-- The check passes with 216 tests on arm64 (amd64 not re-run since the access-token check was added). 64 of them are the 32 rows of the shared table, run once for each agent.
+- The check passes with 228 tests on arm64 (amd64 not re-run since the access-token checks were added). 66 of them are the 33 rows of the shared table, run once for each agent.
 - Against the 9B model, before the retries were turned on, the Strands agent was sent the seven prepared inquiries on an empty store. It gave the expected result for all seven and left three cases: one awaiting review at version 2, one incomplete, one awaiting review. The prompt was tuned on these seven with the hand-written agent, so this is not a held-out set.
 - With the retries on, each agent answered one inquiry against the 9B model, and each was run once with a model address where nothing listens. Both failed the run with "The model could not be reached." after about 1.4 s. The hand-written agent recorded three error steps, the Strands agent one.
 - With a bare Strands `Agent` against the 9B model, before this agent was written this way: a turn with a sentence and two tool calls came through whole; a turn cut off by its output allowance raised `MaxTokensError` carrying what had been written; asking again with `reasoning.effort: 'none'` gave an answer with no thinking; a tool result marked as an error was understood by the model.

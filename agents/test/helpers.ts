@@ -502,13 +502,45 @@ export async function startDroppingProxy(
 
 export const STORE_START = '2026-03-01T09:00:00.000Z';
 
-export type CaseSystem = { store: CaseStore; mcpUrl: string; reviewUrl: string };
+export type CaseSystem = {
+  store: CaseStore;
+  mcpUrl: string;
+  reviewUrl: string;
+  // The stand-in issuer the case system trusts, so a test can make it fail.
+  issuer: StandInIssuer;
+  // A signed-in user whose real token the case system accepts: who a run is for.
+  caller: Caller;
+  // The same user's token, for calling the review server; the user holds the reviewer role.
+  reviewerToken: string;
+};
 
+// The real case system, requiring real tokens from a stand-in issuer, as it does in the lab.
 export async function startCaseSystem(t: TestContext): Promise<CaseSystem> {
   const now = steppingClock(STORE_START);
   const store = new CaseStore(':memory:', now);
-  const agentServer = createAgentServer(store, now);
-  const reviewServer = createReviewServer(store);
+  const tokenTime = (): Date => new Date(STORE_START);
+  const issuer = await startStandInIssuer({
+    clientId: 'desk',
+    clientSecret: 'stand-in-secret',
+    redirectUri: 'http://localhost:3000/auth/callback',
+    postLogoutRedirectUri: 'http://localhost:3000/',
+    now: tokenTime,
+    issuer: TOKEN_ISSUER,
+  });
+  t.after(() => issuer.close());
+  const check = createAccessTokenCheck(
+    {
+      discoveryUrl: issuer.discoveryUrl,
+      issuer: TOKEN_ISSUER,
+      audience: 'lab-case-system',
+      allowedClients: ['desk'],
+      rolesClaim: 'roles',
+      minRemainingSeconds: 0,
+    },
+    { now: tokenTime, keyRefetchWaitMs: 30_000, timeoutMs: 2000 },
+  );
+  const agentServer = createAgentServer(store, now, check);
+  const reviewServer = createReviewServer(store, check, 'reviewer');
   const agentUrl = await listen(agentServer);
   const reviewUrl = await listen(reviewServer);
   t.after(() => {
@@ -516,7 +548,17 @@ export async function startCaseSystem(t: TestContext): Promise<CaseSystem> {
     stop(reviewServer);
     store.close();
   });
-  return { store, mcpUrl: `${agentUrl}/mcp`, reviewUrl };
+  const token = await issuer.mintAccessToken({ lifetimeSeconds: 600, claims: TOKEN_CLAIMS });
+  const caller: Caller = {
+    subject: TOKEN_CLAIMS.sub,
+    username: TOKEN_CLAIMS.preferred_username,
+    name: TOKEN_CLAIMS.name,
+    clientId: TOKEN_CLAIMS.client_id,
+    roles: [...TOKEN_CLAIMS.roles],
+    expiresAt: new Date(new Date(STORE_START).getTime() + 600_000),
+    token,
+  };
+  return { store, mcpUrl: `${agentUrl}/mcp`, reviewUrl, issuer, caller, reviewerToken: token };
 }
 
 // --- The agents under test -------------------------------------------------------------------------
@@ -529,8 +571,8 @@ export function message(id: string, textBody: string, receivedAt = '2026-03-01T0
   return { id, received_at: receivedAt, sender: 'dr.lee@clinic.example', text: textBody };
 }
 
-// The caller a run is for, as the agent's server hands it to the handler once the token was accepted.
-// The handlers do not check the token; the server does, and that is tested in auth.test.ts.
+// A caller for a run whose case system is never reached, so its token is never checked. A run against
+// the case system uses that case system's caller (CaseSystem.caller), whose token it accepts.
 export const TEST_CALLER: Caller = {
   subject: '6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f02',
   username: 'dana.desk',
@@ -544,8 +586,8 @@ export const TEST_CALLER: Caller = {
 export type RunOptions = {
   model: ModelSettings;
   mcpUrl: string;
-  // Who the run is for. Default: TEST_CALLER.
-  caller?: Caller;
+  // Who the run is for, as the agent's server hands it to the handler once the token was accepted.
+  caller: Caller;
   clock?: AgentClock;
   limits?: Partial<Limits>;
   // The hand-written loop only: each wait between two requests to the model is added here, and the
@@ -627,7 +669,7 @@ export const HANDWRITTEN: Implementation = {
         limits: { ...LIMITS, ...options.limits },
       },
       inbound,
-      options.caller ?? TEST_CALLER,
+      options.caller,
     );
     return invocationResponseSchema.parse(response);
   },
@@ -656,7 +698,7 @@ const STRANDS: Implementation = {
         limits: { ...LIMITS, ...options.limits },
       },
       inbound,
-      options.caller ?? TEST_CALLER,
+      options.caller,
     );
     return invocationResponseSchema.parse(response);
   },
