@@ -33,19 +33,19 @@ function selected(gpus: Gpu[], tierName: string | null = null): string {
 
 test('5. free memory exactly at each need selects that tier; one MiB below selects the next tier down', () => {
   const cases: [number, string][] = [
-    [18694, 'large'],
-    [18693, 'medium'],
-    [13340, 'medium'],
-    [13339, 'small'],
-    [11792, 'small'],
-    [11791, 'refused:insufficient_memory'],
+    [21492, 'large'],
+    [21491, 'medium'],
+    [16138, 'medium'],
+    [16137, 'small'],
+    [14590, 'small'],
+    [14589, 'refused:insufficient_memory'],
   ]
   for (const [free, expected] of cases) assert.equal(selected([freeGpu(free)]), expected, `free ${free} MiB`)
 })
 
 test('6. a GPU with large total memory but high used memory gets the tier that fits its free memory', () => {
-  assert.equal(selected([gpu({ memoryTotalMiB: 24564, memoryUsedMiB: 10000 })]), 'medium') // 14,564 free
-  assert.equal(selected([gpu({ memoryTotalMiB: 49152, memoryUsedMiB: 36000 })]), 'small') // 13,152 free
+  assert.equal(selected([gpu({ memoryTotalMiB: 24564, memoryUsedMiB: 4000 })]), 'medium') // 20,564 free
+  assert.equal(selected([gpu({ memoryTotalMiB: 49152, memoryUsedMiB: 34000 })]), 'small') // 15,152 free
   assert.equal(selected([gpu({ memoryTotalMiB: 81920, memoryUsedMiB: 75000 })]), 'refused:insufficient_memory') // 6,920 free
 })
 
@@ -54,10 +54,10 @@ test('7. free memory below the smallest need is refused with the exact need, fre
   assert.equal(result.ok, false)
   if (result.ok || result.reason !== 'insufficient_memory') throw new Error(`wrong result: ${JSON.stringify(result)}`)
   assert.equal(result.tier, 'small')
-  assert.equal(result.needMiB, 11792)
+  assert.equal(result.needMiB, 14590)
   assert.equal(result.freeMiB, 10000)
-  assert.equal(result.shortfallMiB, 1792)
-  for (const figure of ['11792', '10000', '1792']) assert.ok(result.message.includes(figure), result.message)
+  assert.equal(result.shortfallMiB, 4590)
+  for (const figure of ['14590', '10000', '4590']) assert.ok(result.message.includes(figure), result.message)
 })
 
 test('8. refusals come in order, with boundaries accepted and capabilities compared as numbers', () => {
@@ -85,8 +85,18 @@ test('9. a named tier is used when it fits, and refused by name, never replaced,
   assert.equal(result.ok, false)
   if (result.ok || result.reason !== 'insufficient_memory') throw new Error(`wrong result: ${JSON.stringify(result)}`)
   assert.equal(result.tier, 'large')
-  assert.equal(result.needMiB, 18694)
+  assert.equal(result.needMiB, 21492)
   assert.equal(result.freeMiB, 15000)
-  assert.equal(result.shortfallMiB, 3694)
+  assert.equal(result.shortfallMiB, 6492)
   assert.ok(result.message.includes('large'), result.message)
+})
+
+test('M2. selection uses the need with the embedding and reranker servers: 20,000 MiB free gets medium, 14,000 gets nothing', () => {
+  assert.equal(selected([freeGpu(20000)]), 'medium')
+  const result = selectTier([freeGpu(14000)], shippedTiers(), null)
+  if (result.ok || result.reason !== 'insufficient_memory') throw new Error(`wrong result: ${JSON.stringify(result)}`)
+  assert.equal(result.tier, 'small')
+  assert.equal(result.needMiB, 14590)
+  assert.equal(result.shortfallMiB, 590)
+  assert.ok(result.message.includes('small'), result.message)
 })

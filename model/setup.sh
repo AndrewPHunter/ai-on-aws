@@ -1,14 +1,15 @@
 #!/bin/sh
-# One command that brings up the lab's model server on a machine with one NVIDIA GPU: it checks the
+# One command that brings up the lab's model servers on a machine with one NVIDIA GPU: it checks the
 # machine, selects the largest measured tier that fits (model/tiers.json), writes model/.env, downloads
-# the weights, starts the server and proves it fit with the gate.
+# the weights of the three models, starts the chat, embedding and reranker servers in that order, and
+# proves them fit with the gate.
 #
-#   model/setup.sh --cache-dir <dir> [--bind <address>] [--port <n>]
+#   model/setup.sh --cache-dir <dir> [--bind <address>] [--port <n>] [--embed-port <n>] [--rerank-port <n>]
 #                  [--host <docker-host>] [--tier <name>] [--check]
 #   model/setup.sh --keep-env [--host <docker-host>] [--tier <name>] [--check]
 #
-# Exit codes: 0 server running and shown fit (with --check: the machine would get the printed tier),
-#             1 download failed or the server was not shown fit, 2 could not run,
+# Exit codes: 0 servers running and shown fit (with --check: the machine would get the printed tier),
+#             1 a download failed or a server was not shown fit, 2 could not run,
 #             3 this machine is not supported or is too small.
 #
 # This script only sequences Docker commands and prints messages. Apart from the three checks of step 0,
@@ -32,7 +33,7 @@ if [ -n "${DOCKER_HOST+set}" ]; then
   say "DOCKER_HOST is set in the environment. Unset it (unset DOCKER_HOST) and pass --host <docker-host> instead; setup never depends on it."
   exit 2
 fi
-refused=$(env | grep -E '^(MODEL|CHAT|COMPOSE)_[A-Za-z0-9_]*=' | cut -d= -f1 | sort -u | tr '\n' ' ' | sed 's/ $//')
+refused=$(env | grep -E '^(MODEL|CHAT|EMBED|RERANK|COMPOSE)_[A-Za-z0-9_]*=' | cut -d= -f1 | sort -u | tr '\n' ' ' | sed 's/ $//')
 if [ -n "$refused" ]; then
   say "these environment variables would override the settings files or change the compose file, project or profile: ${refused}. Unset them (unset NAME) and run setup again."
   exit 2
@@ -70,10 +71,11 @@ tool_broken() {
   exit 2
 }
 
-check='' keep_env='' cache_dir='' bind='' port='' host='' tier='' base_url='' gate_network=''
+check='' keep_env='' cache_dir='' bind='' port='' embed_port='' rerank_port='' host='' tier='' gate_network=''
+base_url='' embed_base_url='' rerank_base_url='' embed_model_id='' rerank_model_id=''
 server_image='' selected_tier='' profile='' need_mib='' free_mib='' total_mib='' used_mib=''
-gpu_name='' driver='' compute_cap='' model_id='' snapshot_path=''
-uid='' gid='' cache_free_mib='' docker_free_mib='' weights_state='' weights_need_mib=''
+gpu_name='' driver='' compute_cap='' model_id='' snapshot_path='' embed_snapshot_path='' rerank_snapshot_path=''
+uid='' gid='' cache_free_mib='' docker_free_mib='' weights_state='' embed_weights_state='' rerank_weights_state='' weights_need_mib=''
 image_state='' image_need_mib='' kv_cache_tokens='' context='' concurrency='' health=''
 outcome='' exit_code=''
 
@@ -98,9 +100,13 @@ read_results() {
       cache_dir) cache_dir=$value ;;
       bind) bind=$value ;;
       port) port=$value ;;
+      embed_port) embed_port=$value ;;
+      rerank_port) rerank_port=$value ;;
       host) host=$value ;;
       tier) tier=$value ;;
       base_url) base_url=$value ;;
+      embed_base_url) embed_base_url=$value ;;
+      rerank_base_url) rerank_base_url=$value ;;
       gate_network) gate_network=$value ;;
       server_image) server_image=$value ;;
       selected_tier) selected_tier=$value ;;
@@ -113,12 +119,18 @@ read_results() {
       driver) driver=$value ;;
       compute_cap) compute_cap=$value ;;
       model_id) model_id=$value ;;
+      embed_model_id) embed_model_id=$value ;;
+      rerank_model_id) rerank_model_id=$value ;;
       snapshot_path) snapshot_path=$value ;;
+      embed_snapshot_path) embed_snapshot_path=$value ;;
+      rerank_snapshot_path) rerank_snapshot_path=$value ;;
       uid) uid=$value ;;
       gid) gid=$value ;;
       cache_free_mib) cache_free_mib=$value ;;
       docker_free_mib) docker_free_mib=$value ;;
       weights_state) weights_state=$value ;;
+      embed_weights_state) embed_weights_state=$value ;;
+      rerank_weights_state) rerank_weights_state=$value ;;
       weights_need_mib) weights_need_mib=$value ;;
       image_state) image_state=$value ;;
       image_need_mib) image_need_mib=$value ;;
@@ -192,18 +204,18 @@ fi
 # ---------- 3. existing settings ----------
 
 rc=0
-out=$(run_tool settings "$check" "$keep_env" "$bind" "$port" "$cache_dir") || rc=$?
+out=$(run_tool settings "$check" "$keep_env" "$bind" "$port" "$cache_dir" "$embed_port" "$rerank_port") || rc=$?
 take "$rc" "$out"
 
-# ---------- 4. the lab's server must not be running ----------
+# ---------- 4. none of the lab's servers may be running ----------
 
-if ! running=$(gpu_docker ps -q --filter "label=com.docker.compose.project=$PROJECT" \
-  --filter label=com.docker.compose.service=chat --filter status=running); then
+if ! running=$(gpu_docker ps --filter "label=com.docker.compose.project=$PROJECT" --filter status=running \
+  --format '{{.Label "com.docker.compose.service"}}'); then
   stop_with docker_unreachable "could not list the containers on the GPU machine."
 fi
-if [ -n "$running" ]; then
-  stop_with server_running "the lab's server is already running on the GPU machine. Its memory would make the card look smaller than it is. Stop it first: ${stop_prefix}docker compose -p $PROJECT stop"
-fi
+rc=0
+out=$(printf '%s\n' "$running" | run_tool_in running "$host") || rc=$?
+take "$rc" "$out"
 
 # ---------- 5. probe the GPU ----------
 
@@ -227,10 +239,11 @@ take "$rc" "$out"
 # The server image, read from the compose file. `config --images` needs every variable interpolated; the
 # UID, GID and key are not known yet, so these three get values used for this one read-only call only.
 images_status=0
-images=$(env MODEL_BIND_ADDRESS="$bind" MODEL_PORT="$port" MODEL_CACHE_DIR="$cache_dir" \
+images=$(env MODEL_BIND_ADDRESS="$bind" MODEL_PORT="$port" MODEL_EMBED_PORT="$embed_port" \
+  MODEL_RERANK_PORT="$rerank_port" MODEL_CACHE_DIR="$cache_dir" \
   MODEL_RUN_UID=listing-images-only MODEL_RUN_GID=listing-images-only MODEL_API_KEY=listing-images-only \
   docker compose -f "$model_dir/compose.yaml" -p "$PROJECT" --env-file "$model_dir/profiles/$profile.env" \
-  config --images) || images_status=$?
+  --env-file "$model_dir/retrieval.env" config --images) || images_status=$?
 if [ "$images_status" -ne 0 ]; then
   stop_with repository_invalid "listing the server image with docker compose config --images failed (exit $images_status)."
 fi
@@ -252,7 +265,9 @@ disk_out=$(gpu_docker run --rm --network none \
     printf "cache %s\n" "$(df -Pm /c | tail -n 1)"
     printf "docker %s\n" "$(df -Pm / | tail -n 1)"
     if [ -d "/c/$1" ]; then echo "weights present"; else echo "weights absent"; fi
-  ' sh "$snapshot_path") || disk_status=$?
+    if [ -d "/c/$2" ]; then echo "embed-weights present"; else echo "embed-weights absent"; fi
+    if [ -d "/c/$3" ]; then echo "rerank-weights present"; else echo "rerank-weights absent"; fi
+  ' sh "$snapshot_path" "$embed_snapshot_path" "$rerank_snapshot_path") || disk_status=$?
 
 rc=0
 out=$(printf '%s\n' "$disk_out" | run_tool_in disk "$selected_tier" "$disk_status" "$image_present") || rc=$?
@@ -264,8 +279,10 @@ if [ "$check" = yes ]; then
   printf 'GPU:          %s (driver %s, compute capability %s)\n' "$gpu_name" "$driver" "$compute_cap"
   printf 'GPU memory:   %s MiB free of %s MiB (%s MiB in use)\n' "$free_mib" "$total_mib" "$used_mib"
   printf 'Tier:         %s (profile %s, model %s)\n' "$selected_tier" "$profile" "$model_id"
-  printf 'Needs:        %s MiB of GPU memory\n' "$need_mib"
-  printf 'Weights:      %s in the cache; need %s MiB, %s MiB free\n' "$weights_state" "$weights_need_mib" "$cache_free_mib"
+  printf 'Beside it:    embedding model %s, reranker %s\n' "$embed_model_id" "$rerank_model_id"
+  printf 'Needs:        %s MiB of GPU memory for the three servers\n' "$need_mib"
+  printf 'Weights:      in the cache: chat model %s, embedding model %s, reranker %s; need %s MiB, %s MiB free\n' \
+    "$weights_state" "$embed_weights_state" "$rerank_weights_state" "$weights_need_mib" "$cache_free_mib"
   printf 'Server image: %s on the GPU machine; needs %s MiB, %s MiB free in Docker'"'"'s storage\n' "$image_state" "$image_need_mib" "$docker_free_mib"
   printf 'Disk:         enough\n'
   printf 'Check only: nothing was written, downloaded or started.\n'
@@ -283,7 +300,7 @@ if [ "$keep_env" != yes ]; then
     stop_with env_write_failed "could not create $tmp_env."
   fi
   # render writes only the file's text to standard output, or nothing and a non-zero status.
-  if ! run_tool render "$bind" "$port" "$cache_dir" "$uid" "$gid" >"$tmp_env"; then
+  if ! run_tool render "$bind" "$port" "$embed_port" "$rerank_port" "$cache_dir" "$uid" "$gid" >"$tmp_env"; then
     rm -f "$tmp_env"
     stop_with env_write_failed "model/.env was not written."
   fi
@@ -301,43 +318,55 @@ fi
 
 compose_gpu() {
   gpu_docker compose -f "$model_dir/compose.yaml" -p "$PROJECT" \
-    --env-file "$model_dir/.env" --env-file "$model_dir/profiles/$profile.env" "$@"
+    --env-file "$model_dir/.env" --env-file "$model_dir/profiles/$profile.env" --env-file "$model_dir/retrieval.env" "$@"
 }
 
-say "downloading the weights for profile $profile (skipped by the downloader if already in the cache)"
-if ! compose_gpu --profile download run --rm download >&2; then
-  stop_with download_failed "downloading the weights failed. model/.env stays."
-fi
+say "downloading the weights of the chat model (profile $profile), the embedding model and the reranker (each skipped by the downloader if already in the cache)"
+for download in download download-embed download-rerank; do
+  if ! compose_gpu --profile download run --rm "$download" >&2; then
+    stop_with download_failed "downloading the weights failed ($download). model/.env stays."
+  fi
+done
 
-# ---------- 11 to 13: a failure from here stops the server and keeps its container ----------
+# ---------- 11 to 13: a failure from here stops the servers and keeps their containers ----------
 
-cid=''
+# The server being started or checked, and its container. During the gate, service is "all": a failure then
+# shows the log of each of the three.
+service='' cid=''
 
 show_log() {
-  say "last lines of the server's log (lines mentioning the API key are left out):"
+  say "last lines of the $service server's log (lines mentioning the API key are left out):"
   gpu_docker logs --tail 60 "$cid" 2>&1 | grep -v -i -e 'api-key' -e 'api_key' >&2 || :
 }
 
 stop_server() {
-  if [ -n "$cid" ]; then
+  if [ "$service" = all ]; then
+    for service in chat embed rerank; do
+      cid=$(compose_gpu ps -a -q "$service") || cid=''
+      if [ -n "$cid" ]; then
+        show_log
+      fi
+    done
+  elif [ -n "$cid" ]; then
     show_log
   fi
-  if compose_gpu stop chat >&2; then
-    say "the server has been stopped; its container is kept so its log can be read: ${stop_prefix}docker compose -p $PROJECT logs chat"
+  # The servers that depend on chat first. A service with no container is passed over.
+  if compose_gpu stop rerank embed chat >&2; then
+    say "the servers have been stopped; their containers are kept so their logs can be read: ${stop_prefix}docker compose -p $PROJECT logs chat embed rerank"
   else
-    say "stopping the server failed; stop it with: ${stop_prefix}docker compose -p $PROJECT stop"
+    say "stopping the servers failed; stop them with: ${stop_prefix}docker compose -p $PROJECT stop"
   fi
   say "model/.env stays."
 }
 
-# A failure detected here: say why, stop the server, exit with the outcome's code.
+# A failure detected here: say why, stop the servers, exit with the outcome's code.
 fail_server() {
   say "$2"
   stop_server
   exit_for "$1"
 }
 
-# Takes a tool run after the server has started: on any refusal, or a tool that did not run, stop the server.
+# Takes a tool run after a server has started: on any refusal, or a tool that did not run, stop the servers.
 take_started() {
   if [ "$1" -ne 0 ]; then
     stop_server
@@ -357,55 +386,76 @@ take_started() {
   esac
 }
 
-# ---------- 11. start ----------
-
-say "starting the server"
-if ! compose_gpu up -d chat >&2; then
-  fail_server not_healthy "starting the server failed."
-fi
-if ! cid=$(compose_gpu ps -a -q chat) || [ -z "$cid" ]; then
+# Starts one server (chat, embed or rerank) and waits until its health check passes.
+start_server() {
+  service=$1
   cid=''
-  fail_server not_healthy "the server's container could not be found after starting it."
-fi
-
-say "waiting for the server to become healthy (up to 900 seconds)"
-waited=0
-while :; do
-  inspect_status=0
-  state=$(gpu_docker inspect -f '{{.State.Status}} {{.State.Health.Status}}' "$cid") || inspect_status=$?
-  rc=0
-  out=$(run_tool health "$inspect_status" "$waited" "$state") || rc=$?
-  take_started "$rc" "$out"
-  if [ "$health" = ready ]; then
-    break
+  say "starting the $service server"
+  if ! compose_gpu up -d "$service" >&2; then
+    fail_server not_healthy "starting the $service server failed."
   fi
-  sleep 10
-  waited=$((waited + 10))
-done
+  if ! cid=$(compose_gpu ps -a -q "$service") || [ -z "$cid" ]; then
+    cid=''
+    fail_server not_healthy "the $service server's container could not be found after starting it."
+  fi
 
-# ---------- 12. capacity ----------
+  say "waiting for the $service server to become healthy (up to 900 seconds)"
+  waited=0
+  while :; do
+    inspect_status=0
+    state=$(gpu_docker inspect -f '{{.State.Status}} {{.State.Health.Status}}' "$cid") || inspect_status=$?
+    rc=0
+    out=$(run_tool health "$inspect_status" "$waited" "$state") || rc=$?
+    take_started "$rc" "$out"
+    if [ "$health" = ready ]; then
+      break
+    fi
+    sleep 10
+    waited=$((waited + 10))
+  done
+}
 
-logs_status=0
-logs=$(gpu_docker logs "$cid" 2>&1) || logs_status=$?
-if [ "$logs_status" -ne 0 ]; then
-  fail_server log_unreadable "reading the server's log with docker logs failed (exit $logs_status)."
-fi
+# The log of the server just started, for its start-up capacity line.
+read_log() {
+  logs_status=0
+  logs=$(gpu_docker logs "$cid" 2>&1) || logs_status=$?
+  if [ "$logs_status" -ne 0 ]; then
+    fail_server log_unreadable "reading the $service server's log with docker logs failed (exit $logs_status)."
+  fi
+}
+
+# ---------- 11. the chat server and its capacity ----------
+
+start_server chat
+read_log
 rc=0
 out=$(printf '%s\n' "$logs" | run_tool_in capacity "$profile") || rc=$?
 take_started "$rc" "$out"
 say "capacity: vLLM's cache holds $concurrency requests of $context tokens at once ($kv_cache_tokens tokens)"
 
+# ---------- 12. the embedding server and its capacity, then the reranker ----------
+
+start_server embed
+read_log
+rc=0
+out=$(printf '%s\n' "$logs" | run_tool_in embed-capacity) || rc=$?
+take_started "$rc" "$out"
+say "capacity: the embedding server's cache holds $concurrency inputs of $context tokens at once ($kv_cache_tokens tokens)"
+
+start_server rerank
+
 # ---------- 13. gate ----------
 
-say "running the gate (this takes several minutes)"
+say "running the gate on the three servers (this takes several minutes)"
+service=all cid=''
 rc=0
 if [ "$gate_network" = host ]; then
   docker compose -f "$model_dir/gate/compose.yaml" -f "$model_dir/gate/compose.host-network.yaml" -p "$GATE_PROJECT" \
-    --env-file "$model_dir/.env" --env-file "$model_dir/profiles/$profile.env" \
+    --env-file "$model_dir/.env" --env-file "$model_dir/profiles/$profile.env" --env-file "$model_dir/retrieval.env" \
     run --rm -T gate >"$model_dir/gate-report.json" || rc=$?
 else
   docker compose -f "$model_dir/gate/compose.yaml" -p "$GATE_PROJECT" \
-    --env-file "$model_dir/.env" --env-file "$model_dir/profiles/$profile.env" \
+    --env-file "$model_dir/.env" --env-file "$model_dir/profiles/$profile.env" --env-file "$model_dir/retrieval.env" \
     run --rm -T gate >"$model_dir/gate-report.json" || rc=$?
 fi
 if [ "$rc" -ne 0 ]; then
@@ -414,12 +464,13 @@ fi
 
 # ---------- 14. summary ----------
 
-printf 'The model server is running and passed the gate.\n'
+printf 'The model servers are running and passed the gate.\n'
 printf '  Tier:         %s (profile %s)\n' "$selected_tier" "$profile"
-printf '  Model name:   %s\n' "$model_id"
-printf '  Base URL:     %s\n' "$base_url"
-printf '  API key:      in model/.env (MODEL_API_KEY)\n'
+printf '  Chat:         %s at %s\n' "$model_id" "$base_url"
+printf '  Embedding:    %s at %s\n' "$embed_model_id" "$embed_base_url"
+printf '  Reranker:     %s at %s\n' "$rerank_model_id" "$rerank_base_url"
+printf '  API key:      in model/.env (MODEL_API_KEY), the same for all three\n'
 printf '  Gate report:  model/gate-report.json\n'
-printf '  Stop it:      %sdocker compose -p %s stop\n' "$stop_prefix" "$PROJECT"
-printf '  Start again:  cd model && %sdocker compose -f compose.yaml -p %s --env-file .env --env-file profiles/%s.env up -d chat\n' \
+printf '  Stop them:    %sdocker compose -p %s stop\n' "$stop_prefix" "$PROJECT"
+printf '  Start again:  cd model && %sdocker compose -f compose.yaml -p %s --env-file .env --env-file profiles/%s.env --env-file retrieval.env up -d chat embed rerank\n' \
   "$stop_prefix" "$PROJECT" "$profile"

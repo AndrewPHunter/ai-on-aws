@@ -6,15 +6,19 @@ export type DiskProbe = {
   cacheFreeMiB: number
   dockerFreeMiB: number
   weightsPresent: boolean
+  embedWeightsPresent: boolean
+  rerankWeightsPresent: boolean
 }
 
 export type DiskProbeResult = { ok: true; probe: DiskProbe } | { ok: false; message: string }
 
-// The probe container prints exactly these four lines:
+// The probe container prints exactly these six lines:
 //   owner <uid> <gid>                     from: stat -c '%u %g' /c
 //   cache <last line of df -Pm /c>
 //   docker <last line of df -Pm />
-//   weights present|absent
+//   weights present|absent                the chat model's pinned revision in the cache
+//   embed-weights present|absent          the embedding model's
+//   rerank-weights present|absent         the reranker's
 // In a df -P line the available space is the third field from the end (Available, Capacity, Mounted on).
 export function parseDiskProbe(output: string): DiskProbeResult {
   const lines = output.split('\n').filter((line) => line.trim() !== '')
@@ -30,8 +34,13 @@ export function parseDiskProbe(output: string): DiskProbeResult {
   const cache = byTag.get('cache')
   const docker = byTag.get('docker')
   const weights = byTag.get('weights')
-  if (!owner || !cache || !docker || !weights || byTag.size !== 4) {
-    return { ok: false, message: `expected the lines owner, cache, docker and weights, got: ${[...byTag.keys()].join(', ')}` }
+  const embedWeights = byTag.get('embed-weights')
+  const rerankWeights = byTag.get('rerank-weights')
+  if (!owner || !cache || !docker || !weights || !embedWeights || !rerankWeights || byTag.size !== 6) {
+    return {
+      ok: false,
+      message: `expected the lines owner, cache, docker, weights, embed-weights and rerank-weights, got: ${[...byTag.keys()].join(', ')}`,
+    }
   }
   const integer = /^(0|[1-9][0-9]*)$/
   const [uid, gid] = owner
@@ -47,8 +56,10 @@ export function parseDiskProbe(output: string): DiskProbeResult {
   if (typeof cacheFree === 'string') return { ok: false, message: cacheFree }
   const dockerFree = available(docker, 'docker')
   if (typeof dockerFree === 'string') return { ok: false, message: dockerFree }
-  if (weights.length !== 1 || (weights[0] !== 'present' && weights[0] !== 'absent')) {
-    return { ok: false, message: `weights line is not "present" or "absent": ${weights.join(' ')}` }
+  for (const [tag, fields] of [['weights', weights], ['embed-weights', embedWeights], ['rerank-weights', rerankWeights]] as const) {
+    if (fields.length !== 1 || (fields[0] !== 'present' && fields[0] !== 'absent')) {
+      return { ok: false, message: `${tag} line is not "present" or "absent": ${fields.join(' ')}` }
+    }
   }
   return {
     ok: true,
@@ -58,6 +69,8 @@ export function parseDiskProbe(output: string): DiskProbeResult {
       cacheFreeMiB: cacheFree,
       dockerFreeMiB: dockerFree,
       weightsPresent: weights[0] === 'present',
+      embedWeightsPresent: embedWeights[0] === 'present',
+      rerankWeightsPresent: rerankWeights[0] === 'present',
     },
   }
 }
@@ -66,6 +79,10 @@ export type DiskInput = {
   weightsPresent: boolean
   cacheFreeMiB: number
   downloadMiB: number
+  embedWeightsPresent: boolean
+  embedDownloadMiB: number
+  rerankWeightsPresent: boolean
+  rerankDownloadMiB: number
   imagePresent: boolean
   dockerFreeMiB: number
   imageDiskMiB: number
@@ -78,7 +95,11 @@ export type DiskVerdict =
   | { ok: false; shortfalls: Shortfall[] }
 
 export function diskVerdict(input: DiskInput): DiskVerdict {
-  const weightsNeedMiB = input.weightsPresent ? 0 : input.downloadMiB
+  // Space for each of the three models whose pinned revision is not already in the cache.
+  const weightsNeedMiB =
+    (input.weightsPresent ? 0 : input.downloadMiB) +
+    (input.embedWeightsPresent ? 0 : input.embedDownloadMiB) +
+    (input.rerankWeightsPresent ? 0 : input.rerankDownloadMiB)
   const imageNeedMiB = input.imagePresent ? 0 : input.imageDiskMiB
   const shortfalls: Shortfall[] = []
   if (weightsNeedMiB > input.cacheFreeMiB) {

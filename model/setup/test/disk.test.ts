@@ -1,12 +1,18 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 
-import { diskVerdict, type DiskInput } from '../lib/disk.ts'
+import { diskVerdict, parseDiskProbe, type DiskInput } from '../lib/disk.ts'
+import { validateTiers } from '../lib/tiers.ts'
 
 const BASE: DiskInput = {
   weightsPresent: false,
   cacheFreeMiB: 50000,
   downloadMiB: 11000,
+  embedWeightsPresent: true,
+  embedDownloadMiB: 1200,
+  rerankWeightsPresent: true,
+  rerankDownloadMiB: 2300,
   imagePresent: false,
   dockerFreeMiB: 50000,
   imageDiskMiB: 37000,
@@ -34,4 +40,27 @@ test('17. disk verdict demands space only for what is absent', () => {
   if (verdict.ok) throw new Error('expected a refusal')
   assert.ok(verdict.shortfalls[0] !== undefined, 'expected at least one shortfall')
   for (const figure of ['11000', '100', '10900']) assert.ok(verdict.shortfalls[0].message.includes(figure), verdict.shortfalls[0].message)
+})
+
+test('M14. the disk verdict counts the embedding model and the reranker too, each only when absent from the cache', () => {
+  assert.deepEqual(short({ weightsPresent: true, embedWeightsPresent: false, cacheFreeMiB: 1199 }), ['weights 1200 1199 1'])
+  assert.deepEqual(short({ weightsPresent: true, embedWeightsPresent: false, cacheFreeMiB: 1200 }), [])
+  assert.deepEqual(short({ weightsPresent: true, rerankWeightsPresent: false, cacheFreeMiB: 2299 }), ['weights 2300 2299 1'])
+  // all three absent: the sum
+  assert.deepEqual(short({ embedWeightsPresent: false, rerankWeightsPresent: false, cacheFreeMiB: 14499 }), ['weights 14500 14499 1'])
+  assert.deepEqual(short({ embedWeightsPresent: false, rerankWeightsPresent: false, cacheFreeMiB: 14500 }), [])
+
+  // The shipped figures cover the weight files measured on disk: 1,191,586,416 and 2,271,071,852 bytes.
+  const tiers = validateTiers(JSON.parse(readFileSync(new URL('../../tiers.json', import.meta.url), 'utf8')))
+  if (!tiers.ok) throw new Error(tiers.errors.join('; '))
+  assert.ok(tiers.tiers.embeddingDownloadMiB * 1048576 >= 1191586416, String(tiers.tiers.embeddingDownloadMiB))
+  assert.ok(tiers.tiers.rerankerDownloadMiB * 1048576 >= 2271071852, String(tiers.tiers.rerankerDownloadMiB))
+
+  // The probe reports each of the three models' weights on a line of its own.
+  const probe = parseDiskProbe(
+    'owner 1000 1000\ncache /dev/sda1 100 50 40 50% /c\ndocker overlay 100 50 40 50% /\n' +
+      'weights present\nembed-weights absent\nrerank-weights present\n',
+  )
+  if (!probe.ok) throw new Error(probe.message)
+  assert.deepEqual([probe.probe.weightsPresent, probe.probe.embedWeightsPresent, probe.probe.rerankWeightsPresent], [true, false, true])
 })

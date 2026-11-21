@@ -1,10 +1,14 @@
-# Model server for the lab: one vLLM process serving one chat model on an NVIDIA GPU.
-# Runs on the GPU host. Every setting comes from two env files, both passed explicitly:
-#   .env                  machine-specific: address, key, cache directory (never committed)
-#   profiles/<name>.env   the model and its memory budget (committed, one per measured setup)
+# Model servers for the lab: three vLLM processes on one NVIDIA GPU, each serving one model:
+# chat (the chat model), embed (the embedding model) and rerank (the reranker).
+# Runs on the GPU host. Every setting comes from three env files, all passed explicitly:
+#   .env                  machine-specific: address, ports, key, cache directory (never committed)
+#   profiles/<name>.env   the chat model and its memory budget (committed, one per measured setup)
+#   retrieval.env         the embedding model and the reranker, the same for every profile (committed)
 #
-#   docker compose --env-file .env --env-file profiles/<name>.env --profile download run --rm download
-#   docker compose --env-file .env --env-file profiles/<name>.env up -d chat
+#   docker compose --env-file .env --env-file profiles/<name>.env --env-file retrieval.env --profile download run --rm download
+#   docker compose --env-file .env --env-file profiles/<name>.env --env-file retrieval.env --profile download run --rm download-embed
+#   docker compose --env-file .env --env-file profiles/<name>.env --env-file retrieval.env --profile download run --rm download-rerank
+#   docker compose --env-file .env --env-file profiles/<name>.env --env-file retrieval.env up -d chat embed rerank
 name: ai-on-aws-model
 
 x-vllm: &vllm
@@ -23,6 +27,24 @@ services:
     profiles: ["download"]
     entrypoint: ["hf", "download"]
     command: ["${CHAT_MODEL_REPO:?set CHAT_MODEL_REPO}", "--revision", "${CHAT_MODEL_REVISION:?set CHAT_MODEL_REVISION}"]
+    environment:
+      HOME: /tmp
+      HF_HOME: /cache/hf
+
+  download-embed:
+    <<: *vllm
+    profiles: ["download"]
+    entrypoint: ["hf", "download"]
+    command: ["${EMBED_MODEL_REPO:?set EMBED_MODEL_REPO}", "--revision", "${EMBED_MODEL_REVISION:?set EMBED_MODEL_REVISION}"]
+    environment:
+      HOME: /tmp
+      HF_HOME: /cache/hf
+
+  download-rerank:
+    <<: *vllm
+    profiles: ["download"]
+    entrypoint: ["hf", "download"]
+    command: ["${RERANK_MODEL_REPO:?set RERANK_MODEL_REPO}", "--revision", "${RERANK_MODEL_REVISION:?set RERANK_MODEL_REVISION}"]
     environment:
       HOME: /tmp
       HF_HOME: /cache/hf
@@ -60,6 +82,92 @@ services:
       --tool-call-parser ${CHAT_TOOL_CALL_PARSER:?set CHAT_TOOL_CALL_PARSER}
       --reasoning-parser ${CHAT_REASONING_PARSER:?set CHAT_REASONING_PARSER}
       ${CHAT_EXTRA_ARGS?set CHAT_EXTRA_ARGS (may be empty)}
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8000/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 600s
+      retries: 3
+
+  # Embedding model: /v1/embeddings.
+  # Started after chat is healthy, so that its start-up check of free memory (the share of the card given by
+  # --gpu-memory-utilization, which each of the three servers sets) runs with chat's memory already in use,
+  # not while chat is still loading. Any one of the three can then be restarted on its own.
+  embed:
+    <<: *vllm
+    depends_on:
+      chat:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    shm_size: 8gb
+    ports:
+      - "${MODEL_BIND_ADDRESS:?set MODEL_BIND_ADDRESS}:${MODEL_EMBED_PORT:?set MODEL_EMBED_PORT}:8000"
+    environment:
+      HOME: /tmp
+      HF_HOME: /cache/hf
+      HF_HUB_OFFLINE: "1" # fail at start-up if the pinned revision is not in the cache
+      VLLM_API_KEY: "${MODEL_API_KEY:?set MODEL_API_KEY}"
+      VLLM_NO_USAGE_STATS: "1" # no usage telemetry
+      DO_NOT_TRACK: "1"
+    command: >-
+      ${EMBED_MODEL_REPO:?set EMBED_MODEL_REPO}
+      --revision ${EMBED_MODEL_REVISION:?set EMBED_MODEL_REVISION}
+      --served-model-name ${EMBED_MODEL_ID:?set EMBED_MODEL_ID}
+      --runner pooling
+      --host 0.0.0.0
+      --port 8000
+      --max-model-len ${EMBED_MAX_MODEL_LEN:?set EMBED_MAX_MODEL_LEN}
+      --kv-cache-memory-bytes ${EMBED_KV_CACHE_BYTES:?set EMBED_KV_CACHE_BYTES}
+      --gpu-memory-utilization ${EMBED_GPU_MEMORY_UTILIZATION:?set EMBED_GPU_MEMORY_UTILIZATION}
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8000/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 600s
+      retries: 3
+
+  # Reranker: /v1/rerank.
+  # Started after chat is healthy, so that its start-up check of free memory (the share of the card given by
+  # --gpu-memory-utilization, which each of the three servers sets) runs with chat's memory already in use,
+  # not while chat is still loading. Any one of the three can then be restarted on its own.
+  rerank:
+    <<: *vllm
+    depends_on:
+      chat:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    shm_size: 8gb
+    ports:
+      - "${MODEL_BIND_ADDRESS:?set MODEL_BIND_ADDRESS}:${MODEL_RERANK_PORT:?set MODEL_RERANK_PORT}:8000"
+    environment:
+      HOME: /tmp
+      HF_HOME: /cache/hf
+      HF_HUB_OFFLINE: "1" # fail at start-up if the pinned revision is not in the cache
+      VLLM_API_KEY: "${MODEL_API_KEY:?set MODEL_API_KEY}"
+      VLLM_NO_USAGE_STATS: "1" # no usage telemetry
+      DO_NOT_TRACK: "1"
+    command: >-
+      ${RERANK_MODEL_REPO:?set RERANK_MODEL_REPO}
+      --revision ${RERANK_MODEL_REVISION:?set RERANK_MODEL_REVISION}
+      --served-model-name ${RERANK_MODEL_ID:?set RERANK_MODEL_ID}
+      --runner pooling
+      --host 0.0.0.0
+      --port 8000
+      --max-model-len ${RERANK_MAX_MODEL_LEN:?set RERANK_MAX_MODEL_LEN}
+      --kv-cache-memory-bytes ${RERANK_KV_CACHE_BYTES:?set RERANK_KV_CACHE_BYTES}
+      --gpu-memory-utilization ${RERANK_GPU_MEMORY_UTILIZATION:?set RERANK_GPU_MEMORY_UTILIZATION}
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8000/health"]
       interval: 15s

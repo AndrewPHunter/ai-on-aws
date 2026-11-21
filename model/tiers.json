@@ -4,8 +4,11 @@
     "minComputeCapability": "7.5"
   },
   "marginMiB": 512,
-  "reservedForOtherModelsMiB": 2048,
+  "embeddingPeakMiB": 2964,
+  "rerankerPeakMiB": 1882,
   "imageDiskMiB": 37000,
+  "embeddingDownloadMiB": 1200,
+  "rerankerDownloadMiB": 2300,
   "tiers": [
     { "name": "large", "profile": "qwen3.5-9b-w4a16", "measuredPeakMiB": 16134, "downloadMiB": 11000 },
     { "name": "medium", "profile": "qwen3.5-4b-w4a16", "measuredPeakMiB": 10780, "downloadMiB": 5400 },

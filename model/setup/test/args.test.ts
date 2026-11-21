@@ -61,30 +61,60 @@ test('2. valid flag sets give the exact options, with the defaults when not give
   const cases: { argv: string[]; options: object }[] = [
     {
       argv: ['--cache-dir', '/srv/models'],
-      options: { cacheDir: '/srv/models', bind: '127.0.0.1', port: 8000, host: null, tier: null, check: false, keepEnv: false },
+      options: { cacheDir: '/srv/models', bind: '127.0.0.1', port: 8000, embedPort: 8001, rerankPort: 8002, host: null, tier: null, check: false, keepEnv: false },
     },
     {
       argv: ['--check', '--port', '1', '--cache-dir', '/c'],
-      options: { cacheDir: '/c', bind: '127.0.0.1', port: 1, host: null, tier: null, check: true, keepEnv: false },
+      options: { cacheDir: '/c', bind: '127.0.0.1', port: 1, embedPort: 8001, rerankPort: 8002, host: null, tier: null, check: true, keepEnv: false },
     },
     {
       argv: ['--cache-dir', '/c', '--bind', '0.0.0.0', '--port', '65535', '--tier', 'medium'],
-      options: { cacheDir: '/c', bind: '0.0.0.0', port: 65535, host: null, tier: 'medium', check: false, keepEnv: false },
+      options: { cacheDir: '/c', bind: '0.0.0.0', port: 65535, embedPort: 8001, rerankPort: 8002, host: null, tier: 'medium', check: false, keepEnv: false },
     },
     {
       argv: ['--cache-dir', '/data/models', '--bind', '192.0.2.20', '--port', '8443', '--host', HOST, '--tier', 'small', '--check'],
-      options: { cacheDir: '/data/models', bind: '192.0.2.20', port: 8443, host: HOST, tier: 'small', check: true, keepEnv: false },
+      options: { cacheDir: '/data/models', bind: '192.0.2.20', port: 8443, embedPort: 8001, rerankPort: 8002, host: HOST, tier: 'small', check: true, keepEnv: false },
     },
     {
       argv: ['--keep-env'],
-      options: { cacheDir: null, bind: null, port: null, host: null, tier: null, check: false, keepEnv: true },
+      options: { cacheDir: null, bind: null, port: null, embedPort: null, rerankPort: null, host: null, tier: null, check: false, keepEnv: true },
     },
     {
       argv: ['--tier', 'large', '--keep-env', '--host', HOST, '--check'],
-      options: { cacheDir: null, bind: null, port: null, host: HOST, tier: 'large', check: true, keepEnv: true },
+      options: { cacheDir: null, bind: null, port: null, embedPort: null, rerankPort: null, host: HOST, tier: 'large', check: true, keepEnv: true },
     },
   ]
   for (const { argv, options } of cases) {
     assert.deepEqual(parseArgs(argv, TIERS), { ok: true, options }, argv.join(' '))
+  }
+})
+
+test('M5. --embed-port and --rerank-port are parsed with their defaults; equal ports are refused; neither is accepted with --keep-env', () => {
+  const parsed = (argv: string[]): object => {
+    const result = parseArgs(argv, TIERS)
+    if (!result.ok) throw new Error(result.message)
+    const { port, embedPort, rerankPort } = result.options
+    return { port, embedPort, rerankPort }
+  }
+  assert.deepEqual(parsed(['--cache-dir', '/c']), { port: 8000, embedPort: 8001, rerankPort: 8002 })
+  assert.deepEqual(parsed(['--cache-dir', '/c', '--embed-port', '9001', '--rerank-port', '9002']), { port: 8000, embedPort: 9001, rerankPort: 9002 })
+  assert.deepEqual(parsed(['--cache-dir', '/c', '--port', '7000', '--embed-port', '7001']), { port: 7000, embedPort: 7001, rerankPort: 8002 })
+
+  const refused: { argv: string[]; names: string[] }[] = [
+    { argv: ['--cache-dir', '/c', '--embed-port', '8000'], names: ['--port', '--embed-port'] },
+    { argv: ['--cache-dir', '/c', '--rerank-port', '8000'], names: ['--port', '--rerank-port'] },
+    { argv: ['--cache-dir', '/c', '--embed-port', '8002'], names: ['--embed-port', '--rerank-port'] },
+    { argv: ['--cache-dir', '/c', '--port', '8001'], names: ['--port', '--embed-port'] },
+    { argv: ['--cache-dir', '/c', '--port', '9000', '--embed-port', '9001', '--rerank-port', '9001'], names: ['--embed-port', '--rerank-port'] },
+    { argv: ['--cache-dir', '/c', '--embed-port', '0'], names: ['--embed-port'] },
+    { argv: ['--cache-dir', '/c', '--rerank-port', '65536'], names: ['--rerank-port'] },
+    { argv: ['--cache-dir', '/c', '--embed-port'], names: ['--embed-port'] },
+    { argv: ['--keep-env', '--embed-port', '9001'], names: ['--embed-port'] },
+    { argv: ['--keep-env', '--rerank-port', '9002'], names: ['--rerank-port'] },
+  ]
+  for (const { argv, names } of refused) {
+    const result = parseArgs(argv, TIERS)
+    assert.equal(result.ok, false, `accepted: ${argv.join(' ')}`)
+    if (!result.ok) for (const name of names) assert.ok(result.message.includes(name), `"${result.message}" does not name ${name}`)
   }
 })

@@ -12,5 +12,16 @@
     "concurrency": 4,
     "minPromptTokens": 14000,
     "maxTokens": 2048
+  },
+  "embedding": {
+    "unitLengthTolerance": 0.001,
+    "minAnsweredFirstRate": 0.9,
+    "concurrency": 4,
+    "batchSize": 32
+  },
+  "reranker": {
+    "minAnsweredFirstRate": 0.9,
+    "concurrency": 4,
+    "maxTokensPerDoc": 512
   }
 }

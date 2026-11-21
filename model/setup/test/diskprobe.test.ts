@@ -7,16 +7,18 @@ const GOOD =
   'owner 1000 1001\n' +
   'cache /dev/nvme0n1p2      1906751 1203511    606355      67% /c\n' +
   'docker overlay           937838  512034    378130      58% /\n' +
-  'weights present\n'
+  'weights present\n' +
+  'embed-weights present\n' +
+  'rerank-weights absent\n'
 
 test('20. the disk probe output parses to the exact figures; malformed output is an error', () => {
   assert.deepEqual(parseDiskProbe(GOOD), {
     ok: true,
-    probe: { ownerUid: 1000, ownerGid: 1001, cacheFreeMiB: 606355, dockerFreeMiB: 378130, weightsPresent: true },
+    probe: { ownerUid: 1000, ownerGid: 1001, cacheFreeMiB: 606355, dockerFreeMiB: 378130, weightsPresent: true, embedWeightsPresent: true, rerankWeightsPresent: false },
   })
   assert.deepEqual(parseDiskProbe(GOOD.replace('weights present', 'weights absent')), {
     ok: true,
-    probe: { ownerUid: 1000, ownerGid: 1001, cacheFreeMiB: 606355, dockerFreeMiB: 378130, weightsPresent: false },
+    probe: { ownerUid: 1000, ownerGid: 1001, cacheFreeMiB: 606355, dockerFreeMiB: 378130, weightsPresent: false, embedWeightsPresent: true, rerankWeightsPresent: false },
   })
   const malformed = [
     '', // nothing
