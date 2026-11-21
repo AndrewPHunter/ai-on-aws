@@ -1,15 +1,17 @@
 import { Inbox, ClipboardCheck, Activity } from 'lucide-react';
 import { NavLink, Navigate, Route, Routes } from 'react-router';
 
-import { useCases, useStatus } from './api.ts';
+import type { SessionUser } from '../../shared/api.ts';
+import { failureText, useCases, useSession, useSignOut, useStatus } from './api.ts';
+import { Loading, Problem } from './components.tsx';
 import { CasePage } from './pages/CasePage.tsx';
 import { CasesPage } from './pages/CasesPage.tsx';
 import { InquiriesPage } from './pages/InquiriesPage.tsx';
 import { SystemPage } from './pages/SystemPage.tsx';
-import { useReviewer } from './reviewer.tsx';
+import { SignedInProvider } from './session.tsx';
 
-function Rail() {
-  const reviewer = useReviewer();
+function Rail({ user }: { user: SessionUser }) {
+  const signOut = useSignOut();
   const awaiting = useCases('awaiting_review');
   const status = useStatus();
   const waiting = awaiting.data?.cases.length ?? 0;
@@ -48,35 +50,87 @@ function Rail() {
       </nav>
 
       <div className="rail__reviewer">
-        <label htmlFor="reviewer-name">Reviewing as</label>
-        <input
-          id="reviewer-name"
-          value={reviewer.name}
-          onChange={(event) => reviewer.setName(event.target.value)}
-          placeholder="Your name"
-          autoComplete="name"
-        />
-        <p className="rail__hint">Decisions are recorded under this name. Nobody is signed in here.</p>
+        <p className="rail__hint">Signed in as</p>
+        <p>
+          <strong>{user.name}</strong>
+        </p>
+        <p className="rail__hint">{user.is_reviewer ? 'Reviewer: can decide cases.' : 'Not a reviewer.'}</p>
+        <button
+          type="button"
+          className="button button--small"
+          disabled={signOut.isPending}
+          onClick={() => signOut.mutate()}
+        >
+          Sign out
+        </button>
+        {signOut.isError ? <Problem>{failureText(signOut.error)}</Problem> : null}
       </div>
     </header>
   );
 }
 
-export function App() {
+function SignIn() {
   return (
-    <div className="shell">
-      <Rail />
+    <main className="page">
+      <div className="column">
+        <div className="empty">
+          <p className="empty__title">Medical information desk</p>
+          <div className="empty__body">
+            <p>Sign in with your desk account to receive inquiries and review cases.</p>
+            <p>
+              <a className="button button--primary" href="/auth/login">
+                Sign in
+              </a>
+            </p>
+          </div>
+        </div>
+      </div>
+    </main>
+  );
+}
+
+export function App() {
+  const session = useSession();
+
+  if (session.isPending) {
+    return (
       <main className="page">
-        <Routes>
-          <Route path="/" element={<Navigate to="/inquiries" replace />} />
-          <Route path="/inquiries" element={<InquiriesPage />} />
-          <Route path="/inquiries/:inquiryId" element={<InquiriesPage />} />
-          <Route path="/cases" element={<CasesPage />} />
-          <Route path="/cases/:caseId" element={<CasePage />} />
-          <Route path="/system" element={<SystemPage />} />
-          <Route path="*" element={<Navigate to="/inquiries" replace />} />
-        </Routes>
+        <div className="column">
+          <Loading what="who is signed in" />
+        </div>
       </main>
-    </div>
+    );
+  }
+  if (session.isError) {
+    return (
+      <main className="page">
+        <div className="column">
+          <Problem>{failureText(session.error)}</Problem>
+        </div>
+      </main>
+    );
+  }
+  if (session.data === null) {
+    return <SignIn />;
+  }
+
+  const { user } = session.data;
+  return (
+    <SignedInProvider user={user}>
+      <div className="shell">
+        <Rail user={user} />
+        <main className="page">
+          <Routes>
+            <Route path="/" element={<Navigate to="/inquiries" replace />} />
+            <Route path="/inquiries" element={<InquiriesPage />} />
+            <Route path="/inquiries/:inquiryId" element={<InquiriesPage />} />
+            <Route path="/cases" element={<CasesPage />} />
+            <Route path="/cases/:caseId" element={<CasePage />} />
+            <Route path="/system" element={<SystemPage />} />
+            <Route path="*" element={<Navigate to="/inquiries" replace />} />
+          </Routes>
+        </main>
+      </div>
+    </SignedInProvider>
   );
 }

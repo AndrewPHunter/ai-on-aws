@@ -38,6 +38,7 @@ ai-on-aws/
 ├── tools/                what agents call: MCP servers and APIs
 ├── knowledge/            the Bedrock Knowledge Bases stand-in
 ├── platform/             stand-ins for memory, identity, policy and tracing
+├── test-support/         stand-ins only tests use; copied into no piece's image
 └── evaluation/           harness, datasets and attack cases
 ```
 
@@ -50,7 +51,8 @@ ai-on-aws/
 | [`agents/`](agents/README.md) | The agents, each its own container, each serving the AgentCore Runtime contract | One agent, intake, built twice: with its loop written by hand, and on Strands. Both work against the local model |
 | [`tools/`](tools/README.md) | The agents' tools: MCP servers and APIs. Not developer tooling, which is `toolchain/` | One tool: the case system, used by both intake agents |
 | [`knowledge/`](knowledge/README.md) | Documents in, search, retrieval for agents. The documents are US drug labels from DailyMed, prescription and over-the-counter | The corpus: the labels of the FDARxBench benchmark that DailyMed serves, pinned by set id and version, fetched and checked by checksum, counted, parsed into structured documents, and split into citable chunks, each step checked for lost text. No search or retrieval yet |
-| [`platform/`](platform/README.md) | Local stand-ins for the AgentCore services around the runtime | Placeholder |
+| [`platform/`](platform/README.md) | Local stand-ins for the AgentCore services around the runtime | One stand-in: an OpenID Connect provider (Keycloak) with one realm, started with the lab. The client signs desk staff in through it and validates their ID tokens; the agents and the case system each check the access token on every request. No stand-in yet for memory, policy or tracing |
+| [`test-support/`](test-support/README.md) | Code only tests use: stand-ins for services a test cannot start. Copied into no piece's image | One stand-in: an OpenID Connect issuer, used by the tests of the client, the agents, the case system and the shared token check |
 | [`evaluation/`](evaluation/README.md) | Measures the other pieces | Placeholder |
 
 A placeholder folder holds a README that says what will live there, and nothing else.
@@ -81,12 +83,29 @@ Setup selects the largest model that fits the GPU's free memory, starts the serv
 With the model server set up as above, on the machine you work on:
 
 ```bash
+platform/identity/setup.sh
 docker compose up -d --build --wait
 ```
 
-Then open <http://127.0.0.1:3000>. This starts the agents, the case system they write to, and the client, on one network. It reads `model/.env`, which model setup wrote, to find the model server; without that file it stops and says the file is missing. If the model server is on a different machine from the one you work on, run setup with `--host` from the machine you work on, as described in [model/README.md](model/README.md), so that `model/.env` is here.
+Then open <http://localhost:3000> (use `localhost`, not `127.0.0.1`: sign-in returns to `localhost`) and sign in as one of the lab's two synthetic users:
+
+| Username | Can decide cases | Password |
+|---|---|---|
+| `riley.reviewer` | Yes, holds the `reviewer` role | `IDENTITY_RILEY_PASSWORD` in `platform/identity/.env` |
+| `dana.desk` | No | `IDENTITY_DANA_PASSWORD` in `platform/identity/.env` |
+
+The first command writes `platform/identity/.env`, the secrets of the lab's identity provider, with random values; run again, it changes nothing. The second starts the agents, the case system they write to, the client and the identity provider, on one network. It reads `model/.env`, which model setup wrote, to find the model server, and `platform/identity/.env`; without either file it stops and says what is missing. The identity provider is described in [platform/identity/README.md](platform/identity/README.md). If the model server is on a different machine from the one you work on, run setup with `--host` from the machine you work on, as described in [model/README.md](model/README.md), so that `model/.env` is here.
 
 What each screen does is in [client/README.md](client/README.md), and what each agent does is in [agents/README.md](agents/README.md).
+
+To check sign-in end to end on the running lab (both users signed in through Keycloak, each agent's and the case system's refusal of a request without a token, an inquiry through each agent, the reviewer role, sign-out), run the stack gate beside the identity provider's own gate:
+
+```bash
+platform/identity/stack-gate.sh ai-on-aws
+platform/identity/gate.sh ai-on-aws
+```
+
+Both print a JSON report and exit 0 only if every statement holds; see [platform/identity/README.md](platform/identity/README.md).
 
 ### Check the code
 

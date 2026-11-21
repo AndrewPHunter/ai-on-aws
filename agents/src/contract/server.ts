@@ -1,17 +1,23 @@
 // The HTTP contract an agent serves. This is all that Amazon Bedrock AgentCore Runtime asks of a
 // container: POST /invocations and GET /ping on port 8080. It is written by hand here, with nothing
 // from an SDK, so that what the platform requires and what the agent adds are easy to tell apart.
+//
+// POST /invocations requires a valid access token, checked before the body is read: the same check
+// AgentCore Runtime's JWT authorizer makes in front of the container, kept here as a second check so one
+// behaviour holds everywhere. GET /ping needs none.
 
 import { createServer } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 
+import type { AccessTokenCheck, Caller } from '../../../shared/access-token.ts';
 import { invocationRequestSchema, invocationResponseSchema } from '../../../shared/agent-contract.ts';
 import type { InboundMessage, InvocationResponse } from '../../../shared/agent-contract.ts';
 
 export type AgentIdentity = { id: string; implementation: string };
 
-// Handles one message. It reports its own failures inside the response; it is not expected to throw.
-export type Handler = (message: InboundMessage) => Promise<InvocationResponse>;
+// Handles one message for the caller whose token was accepted. It reports its own failures inside the
+// response; it is not expected to throw.
+export type Handler = (message: InboundMessage, caller: Caller) => Promise<InvocationResponse>;
 
 const MAX_BODY_BYTES = 1_000_000;
 
@@ -48,9 +54,25 @@ function sendJson(response: ServerResponse, status: number, payload: unknown): v
 async function invoke(
   identity: AgentIdentity,
   handler: Handler,
+  checkToken: AccessTokenCheck,
   request: IncomingMessage,
   response: ServerResponse,
 ): Promise<void> {
+  // The token first: a request that is not allowed is answered without its body being read.
+  const checked = await checkToken(request.headers.authorization);
+  if (checked.kind === 'refused') {
+    response.writeHead(401, { 'content-type': 'application/json', 'www-authenticate': 'Bearer error="invalid_token"' });
+    response.end(JSON.stringify({ error: 'unauthorized', reason: checked.reason, detail: checked.detail }));
+    request.resume();
+    return;
+  }
+  if (checked.kind === 'unavailable') {
+    sendJson(response, 503, { error: 'identity_unavailable', detail: checked.detail });
+    request.resume();
+    return;
+  }
+  const caller = checked.caller;
+
   const parsed = invocationRequestSchema.safeParse(await readJson(request));
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
@@ -62,7 +84,7 @@ async function invoke(
   // a good request gets an outcome and whatever steps were taken, never a bare error status.
   let result: InvocationResponse;
   try {
-    result = await handler(parsed.data.message);
+    result = await handler(parsed.data.message, caller);
   } catch (error) {
     console.error('The handler threw:', error);
     result = {
@@ -76,17 +98,17 @@ async function invoke(
     };
   }
 
-  const checked = invocationResponseSchema.safeParse(result);
-  if (!checked.success) {
+  const valid = invocationResponseSchema.safeParse(result);
+  if (!valid.success) {
     // The agent's own answer is outside the contract. That is a defect here, not a property of the request.
-    console.error('The agent produced a response outside the contract:', checked.error.issues[0]);
+    console.error('The agent produced a response outside the contract:', valid.error.issues[0]);
     sendJson(response, 500, { error: 'internal_error', detail: 'The agent produced a response outside its contract.' });
     return;
   }
-  sendJson(response, 200, checked.data);
+  sendJson(response, 200, valid.data);
 }
 
-export function createContractServer(identity: AgentIdentity, handler: Handler): Server {
+export function createContractServer(identity: AgentIdentity, handler: Handler, checkToken: AccessTokenCheck): Server {
   return createServer((request, response) => {
     const path = new URL(request.url ?? '/', 'http://agent').pathname;
 
@@ -104,7 +126,7 @@ export function createContractServer(identity: AgentIdentity, handler: Handler):
       return;
     }
 
-    invoke(identity, handler, request, response).catch((error: unknown) => {
+    invoke(identity, handler, checkToken, request, response).catch((error: unknown) => {
       if (response.headersSent) {
         response.destroy();
         return;

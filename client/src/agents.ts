@@ -26,14 +26,19 @@ export function describe(error: unknown): string {
 }
 
 // The fetch and the reading of the body share one timeout, so an agent that sends headers and then
-// stalls is treated the same as one that never answers.
-export async function invokeAgent(url: string, request: InvocationRequest, timeoutMs: number): Promise<InvokeResult> {
+// stalls is treated the same as one that never answers. The call carries the signed-in user's access token.
+export async function invokeAgent(
+  url: string,
+  request: InvocationRequest,
+  timeoutMs: number,
+  accessToken: string,
+): Promise<InvokeResult> {
   let status: number;
   let body: string;
   try {
     const response = await fetch(`${url}/invocations`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      headers: { 'content-type': 'application/json', accept: 'application/json', authorization: `Bearer ${accessToken}` },
       body: JSON.stringify(request),
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -73,6 +78,7 @@ export async function pingAgent(url: string, timeoutMs: number): Promise<PingRes
 }
 
 // Shared with the case system's health check: up means a 2xx answer within the time allowed.
+// A health check carries no token.
 export async function ping(target: string, timeoutMs: number): Promise<PingResult> {
   try {
     const response = await fetch(target, { signal: AbortSignal.timeout(timeoutMs) });

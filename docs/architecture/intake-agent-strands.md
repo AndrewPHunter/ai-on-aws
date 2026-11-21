@@ -14,8 +14,8 @@ Strands is used the way it comes. Its default model is Amazon Bedrock, which thi
 | Rules of a run, its record, its endings | `intake/run.ts` | The same file |
 | Limits and sampling settings | `intake/settings.ts` | The same file |
 | Startup and environment | `intake/serve.ts` | The same file |
-| HTTP surface | `contract/server.ts` | The same file |
-| Context headers, reading a case system answer | `tools/case-system.ts` | The same functions |
+| HTTP surface, including the access-token check | `contract/server.ts`, `shared/access-token.ts` | The same files |
+| Context headers and the caller's token on requests to the case system, reading a case system answer | `tools/case-system.ts` (`caseSystemHeaders`) | The same functions |
 | The loop | `intake/handwritten.ts` | Strands' `Agent` |
 | Request to the model | `model/chat.ts`: chat completions, one JSON response | Strands' `OpenAIModel` on its default: the Responses API, streamed |
 | Connection to the case system | `@modelcontextprotocol/sdk` 1.32.2 client | Strands' `McpClient`, on `@modelcontextprotocol/client` 2.4.0 |
@@ -75,9 +75,9 @@ sequenceDiagram
     participant K as Case system
     participant V as Model server
 
-    S->>O: handleInquiry
+    S->>O: handleInquiry with the caller (token already accepted by contract/server.ts)
     O->>R: startRun
-    O->>K: McpClient connect and listTools, with context headers
+    O->>K: McpClient connect and listTools, with context headers and the caller's token
     O->>A: new Agent with CaseTools, prompt, hooks
     O->>A: invoke with the user turn, a cancel signal, a turn limit
     loop each turn, at most 6
@@ -91,7 +91,7 @@ sequenceDiagram
             A->>O: BeforeToolCall hook
             O->>R: refusalBeforeCall
             A->>O: CaseTool.stream
-            O->>K: tools/call with a time limit
+            O->>K: tools/call with a time limit, with the same headers
             K-->>O: result, refusal, or nothing
             A->>O: AfterToolCall hook
             O->>R: record the tool step, then afterCall
@@ -177,7 +177,7 @@ Each is set in `converse` in `intake/strands.ts`.
 
 ## Not present, in addition
 
-Everything in the hand-written agent's "Not present" list is also absent here. Three more follow from Strands:
+Everything in the hand-written agent's "Not present" list is also absent here, including special handling of a token the case system refuses mid-run: such a tool call falls under the rules for a call that got no answer. The refusal at connection is named in the same two reasons as the hand-written agent's, read from the error Strands' MCP client raises. Three more follow from Strands:
 
 | Missing | What follows |
 |---|---|
@@ -187,10 +187,10 @@ Everything in the hand-written agent's "Not present" list is also absent here. T
 
 ## What was checked
 
-- The check passes with 175 tests on arm64 and amd64. 62 of them are the 31 rows of the shared table, run once for each agent.
+- The check passes with 228 tests on arm64 (amd64 not re-run since the access-token checks were added). 66 of them are the 33 rows of the shared table, run once for each agent.
 - Against the 9B model, before the retries were turned on, the Strands agent was sent the seven prepared inquiries on an empty store. It gave the expected result for all seven and left three cases: one awaiting review at version 2, one incomplete, one awaiting review. The prompt was tuned on these seven with the hand-written agent, so this is not a held-out set.
 - With the retries on, each agent answered one inquiry against the 9B model, and each was run once with a model address where nothing listens. Both failed the run with "The model could not be reached." after about 1.4 s. The hand-written agent recorded three error steps, the Strands agent one.
 - With a bare Strands `Agent` against the 9B model, before this agent was written this way: a turn with a sentence and two tool calls came through whole; a turn cut off by its output allowance raised `MaxTokensError` carrying what had been written; asking again with `reasoning.effort: 'none'` gave an answer with no thinking; a tool result marked as an error was understood by the model.
 - The output is not repeatable on this model server, with the same seed and a temperature of 0, even between two runs of one agent.
 
-Not established: how either retry layer behaves against a model server that fails some of the time (tests only, and the closed address above); whether the thinking retry fires in this agent against the real model (tests, and the bare `Agent` above); how this agent behaves when the real model makes two tool calls in one turn (tests, and the bare `Agent` above); what either agent does with a response that starts and then breaks off (from the code, the hand-written loop sends the request again and Strands does not); whether the context headers pass through AgentCore Runtime or Gateway.
+Not established: how either retry layer behaves against a model server that fails some of the time (tests only, and the closed address above); whether the thinking retry fires in this agent against the real model (tests, and the bare `Agent` above); how this agent behaves when the real model makes two tool calls in one turn (tests, and the bare `Agent` above); what either agent does with a response that starts and then breaks off (from the code, the hand-written loop sends the request again and Strands does not); whether the context headers and the caller's token pass through AgentCore Runtime or Gateway.

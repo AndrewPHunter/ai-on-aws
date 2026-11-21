@@ -9,17 +9,18 @@ import { serveIntakeAgent } from './serve.ts';
 
 serveIntakeAgent('hand-written loop', ({ identity, now, limits, model, caseMcpUrl }) => {
   const chat = createChatModel(model);
-  return (message) =>
+  return (message, caller) =>
     handleInquiry(
       {
         identity,
         model: chat,
-        connectTools: (inbound, timeoutMs) => connectCaseTools(caseMcpUrl, inbound, identity.id, timeoutMs),
+        connectTools: (inbound, token, timeoutMs) => connectCaseTools(caseMcpUrl, inbound, identity.id, token, timeoutMs),
         now,
         sleep: (ms) => sleep(ms),
         random: Math.random,
         limits,
       },
       message,
+      caller,
     );
 });

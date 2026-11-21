@@ -40,6 +40,12 @@ export type AuditView = {
   at: string;
   actor: string;
   actor_kind: 'agent' | 'reviewer';
+  // On an agent's entry: the signed-in user the agent acted for, from the access token it passed on.
+  // Null on a reviewer's entry, and on entries recorded before tokens were checked.
+  acting_for: { name: string; subject: string } | null;
+  // On a reviewer's entry: the reviewer's subject at the identity provider; actor is their name. Null on
+  // an agent's entry, and on entries recorded before tokens were checked.
+  actor_subject: string | null;
   action: string;
   version: number | null;
   detail: unknown;
@@ -51,5 +57,6 @@ export type FoundCases = { cases: CaseView[]; truncated: boolean };
 // GET /cases/<id> on the review server.
 export type CaseRecord = { case: CaseView; versions: VersionView[]; audit: AuditView[] };
 
-// POST /cases/<id>/review on the review server.
-export type ReviewRequest = { reviewer: string; decision: ReviewDecision; note?: string };
+// POST /cases/<id>/review on the review server. The reviewer is whoever the access token names; a body
+// that names one is refused.
+export type ReviewRequest = { decision: ReviewDecision; note?: string };

@@ -82,8 +82,8 @@ All in `toolchain/Dockerfile`, built with the root of the repository as the buil
 | `deps` | `base`, the root `package.json` and `package-lock.json`, and the dependencies installed from them | The check, the dev container |
 | `check` | `deps` and the repository's source | `toolchain/check.sh` |
 | `run-deps` | `base` and only the dependencies needed at run time, without the check's tools | The `run` stage |
-| `run` | `run-deps`, a `/data` folder owned by `node`, the `shared/` folder, and one piece's `src/` folder. The piece is named by the build argument `PIECE`, such as `tools/case-system` | Each piece's own compose file, which also sets the command |
-| `web-build` | `deps`, and one piece's React app in its `web/` folder, built by Vite to static files | The `run-web` stage |
+| `run` | `run-deps`, a `/data` folder owned by `node`, the source files at the top of `shared/` (`shared/*.ts`), and one piece's `src/` folder. The piece is named by the build argument `PIECE`, such as `tools/case-system` | Each piece's own compose file, which also sets the command |
+| `web-build` | `deps`, `shared/*.ts`, and one piece's React app in its `web/` folder, built by Vite to static files | The `run-web` stage |
 | `run-web` | `run`, and the static files from `web-build` | The compose file of a piece that has a React app, which today is `client/` |
 | `lock`, `lockfile` | npm resolving the lockfile, and the one file it produces | `toolchain/lock.sh` |
 
@@ -92,3 +92,5 @@ A piece's server runs its TypeScript directly on Node; nothing compiles it to Ja
 ## What never enters an image
 
 The root `.dockerignore` keeps these out of every build: `.git`, git worktrees under `.claude/worktrees`, any `node_modules`, any `.env` or `.env.*` file other than `.env.example`, anything under a `secrets` folder, and `model/gate-report.json`.
+
+A piece's image also never holds tests: the run-time stages copy `shared/*.ts`, not the `shared/` folder, so `shared/test/` stays out, and they copy no piece's `test/` folder. A test in `toolchain/test/` fails if a run-time stage copies the `shared/` folder itself. Only the check stage, which runs the tests, copies the whole repository.

@@ -1,7 +1,7 @@
 // Forwards case review to the case system's review server. The case system owns every decision about
 // a case, so its status code and body are passed back unchanged; the client adds nothing and hides
 // nothing. Only a review server that cannot be reached, or that answers with something other than
-// JSON, becomes an answer of the client's own.
+// JSON, becomes an answer of the client's own. Every call carries the signed-in user's access token.
 
 import { describe, isTimeout, seconds } from './agents.ts';
 
@@ -30,19 +30,23 @@ async function forward(target: string, init: RequestInit): Promise<Forwarded> {
   }
 }
 
-export function listCases(baseUrl: string, status: string | null): Promise<Forwarded> {
+function bearer(accessToken: string): Record<string, string> {
+  return { authorization: `Bearer ${accessToken}` };
+}
+
+export function listCases(baseUrl: string, status: string | null, accessToken: string): Promise<Forwarded> {
   const query = status === null ? '' : `?${new URLSearchParams({ status }).toString()}`;
-  return forward(`${baseUrl}/cases${query}`, { method: 'GET' });
+  return forward(`${baseUrl}/cases${query}`, { method: 'GET', headers: bearer(accessToken) });
 }
 
-export function getCase(baseUrl: string, caseId: string): Promise<Forwarded> {
-  return forward(`${baseUrl}/cases/${encodeURIComponent(caseId)}`, { method: 'GET' });
+export function getCase(baseUrl: string, caseId: string, accessToken: string): Promise<Forwarded> {
+  return forward(`${baseUrl}/cases/${encodeURIComponent(caseId)}`, { method: 'GET', headers: bearer(accessToken) });
 }
 
-export function postReview(baseUrl: string, caseId: string, review: unknown): Promise<Forwarded> {
+export function postReview(baseUrl: string, caseId: string, review: unknown, accessToken: string): Promise<Forwarded> {
   return forward(`${baseUrl}/cases/${encodeURIComponent(caseId)}/review`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...bearer(accessToken) },
     body: JSON.stringify(review),
   });
 }

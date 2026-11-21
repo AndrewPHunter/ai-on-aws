@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { invocationResponseSchema } from '../../shared/agent-contract.ts';
 import type { InvocationResponse } from '../../shared/agent-contract.ts';
-import type { Inquiry, InquiryList, InquirySummary, Run, RunState, RunSummary } from '../shared/api.ts';
+import type { Author, Inquiry, InquiryList, InquirySummary, Run, RunState, RunSummary } from '../shared/api.ts';
 
 export const LIST_LIMIT = 100;
 export const INTERRUPTED_ERROR = 'The client restarted while this run was in progress.';
@@ -39,9 +39,22 @@ create table if not exists runs (
 create index if not exists runs_by_inquiry on runs(inquiry_id, n);
 `;
 
+// Columns added after the first release. A database written before them gets them, empty, when it is
+// opened; its existing rows read back with no author.
+const ADDED_COLUMNS: readonly { table: string; column: string }[] = [
+  { table: 'inquiries', column: 'entered_by_sub' },
+  { table: 'inquiries', column: 'entered_by_name' },
+  { table: 'runs', column: 'started_by_sub' },
+  { table: 'runs', column: 'started_by_name' },
+];
+
 const STATES = ['running', 'completed', 'failed'] as const;
 
-export type NewInquiry = { id: string; receivedAt: string; sender: string; text: string };
+// Who did something: the identity provider's subject and the name it gives. Both are stored; the API
+// shows the name.
+export type Actor = { sub: string; name: string };
+
+export type NewInquiry = { id: string; receivedAt: string; sender: string; text: string; enteredBy: Actor };
 
 type Row = Record<string, unknown>;
 
@@ -73,6 +86,11 @@ function optionalInteger(row: Row, column: string): number | null {
     throw new Error(`Column ${column} holds neither an integer nor null`);
   }
   return value;
+}
+
+function authorOf(row: Row, column: string): Author | null {
+  const name = optionalText(row, column);
+  return name === null ? null : { name };
 }
 
 function stateOf(row: Row): RunState {
@@ -111,6 +129,7 @@ function runOf(row: Row): Run {
     agent_id: text(row, 'agent_id'),
     state: stale ? 'failed' : stateOf(row),
     started_at: text(row, 'started_at'),
+    started_by: authorOf(row, 'started_by_name'),
     finished_at: optionalText(row, 'finished_at'),
     duration_ms: optionalInteger(row, 'duration_ms'),
     error: stale ? STALE_ERROR : optionalText(row, 'error'),
@@ -136,6 +155,12 @@ export class InquiryStore {
     this.now = now;
     this.db.exec('pragma foreign_keys = on');
     this.db.exec(SCHEMA);
+    for (const { table, column } of ADDED_COLUMNS) {
+      const present = this.db.prepare('select 1 from pragma_table_info(?) where name = ?').get(table, column);
+      if (present === undefined) {
+        this.db.exec(`alter table ${table} add column ${column} text`);
+      }
+    }
   }
 
   close(): void {
@@ -144,18 +169,22 @@ export class InquiryStore {
 
   createInquiry(inquiry: NewInquiry): void {
     this.db
-      .prepare('insert into inquiries (id, received_at, sender, text) values (?, ?, ?, ?)')
-      .run(inquiry.id, inquiry.receivedAt, inquiry.sender, inquiry.text);
+      .prepare(
+        'insert into inquiries (id, received_at, sender, text, entered_by_sub, entered_by_name) values (?, ?, ?, ?, ?, ?)',
+      )
+      .run(inquiry.id, inquiry.receivedAt, inquiry.sender, inquiry.text, inquiry.enteredBy.sub, inquiry.enteredBy.name);
   }
 
   // Returns undefined when the inquiry does not exist, so no run is started for nothing.
-  startRun(runId: string, inquiryId: string, agentId: string): Run | undefined {
+  startRun(runId: string, inquiryId: string, agentId: string, startedBy: Actor): Run | undefined {
     if (this.db.prepare('select 1 from inquiries where id = ?').get(inquiryId) === undefined) {
       return undefined;
     }
     this.db
-      .prepare("insert into runs (id, inquiry_id, agent_id, state, started_at) values (?, ?, ?, 'running', ?)")
-      .run(runId, inquiryId, agentId, this.now().toISOString());
+      .prepare(
+        "insert into runs (id, inquiry_id, agent_id, state, started_at, started_by_sub, started_by_name) values (?, ?, ?, 'running', ?, ?, ?)",
+      )
+      .run(runId, inquiryId, agentId, this.now().toISOString(), startedBy.sub, startedBy.name);
     return this.getRun(runId);
   }
 
@@ -194,6 +223,7 @@ export class InquiryStore {
     return {
       id: text(row, 'id'),
       received_at: text(row, 'received_at'),
+      entered_by: authorOf(row, 'entered_by_name'),
       sender: text(row, 'sender'),
       text: text(row, 'text'),
       runs: this.runsOf(inquiryId),

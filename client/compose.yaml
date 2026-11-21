@@ -26,6 +26,25 @@ services:
           "name": "Intake agent, on Strands",
           "description": "The same intake agent, with the same prompt and rules. Strands runs its loop. It does not answer clinical questions.",
           "url": "http://intake-strands:8080"}]
+      # Signing desk staff in. The server fetches the provider's discovery document by its service name
+      # on the shared network; the document, and every token, names the issuer the browser uses.
+      OIDC_DISCOVERY_URL: http://identity:8080/realms/lab/.well-known/openid-configuration
+      OIDC_ISSUER: http://localhost:8090/realms/lab
+      OIDC_CLIENT_ID: desk
+      # The one value this container takes from platform/identity/.env, which the root compose.yaml reads
+      # for this file only. The users' and the administrator's passwords are not passed in.
+      OIDC_CLIENT_SECRET: ${IDENTITY_DESK_CLIENT_SECRET:?run platform/identity/setup.sh}
+      OIDC_REDIRECT_URI: http://localhost:3000/auth/callback
+      OIDC_POST_LOGOUT_REDIRECT_URI: http://localhost:3000/
+      # Where the refresh token is revoked at sign-out. A setting rather than taken from discovery: Keycloak
+      # names this one endpoint at the browser's address (localhost:8090) even when its document is fetched
+      # from inside the network, and this container cannot reach that address.
+      OIDC_REVOCATION_ENDPOINT: http://identity:8080/realms/lab/protocol/openid-connect/revoke
+      # The app's own origin. The browser must use this address, not 127.0.0.1: the redirect URI, the
+      # session cookie and the check on a POST's Origin are all on localhost.
+      APP_ORIGIN: http://localhost:3000
+      ROLES_CLAIM: roles
+      REVIEWER_ROLE: reviewer
     ports:
       # Published on this machine only.
       - "127.0.0.1:3000:3000"
@@ -40,7 +59,7 @@ services:
       - no-new-privileges:true
     init: true
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/agents').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/ping').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
       interval: 5s
       timeout: 3s
       retries: 5

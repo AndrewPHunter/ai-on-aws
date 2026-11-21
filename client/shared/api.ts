@@ -2,6 +2,7 @@
 // Types only, so the same file is read by the server (Node) and the app (browser).
 
 import type { InvocationResponse } from '../../shared/agent-contract.ts';
+import type { ReviewDecision } from '../../shared/case-contract.ts';
 
 export type { InvocationResponse, Step, Citation, CaseAction } from '../../shared/agent-contract.ts';
 export type {
@@ -48,6 +49,21 @@ export type SampleInquiry = {
 };
 export type SampleList = { samples: SampleInquiry[] };
 
+// The member of staff who entered an inquiry or started a run, as the identity provider named them.
+// Null for rows written before staff signed in.
+export type Author = { name: string };
+
+// GET /api/session: who is signed in. Holds no token of any kind.
+export type SessionUser = { name: string; username: string; roles: string[]; is_reviewer: boolean };
+export type SessionView = { user: SessionUser };
+
+// POST /auth/logout: where to send the browser to end the session at the identity provider too.
+export type SignOutResponse = { sign_out_url: string };
+
+// POST /api/cases/<id>/review from the app. Nobody names the reviewer: the client's server forwards this
+// with the signed-in user's access token, and the case system takes the reviewer from the token.
+export type ReviewDecisionRequest = { decision: ReviewDecision; note?: string };
+
 // One attempt by one agent to handle an inquiry.
 export type RunState = 'running' | 'completed' | 'failed';
 export type Run = {
@@ -56,6 +72,7 @@ export type Run = {
   agent_id: string;
   state: RunState;
   started_at: string;
+  started_by: Author | null;
   finished_at: string | null;
   duration_ms: number | null;
   // Why the run failed: the agent could not be reached, timed out, or answered outside the contract.
@@ -75,6 +92,7 @@ export type RunSummary = {
 export type Inquiry = {
   id: string;
   received_at: string;
+  entered_by: Author | null;
   sender: string;
   text: string;
   runs: Run[];
