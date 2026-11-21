@@ -41,7 +41,54 @@ import type { Answer, RunningClient } from './helpers.ts';
 // NOT an agent. A tiny HTTP server that speaks the agent contract (GET /ping, POST /invocations) so
 // the client's handling of each kind of answer can be tested before any real agent exists.
 
-type StandInMode = 'correct' | 'failed_outcome' | 'outside_contract' | 'status_500' | 'never_answer';
+type StandInMode = 'correct' | 'label_answer' | 'failed_outcome' | 'outside_contract' | 'status_500' | 'never_answer';
+
+const LABEL_SET_ID = '00000000-0000-4000-8000-0000000000a1';
+const LABEL_SOURCE = `https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=${LABEL_SET_ID}&version=3`;
+
+// What an agent that answers from drug labels returns: label_answer, citations with their sources, and a
+// retrieval step whose hits say which passages the model was shown. Every word is invented.
+const LABEL_RESPONSE = {
+  ...EXAMPLE_RESPONSE,
+  reply: 'Take it with food [1]; do not exceed the stated dose [2].',
+  label_answer: 'answered',
+  case_actions: [],
+  citations: [
+    {
+      drug: 'Examplamab',
+      section: '2.1 Invented dosing',
+      quote: 'Invented passage one.',
+      set_id: LABEL_SET_ID,
+      version: 3,
+      effective_date: '20260130',
+      source: LABEL_SOURCE,
+      passage: `${LABEL_SET_ID}/3/sec-1/body/1`,
+    },
+    {
+      drug: 'Examplamab',
+      section: '2.2 Invented limits',
+      quote: 'Invented passage two.',
+      set_id: LABEL_SET_ID,
+      version: 3,
+      effective_date: '20260130',
+      source: LABEL_SOURCE,
+      passage: `${LABEL_SET_ID}/3/sec-2/body/1`,
+    },
+  ],
+  steps: [
+    {
+      kind: 'retrieval',
+      started_at: '2026-03-01T09:00:01.100Z',
+      duration_ms: 14,
+      query: 'invented dosing',
+      strategy: 'bm25',
+      hits: [
+        { drug: 'Examplamab', section: '2.1 Invented dosing', score: 7.5, excerpt: 'Invented passage one.', passage: `${LABEL_SET_ID}/3/sec-1/body/1`, handle: 'P1', shown: true },
+        { drug: 'Examplamab', section: '9 Invented other', score: 1.25, excerpt: 'Invented passage three.', passage: `${LABEL_SET_ID}/3/sec-9/body/1`, handle: 'P2', shown: false },
+      ],
+    },
+  ],
+};
 
 type StandInAgent = {
   url: string;
@@ -90,6 +137,10 @@ async function startStandInAgent(t: TestContext, initial: StandInMode): Promise<
           case 'correct':
             response.writeHead(200, { 'content-type': 'application/json' });
             response.end(JSON.stringify(EXAMPLE_RESPONSE));
+            return;
+          case 'label_answer':
+            response.writeHead(200, { 'content-type': 'application/json' });
+            response.end(JSON.stringify(LABEL_RESPONSE));
             return;
           case 'failed_outcome':
             response.writeHead(200, { 'content-type': 'application/json' });
@@ -233,6 +284,15 @@ test('a new inquiry answers 202 with a running run, and later reads back complet
     ],
     truncated: false,
   });
+});
+
+test('C5. label_answer, citations and a retrieval step come back from the client API unchanged', async (t) => {
+  const { client } = await withAgent(t, 'label_answer');
+  await send(client);
+  const [run] = runsOf(await settled(client, 'id-1'));
+  assert.equal(prop(run, 'state'), 'completed');
+  assert.equal(prop(run, 'error'), null);
+  assert.deepEqual(prop(run, 'response'), LABEL_RESPONSE);
 });
 
 test('running an inquiry again sends the same id and receipt time to the agent', async (t) => {

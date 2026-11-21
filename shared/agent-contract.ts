@@ -48,7 +48,20 @@ export const stepSchema = z.discriminatedUnion('kind', [
     ...timing,
     query: z.string(),
     strategy: z.string(),
-    hits: z.array(z.object({ drug: z.string(), section: z.string(), score: z.number(), excerpt: z.string() })),
+    hits: z.array(
+      z.object({
+        drug: z.string(),
+        section: z.string(),
+        score: z.number(),
+        excerpt: z.string(),
+        // The passage's id in the index.
+        passage: z.string(),
+        // The short name the model was shown for this passage, such as P3, which its reply cites.
+        handle: z.string(),
+        // False when the passage matched but was not given to the model.
+        shown: z.boolean(),
+      }),
+    ),
   }),
   z.object({
     kind: z.literal('handoff'),
@@ -63,12 +76,26 @@ export const stepSchema = z.discriminatedUnion('kind', [
   }),
 ]);
 
-// A passage of an approved label that the reply relies on.
+// A passage of an approved label that the reply relies on, with what a reviewer needs to check it: which
+// label, which version of it, and where that version can be read.
 export const citationSchema = z.object({
+  // The label's names.
   drug: z.string(),
   section: z.string(),
   quote: z.string(),
+  set_id: z.string(),
+  version: z.number().int().min(1),
+  // As the label carries it: YYYYMMDD.
+  effective_date: z.string().regex(/^\d{8}$/),
+  // The label's page.
+  source: z.string().startsWith('https://'),
+  // The passage's id in the index.
+  passage: z.string(),
 });
+
+// Whether a question about a drug label was answered, and if not, why.
+export const LABEL_ANSWERS = ['answered', 'no_label', 'label_does_not_answer', 'not_a_label_question'] as const;
+export const labelAnswerSchema = z.enum(LABEL_ANSWERS);
 
 // Something the agent did to a case while handling the message.
 export const caseActionSchema = z.object({
@@ -84,6 +111,10 @@ export const invocationResponseSchema = z.object({
   stop_reason: z.string().nullable(),
   reply: z.string(),
   citations: z.array(citationSchema),
+  // Set on every completed run by an agent that answers from drug labels; absent from every other agent and
+  // from a run that did not complete. Optional, and not nullable, because responses stored before it existed
+  // must still parse.
+  label_answer: labelAnswerSchema.optional(),
   case_actions: z.array(caseActionSchema),
   steps: z.array(stepSchema),
 });
@@ -92,5 +123,6 @@ export type InboundMessage = z.infer<typeof inboundMessageSchema>;
 export type InvocationRequest = z.infer<typeof invocationRequestSchema>;
 export type Step = z.infer<typeof stepSchema>;
 export type Citation = z.infer<typeof citationSchema>;
+export type LabelAnswer = z.infer<typeof labelAnswerSchema>;
 export type CaseAction = z.infer<typeof caseActionSchema>;
 export type InvocationResponse = z.infer<typeof invocationResponseSchema>;

@@ -847,6 +847,35 @@ select:disabled {
   font-size: 16px;
 }
 
+.citations ol {
+  list-style: none;
+  padding: 0;
+}
+
+.citations__number {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--accent);
+}
+
+.citations__version {
+  margin-bottom: 6px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.citations__source {
+  margin-top: 6px;
+  font-size: 14px;
+}
+
+.labelanswer {
+  padding: 8px 12px;
+  border-left: 3px solid var(--accent);
+  background: var(--accent-wash);
+  font-weight: 560;
+}
+
 .again {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1025,6 +1054,21 @@ pre {
 
 .hits__excerpt {
   font-size: 15px;
+}
+
+.hits__handle {
+  font-family: var(--mono);
+  color: var(--accent);
+}
+
+.hits__unshown {
+  font-size: 13px;
+  color: var(--ink-2);
+  font-style: italic;
+}
+
+.hits li.is-unshown .hits__excerpt {
+  color: var(--ink-2);
 }
 
 /* ---------- Tables ---------- */

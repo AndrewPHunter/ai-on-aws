@@ -4,7 +4,7 @@
 import type { InvocationResponse } from '../../shared/agent-contract.ts';
 import type { ReviewDecision } from '../../shared/case-contract.ts';
 
-export type { InvocationResponse, Step, Citation, CaseAction } from '../../shared/agent-contract.ts';
+export type { InvocationResponse, Step, Citation, CaseAction, LabelAnswer } from '../../shared/agent-contract.ts';
 export type {
   AuditView,
   CaseRecord,
