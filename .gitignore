@@ -17,3 +17,6 @@ model/gate-report.json
 
 # OS
 .DS_Store
+
+# Git worktrees that tools create inside the repository
+.claude/worktrees/

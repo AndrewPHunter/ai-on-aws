@@ -1,5 +1,7 @@
 # Build context is the repository root (toolchain/Dockerfile). These never enter an image.
 .git
+# Git worktrees that tools create inside the repository: other checkouts, not part of this one.
+.claude/worktrees
 **/node_modules
 **/dist
 **/.env

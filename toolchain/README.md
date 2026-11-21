@@ -23,6 +23,8 @@ It exits 0 only if the image builds and all four steps pass. The steps run in th
 
 A new TypeScript file or a new `test/*.test.ts` file is covered without changing anything here.
 
+The image is named for the checkout it was built from: `ai-on-aws-toolchain-check:checkout-<number>`, where the number is derived from the checkout's path. Two checkouts of the repository, such as two git worktrees, can therefore be checked at the same time. The script prints the image's name when it starts. Each checkout leaves its own image behind; `docker image ls ai-on-aws-toolchain-check` lists them.
+
 ## What is checked
 
 - **Types:** `strict`, plus `noUncheckedIndexedAccess`: reading `list[0]` or a capture group of a match gives a value that may be `undefined`, and the code must handle that.
@@ -89,4 +91,4 @@ A piece's server runs its TypeScript directly on Node; nothing compiles it to Ja
 
 ## What never enters an image
 
-The root `.dockerignore` keeps these out of every build: `.git`, any `node_modules`, any `.env` or `.env.*` file other than `.env.example`, anything under a `secrets` folder, and `model/gate-report.json`.
+The root `.dockerignore` keeps these out of every build: `.git`, git worktrees under `.claude/worktrees`, any `node_modules`, any `.env` or `.env.*` file other than `.env.example`, anything under a `secrets` folder, and `model/gate-report.json`.

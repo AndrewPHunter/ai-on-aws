@@ -14,3 +14,14 @@ test('T1. toolchain/Dockerfile pins Node by the one digest that model/gate/compo
   assert.equal(inGate.length, 1, `model/gate/compose.yaml must name exactly one digest: ${inGate.join(', ')}`)
   assert.deepEqual([...new Set(inDockerfile)], inGate)
 })
+
+test('T3. the check image is named per checkout, so two checkouts cannot run each other\'s image', () => {
+  const compose = read('toolchain/compose.yaml')
+  const script = read('toolchain/check.sh')
+
+  const images = [...compose.matchAll(/^\s*image:\s*(\S+)/gm)].map((match) => match[1])
+  assert.deepEqual(images.length, 1, 'toolchain/compose.yaml must name exactly one image')
+  assert.match(images[0] ?? '', /^ai-on-aws-toolchain-check:\$\{CHECK_IMAGE_TAG:\?/, 'the check image must take its tag from CHECK_IMAGE_TAG, with no default')
+  assert.match(script, /CHECK_IMAGE_TAG="checkout-\$checkout"/, 'check.sh must derive the tag from the checkout')
+  assert.match(script, /docker compose -p "\$project"/, 'check.sh must run under a project name of its own')
+})

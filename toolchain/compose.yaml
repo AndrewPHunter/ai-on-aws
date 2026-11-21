@@ -7,7 +7,8 @@ services:
       context: ..
       dockerfile: toolchain/Dockerfile
       target: check
-    image: ai-on-aws-toolchain-check:local
+    # Named for the checkout it was built from, so two checkouts never share an image. check.sh sets the tag.
+    image: ai-on-aws-toolchain-check:${CHECK_IMAGE_TAG:?run toolchain/check.sh, which names the image for this checkout}
     network_mode: none
     read_only: true
     tmpfs:
