@@ -56,9 +56,15 @@ The flows, the rules of a tool call, and the controls neither has are in two doc
 |---|---|---|
 | [`src/contract/server.ts`](src/contract/server.ts) | `/invocations` and `/ping`, written by hand | Both |
 | [`src/intake/prompt.ts`](src/intake/prompt.ts) | What the agent is told | Both |
-| [`src/intake/run.ts`](src/intake/run.ts) | The rules of a run, its record, and the wording of every ending | Both |
-| [`src/intake/settings.ts`](src/intake/settings.ts) | The limits and the sampling settings | Both |
-| [`src/intake/serve.ts`](src/intake/serve.ts) | Startup: the environment, which model is served, the server | Both |
+| [`src/intake/run.ts`](src/intake/run.ts) | The rules of a run and the state they keep | Both |
+| [`src/intake/settings.ts`](src/intake/settings.ts) | The limits | Both |
+| [`src/intake/serve.ts`](src/intake/serve.ts) | Startup particular to intake: `CASE_MCP_URL`, the limits, the listening line | Both |
+| [`src/run/serve.ts`](src/run/serve.ts) | Startup: the environment, which model is served, the server | Both |
+| [`src/run/sampling.ts`](src/run/sampling.ts) | The sampling settings | Both |
+| [`src/run/state.ts`](src/run/state.ts), [`src/run/limits.ts`](src/run/limits.ts) | The state every run keeps, and the shape of its limits | Both |
+| [`src/run/steps.ts`](src/run/steps.ts) | The run's record | Both |
+| [`src/run/turns.ts`](src/run/turns.ts) | The turn lost to thinking | Both |
+| [`src/run/endings.ts`](src/run/endings.ts) | The wording of every ending | Both |
 | [`src/run/record.ts`](src/run/record.ts) | Step timing and the run's deadline | Both |
 | [`src/model/served.ts`](src/model/served.ts) | The model settings, which model the server serves, the wording of a model failure | Both |
 | [`src/tools/case-system.ts`](src/tools/case-system.ts) | What is particular to the case system: its context headers, which tools change a case, how to read its answers, and what they mean for the run's record. Also the hand-written agent's MCP connection | Both |
@@ -67,7 +73,7 @@ The flows, the rules of a tool call, and the controls neither has are in two doc
 | [`src/model/chat.ts`](src/model/chat.ts) | The chat API client, with `fetch` | Hand-written |
 | [`src/intake/strands.ts`](src/intake/strands.ts) | The Strands `Agent`, its four hooks, and the tool wrapper that adds a time limit | Strands |
 
-The rules both apply, from [`src/intake/run.ts`](src/intake/run.ts):
+The rules both apply, from [`src/intake/run.ts`](src/intake/run.ts) and, for the turn lost to thinking and the limits, [`src/run/turns.ts`](src/run/turns.ts) and [`src/run/endings.ts`](src/run/endings.ts):
 
 - **A write whose reply is lost is repeated once by the agent's code,** with identical content. The case system recognises an identical repeat, so there is one case either way. The model is not asked to retry, because a model rewords.
 - **One message opens at most one case, at one version.** Once a run has opened a case, or been told by the case system that one is already open for this message, a second `create_case` or a follow-up to that case is refused in code.
@@ -110,7 +116,7 @@ The reasons for each are in [the Strands document](../docs/architecture/intake-a
 
 ## Settings
 
-Set in [`compose.yaml`](compose.yaml), for each agent. The limits and sampling settings are in [`src/intake/settings.ts`](src/intake/settings.ts) and are the same for both.
+Set in [`compose.yaml`](compose.yaml), for each agent. The limits are in [`src/intake/settings.ts`](src/intake/settings.ts) and the sampling settings in [`src/run/sampling.ts`](src/run/sampling.ts); both are the same for both.
 
 | Setting | Meaning |
 |---|---|

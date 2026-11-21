@@ -20,7 +20,7 @@ import type { MintOptions, StandInIssuer } from '../../test-support/issuer.ts';
 import { CaseStore } from '../../tools/case-system/src/store.ts';
 import type { AgentIdentity } from '../src/contract/server.ts';
 import { handleInquiry as handleByHand } from '../src/intake/handwritten.ts';
-import type { Limits } from '../src/intake/run.ts';
+import type { Limits } from '../src/run/limits.ts';
 import { handleInquiry as handleWithStrands } from '../src/intake/strands.ts';
 import { createChatModel } from '../src/model/chat.ts';
 import type { ModelSettings } from '../src/model/served.ts';
