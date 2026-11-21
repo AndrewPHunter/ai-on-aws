@@ -9,7 +9,7 @@ How the repository's TypeScript is checked, and how a piece is packaged to run. 
 | Root manifests | `package.json` and `package-lock.json` at the root of the repository |
 | The check | Typecheck, lint, tests and the build of the React app, as defined by the `check` script in the root `package.json` |
 | Piece | A top-level folder of the lab, such as `model/` |
-| Node pin | The digest of the Node image, written in `toolchain/Dockerfile` and in the files under `model/` that run Node |
+| Node pin | The digest of the Node image, written in `toolchain/Dockerfile`, in the files under `model/` that run Node, and in `platform/identity/setup.sh` and `platform/identity/gate/compose.yaml` |
 
 ## What is built from what
 
@@ -42,7 +42,7 @@ flowchart TD
 3. The check container has no network, a read-only root filesystem, and no mount from the host. Its source is the copy made when the image was built.
 4. Dependencies are installed only by `npm ci` from the committed lockfile, with install scripts off. A lockfile that disagrees with `package.json` fails the install.
 5. Every dependency version in the root `package.json` is exact. A test in `toolchain/test/` fails otherwise.
-6. The Node pin is one digest. A test in `toolchain/test/` compares the Dockerfile's with `model/gate/compose.yaml`, and a test in `model/setup/test/` compares the copies under `model/`.
+6. The Node pin is one digest. A test in `toolchain/test/` compares the Dockerfile's with `model/gate/compose.yaml`, a test in `model/setup/test/` compares the copies under `model/`, and tests in `platform/identity/test/` compare the Dockerfile's with `platform/identity/gate/compose.yaml` and `platform/identity/setup.sh`.
 7. The only base image is the Node pin. Nothing is installed from the operating system's package manager.
 8. No `.git`, `node_modules`, `.env` file (other than `.env.example`), `secrets` folder or gate report enters an image.
 9. The only place `toolchain/` names a piece is the Node pin test, which reads `model/gate/compose.yaml`. `model/` does not depend on the toolchain: its setup, its gate and its own test command run in the bare Node image with only `model/` mounted and no installed dependency.

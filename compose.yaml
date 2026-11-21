@@ -10,3 +10,4 @@ include:
   - tools/case-system/compose.yaml
   - agents/compose.yaml
   - client/compose.yaml
+  - platform/identity/compose.yaml

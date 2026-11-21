@@ -1,0 +1,13 @@
+{
+  "issuer": "http://localhost:8090/realms/lab",
+  "clientId": "desk",
+  "redirectUri": "http://localhost:3000/auth/callback",
+  "audiences": ["lab-agents", "lab-case-system"],
+  "reviewerRole": "reviewer",
+  "lifetimeSeconds": 600,
+  "requestTimeoutMs": 15000,
+  "users": [
+    { "username": "riley.reviewer", "passwordVariable": "IDENTITY_RILEY_PASSWORD", "isReviewer": true },
+    { "username": "dana.desk", "passwordVariable": "IDENTITY_DANA_PASSWORD", "isReviewer": false }
+  ]
+}

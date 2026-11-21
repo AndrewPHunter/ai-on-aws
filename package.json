@@ -13,6 +13,7 @@
     "@modelcontextprotocol/client": "2.4.0",
     "@modelcontextprotocol/sdk": "1.32.2",
     "@strands-agents/sdk": "1.25.0",
+    "jose": "6.2.18",
     "openai": "6.49.0",
     "zod": "4.6.7"
   },
