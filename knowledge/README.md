@@ -2,7 +2,7 @@
 
 A local stand-in for Amazon Bedrock Knowledge Bases: taking documents in, storing them for search, and answering retrieval requests from agents.
 
-The documents are US drug labels from DailyMed. What exists so far gets them onto disk, reproducibly, counts what they are, and parses each into a structured document: the labels of the public benchmark [FDARxBench](https://github.com/xiongbetty/FDARxBench), each pinned at one version of its DailyMed label. Which ones are pinned, and why the others are not, is in `knowledge/corpus/manifest.json`. Nothing splits or searches them yet.
+The documents are US drug labels from DailyMed. What exists so far gets them onto disk, reproducibly, counts what they are, parses each into a structured document, and splits it into chunks that can be searched and cited: the labels of the public benchmark [FDARxBench](https://github.com/xiongbetty/FDARxBench), each pinned at one version of its DailyMed label. Which ones are pinned, and why the others are not, is in `knowledge/corpus/manifest.json`. Nothing searches them yet.
 
 ## The corpus as pinned
 
@@ -23,7 +23,7 @@ The corpus therefore holds both prescription and over-the-counter labels. Nothin
 
 Every command on this page is run from the root of the repository. The host needs a shell and Docker; Node is not needed on it.
 
-## The four commands
+## The five commands
 
 | Command | What it does | Network | Writes |
 |---|---|---|---|
@@ -31,10 +31,11 @@ Every command on this page is run from the root of the repository. The host need
 | `knowledge/fetch.sh` | Reads only the two committed files. Downloads the benchmark files and every label version the manifest names, and checks each against its checksum | DailyMed and GitHub | `knowledge/data/` |
 | `knowledge/census.sh` | Counts what the fetched labels are, and how much of the benchmark's text appears word for word in them. Counts and codes only, never label text | None | `knowledge/data/census.json`, and a summary on standard output |
 | `knowledge/parse.sh` | Parses every fetched label into a structured document, checks that no text was lost, and reports what did not parse cleanly. Numbers, codes and identifiers only in the report | None | `knowledge/data/parsed/<set id>/<version>.json` for each label without an error; `knowledge/data/parse-report.json` |
+| `knowledge/chunk.sh` | Splits every parsed label into chunks, checks that nothing was lost or doubled, and reports what it made. Numbers, codes and identifiers only in the report | None | `knowledge/data/chunks/<set id>/<version>.jsonl`, one chunk per line in document order; `knowledge/data/chunk-report.json` |
 
 Each takes no arguments. Each builds the image `knowledge-corpus:checkout-<number>` from the `run` stage of `toolchain/Dockerfile`, named for the checkout like the toolchain's check image, and runs the tool in it as your user, with a read-only root filesystem and no capabilities, with only `knowledge/corpus/` and `knowledge/data/` mounted.
 
-| Exit code | `pin.sh` | `fetch.sh` | `census.sh` | `parse.sh` |
+| Exit code | `pin.sh` | `fetch.sh` | `census.sh` | `parse.sh` and `chunk.sh` |
 |---|---|---|---|---|
 | 0 | Both files written | Everything fetched and verified | Every pinned label counted | Ran to the end, whatever the labels' results |
 | 1 | A request failed after every attempt; neither file was written | Something was refused; the rest was fetched | Some pinned labels are missing or do not match; the rest were counted | Not used |
@@ -101,6 +102,49 @@ A label with any error gets no parsed file and is listed as excluded; one with o
 
 **The check that no text was lost** does not share the parser's traversal. Side A is every text node under the label's body, taken by a walk that knows only two things: product data (`subject` elements) is skipped, because it is parsed into products and is not prose; and every element boundary separates words except `content` and `linkHtml`, which only style or link text. Side B is every piece of text in the parsed document: titles, paragraphs, list items and their captions, cells, captions, footnotes, image text (once per object) and captions, Highlights, with the parser's footnote marks removed. Each side is cut into tokens at every character that is not a letter or a digit, and the two collections with their counts must be equal. A dropped word, a doubled word or two numbers run together fails it; the marks the parser adds do not.
 
+### Chunking
+
+One pure function turns a parsed document and two settings into chunks: the size limit in words for text, and the size limit above which a splittable table is split. Both are passed by name from `chunk.sh` (300 and 300); neither has a default. A word is a run between white space that holds a letter or a digit, so the ` | ` between cells is not counted. A second run writes the same bytes.
+
+What a chunk carries:
+
+| Field | What it is |
+|---|---|
+| `id` | `<set id>/<version>/<section key>/<part>/<n>`: the section key is the section's own id when the label gives it to exactly one section, otherwise its position in the tree (`at-1.2`); `n` counts that section's chunks of that part |
+| `setId`, `version`, `effectiveTime`, `kind`, `format`, `documentTypeCode` | The label |
+| `drug` | Every product name, generic name and active-ingredient name, once each, compared without case |
+| `section` | The section's id, code, number, title and title path |
+| `part` | `body` or `highlights` |
+| `type` | `text`, `table` (a whole table) or `table-rows` (some rows of a table) |
+| `position` | The chunk's ordinal in the label; for `table-rows`, the first and last row it holds and the table's row count |
+| `text` | The content, in the plain form below |
+| `repeated` | The lines of `text` repeated from elsewhere so the chunk stands alone |
+| `context` | One line, `<drug names>: <title path>`, to put in front of `text` when wanted. Not part of `text` |
+| `words` | The number of words in `text` |
+| `source` | The label's page at DailyMed for this version |
+
+Text:
+
+- A section's own blocks make its chunks; child sections make their own; a section with no blocks makes none. Highlights blocks are chunked the same way, as `part` `highlights`.
+- Blocks are packed in order until the next would pass the limit. No overlap.
+- A paragraph over the limit is split at sentence ends, and a sentence over the limit between words.
+- A list stays together when it fits; otherwise it is split between items, inside an item only when the item alone passes the limit. A nested list stays with its item. An item is written with its caption or marker; nested items are indented by two spaces.
+- A block's footnotes are written after it, each with its mark, in the same chunk.
+- An image gives its descriptive text and caption. A section whose blocks are images with no text makes no chunk.
+- A table is never packed with text: it makes its own chunk or chunks.
+
+Tables:
+
+- **Plain form.** The caption on a line; each row on a line, cells separated by ` | `, an empty position as nothing, a cell covering several positions written once at its first; a cell's line breaks as ` / `; a nested table, in the same form, after its row; then the footnotes, each on a line with its mark. No Markdown table syntax.
+- **Splittable** only when its header rows come from the label's `thead`, it has no nested table and no short row, and every wholly bold row below the header has exactly one filled cell (a group label).
+- **A table that is not splittable is one chunk, whatever its size**, and one over the limit is counted as oversize. A splittable table within the limit is one chunk too.
+- **A splittable table over the limit** is split into `table-rows` chunks of consecutive body rows, as many as fit. Each holds the caption, every header row, the group label in force (carried in from above, or in its place), the rows, the footnotes its cells refer to, the footnotes a header cell refers to, and every footnote no cell refers to.
+  - The first chunk holds the caption, header rows and footnotes in their place. Each later chunk repeats the caption and header rows (and any footnote already written) and lists them in `repeated`, along with a carried group label.
+  - A group label is never the last row of a chunk.
+  - A chunk never ends between two rows that a cell spans.
+
+**The check that nothing was lost or doubled** takes its own walk of the parsed document. One side is every word in the document's blocks and Highlights blocks; titles are left out, being in `context`. The other is every word in the chunks' text, less the words of their `repeated` lines. The parser's footnote marks are removed from both, both are cut into tokens at every character that is not a letter or a digit, and the two collections with their counts must be equal. A label that fails gets no chunk file and is listed in the report with the numbers missing and extra.
+
 ## Where data goes
 
 ```
@@ -119,9 +163,14 @@ knowledge/
     ├── census.json
     ├── parsed/<set id>/
     │   └── <version>.json      the parsed document, and its warnings; only for a label without an error
-    └── parse-report.json       counts by error, kind and format; warnings with counts and labels touched;
+    ├── parse-report.json       counts by error, kind and format; warnings with counts and labels touched;
                                 tables by header and caption source, with counts that bear on header rows;
                                 untitled sections by code; unknown elements; one entry per label
+    ├── chunks/<set id>/
+    │   └── <version>.jsonl     one chunk per line, in document order; only for a label that passes the check
+    └── chunk-report.json       labels chunked and not; chunks by type and part; size distributions; tables by
+                                outcome and by the condition that makes them not splittable; splits; the ten
+                                largest chunks by id; one entry per label
 ```
 
 A manifest entry holds: set id, version, document id, effective time, published date, document type code, the SHA-256 of the zip as downloaded and of the XML inside it, and the XML's size in bytes. Entries are sorted by set id, so the same inputs give a byte-identical file.
@@ -148,11 +197,13 @@ The libraries: [yauzl](https://github.com/thejoshwolfe/yauzl) 3.4.0 reads the zi
 
 ## Tests
 
-`knowledge/test/` holds tests F1 to F13 for pinning, fetching and the census, and P1 to P21 for parsing, run by `toolchain/check.sh` with everything else. The first use a labelled stand-in for DailyMed and for the benchmark's host, on loopback, serving synthetic labels and zips built in the tests; the parser's tests use synthetic labels in `knowledge/test/support/labels.ts`. No real label text is in them.
+`knowledge/test/` holds tests F1 to F13 for pinning, fetching and the census, P1 to P21 for parsing, and U1 to U18 for chunking, run by `toolchain/check.sh` with everything else. The first use a labelled stand-in for DailyMed and for the benchmark's host, on loopback, serving synthetic labels and zips built in the tests; the parser's and the splitter's tests use synthetic labels in `knowledge/test/support/labels.ts` and `knowledge/test/support/chunking.ts`. No real label text is in them.
 
 ## Not present
 
-- No chunks, no search index, no retrieval API, no Bedrock data source.
+- No embeddings, no search index, no retrieval API, no Bedrock data source.
+- No limit on the size of a table that is not splittable: such a table is one chunk, however long.
+- No chunk that holds text and a table together.
 - No decision on which rows of a table are really column headings: the parser infers header rows by one fixed rule and records, for every row, whether it is wholly bold and how many cells have text. Telling a column heading from a group label is left to the step that splits tables.
 - No text from images: an image is kept as its object id, descriptive text and caption.
 - No section numbers in old-format labels, whose numbering stays in the title.

@@ -1,6 +1,6 @@
 # Knowledge
 
-The corpus of the lab's Bedrock Knowledge Bases stand-in: US drug labels from DailyMed, pinned by set id and version, fetched onto disk, counted, and parsed into structured documents. To use it, see [knowledge/README.md](../../knowledge/README.md).
+The corpus of the lab's Bedrock Knowledge Bases stand-in: US drug labels from DailyMed, pinned by set id and version, fetched onto disk, counted, parsed into structured documents, and split into chunks. To use it, see [knowledge/README.md](../../knowledge/README.md).
 
 ## The corpus as pinned
 
@@ -32,6 +32,9 @@ The corpus holds both prescription and over-the-counter labels. Nothing downstre
 | Parsed document | `parsed/<set id>/<version>.json`: a label as identity, products and a tree of sections holding blocks (paragraphs, lists, tables, images) and Highlights blocks, with its warnings |
 | Problem | What the parser found wrong: a code, a severity (error or warning), the section id or table position, counts. Never label text |
 | Excluded | A label with an error: it has no parsed file |
+| Chunk | One line of `chunks/<set id>/<version>.jsonl`: a piece of one section's text or of one table, with where it came from and the lines it repeats |
+| Splittable table | A table with a `thead` header, no nested table, no short row, and no wholly bold row below the header except group labels (one filled cell) |
+| Group label | A wholly bold row below the header with exactly one filled cell: it labels the rows under it |
 
 ## What moves where
 
@@ -52,6 +55,8 @@ flowchart LR
         C["census.json"]
         PD["parsed/&lt;set id&gt;/&lt;version&gt;.json"]
         PR["parse-report.json"]
+        CK["chunks/&lt;set id&gt;/&lt;version&gt;.jsonl"]
+        CR["chunk-report.json"]
     end
     GH -- "pin.sh: files" --> B
     GH -- "pin.sh: checksums" --> P
@@ -71,6 +76,24 @@ flowchart LR
     M --> PA
     PA -- "labels without an error" --> PD
     PA --> PR
+    PD -- "chunk.sh, no network" --> CH(("chunk"))
+    M --> CH
+    CH -- "labels that pass the check" --> CK
+    CH --> CR
+```
+
+Inside one label, in chunking:
+
+```mermaid
+flowchart LR
+    D["parsed document"] --> S["splitter: text blocks packed to the text limit;<br/>each table its own chunk or runs of rows"]
+    S --> C["chunks"]
+    D --> A["words of all blocks and Highlights<br/>(own walk, titles left out)"]
+    C --> B["words of chunk text<br/>less repeated lines"]
+    A --> T{"tokens and counts equal?"}
+    B --> T
+    T -- "yes" --> W["write chunk file"]
+    T -- "no" --> N["not chunked: listed with missing and extra"]
 ```
 
 Inside one label, in parsing:
@@ -136,6 +159,11 @@ flowchart LR
 21. The parse report holds identifiers, codes from the fixed lists, element names and numbers only.
 22. Text the parser does not understand is kept where it sits; its element is reported by name and count.
 23. For every table row the parsed document records whether it is wholly bold and how many of its cells have text. Which rows are column headings beyond the one inference rule is not decided here.
+24. The splitter is one pure function of a parsed document and two named settings, the text limit and the table limit. The same input gives byte-identical chunk files and report.
+25. Every word of a label's blocks and Highlights is in exactly one chunk's text outside its `repeated` lines, or the label gets no chunk file. The check takes its own walk of the parsed document.
+26. A chunk id is unique within its label and depends only on the set id, version, section and the chunk's position in the section.
+27. A table that is not splittable is one chunk, whatever its size. A split table's chunks each hold the caption, every header row and the group label in force: the first holds the caption and header rows in their place, and each later one repeats them and lists them in `repeated`. No chunk ends on a group label or inside a row span.
+28. A chunk holds text or a table, never both.
 
 ## Where each step runs
 
@@ -146,7 +174,8 @@ flowchart LR
 | `fetch` | The same | DailyMed and GitHub | `corpus/` read-only, `data/` read-write |
 | `census` | The same | None | `corpus/` read-only, `data/` read-write |
 | `parse` | The same | None | `corpus/` read-only, `data/` read-write |
-| Tests F1 to F13, P1 to P21 | `toolchain/check.sh` | None; the stand-in listens on loopback | None |
+| `chunk` | The same | None | `corpus/` read-only, `data/` read-write |
+| Tests F1 to F13, P1 to P21, U1 to U18 | `toolchain/check.sh` | None; the stand-in listens on loopback | None |
 
 ## Parsing: problems and what follows
 
@@ -184,12 +213,15 @@ flowchart LR
 | `knowledge/src/` | The tool: the schema, the request client, the archive and XML readers, pinning, fetching, the census |
 | `knowledge/src/parse/` | The parsed document's shape and problem codes (`model.ts`), the parser (`parser.ts`), the check that no text was lost (`conserve.ts`), and the command (`run.ts`) |
 | `knowledge/corpus/` | What the corpus is: written by `pin.sh`, read by everything else |
-| `knowledge/data/` | Local copies; regenerated by `fetch.sh`, `census.sh` and `parse.sh` |
+| `knowledge/src/chunk/` | What a chunk is (`model.ts`), the splitter (`split.ts`), the check that nothing was lost or doubled (`check.ts`), and the command (`run.ts`) |
+| `knowledge/chunk.sh` | The text limit and the table limit |
+| `knowledge/data/` | Local copies; regenerated by `fetch.sh`, `census.sh`, `parse.sh` and `chunk.sh` |
 | `toolchain/Dockerfile` | The `run` stage the image is built from, and the Node pin |
 
 ## What is not present
 
-- No chunks, no search index, no retrieval API, no Bedrock data source.
+- No embeddings, no search index, no retrieval API, no Bedrock data source.
+- No size limit on a table that is not splittable; no chunk holding text and a table together.
 - No decision on which table rows are column headings beyond the one inference rule; no text read from images; no section numbers in old-format labels.
 - No label version beyond the one pinned per set id, and no rule for choosing among several labels of one drug.
 - No label for a set id DailyMed does not serve: the manifest lists it as not pinned.
