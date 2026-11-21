@@ -10,6 +10,7 @@ import { z } from 'zod';
 
 import type { CaseAction, InboundMessage } from '../../../shared/agent-contract.ts';
 import type { ToolDefinition } from '../model/chat.ts';
+import { connectionFailure as readConnectionFailure, payloadOf as readPayload, serviceSentences } from './mcp-answers.ts';
 import type { Connected, ToolOutcome } from './tool-set.ts';
 
 // The tools that change a case. A lost reply from one of these leaves the outcome unknown.
@@ -34,47 +35,16 @@ export function caseSystemHeaders(message: InboundMessage, agentId: string, call
   return { ...contextHeaders(message, agentId), authorization: `Bearer ${callerToken}` };
 }
 
-export const CASE_SYSTEM_UNREACHABLE = 'The case system could not be reached.';
-export const CASE_SYSTEM_REFUSED_TOKEN = "The case system refused the caller's token.";
-export const CASE_SYSTEM_COULD_NOT_CHECK = "The case system could not check the caller's token.";
+// Read with the shared reader in mcp-answers.ts, in the case system's name.
+const SENTENCES = serviceSentences('case system');
 
-// Every error in a chain: each one, its cause, and the errors an aggregate holds.
-function errorsIn(error: unknown, seen = new Set<unknown>()): unknown[] {
-  if (error === null || error === undefined || seen.has(error)) return [];
-  seen.add(error);
-  const found: unknown[] = [error];
-  if (error instanceof Error) {
-    found.push(...errorsIn(error.cause, seen));
-  }
-  if (error instanceof AggregateError) {
-    for (const inner of error.errors) found.push(...errorsIn(inner, seen));
-  }
-  return found;
-}
+export const CASE_SYSTEM_UNREACHABLE = SENTENCES.unreachable;
+export const CASE_SYSTEM_REFUSED_TOKEN = SENTENCES.refusedToken;
+export const CASE_SYSTEM_COULD_NOT_CHECK = SENTENCES.couldNotCheck;
 
-// The text an error carries about the answer it came from: its message, and the answer's body where the
-// MCP client keeps it apart (@modelcontextprotocol/client puts it in data.text).
-function textsOf(error: unknown): string[] {
-  const texts = [error instanceof Error ? error.message : String(error)];
-  const data: unknown = typeof error === 'object' && error !== null ? Reflect.get(error, 'data') : undefined;
-  const body: unknown = typeof data === 'object' && data !== null ? Reflect.get(data, 'text') : undefined;
-  if (typeof body === 'string') texts.push(body);
-  return texts;
-}
-
-// Why connecting to the case system failed, as a run's reason. The case system answers a refused token
-// with 401 and {"error":"unauthorized"}, and a token it cannot check with 503 and
-// {"error":"identity_unavailable"}. The hand-written agent's MCP client puts that body in its error's
-// message; the one inside Strands keeps it in the error's data. Anything else is a case system not reached.
+// Why connecting to the case system failed, as a run's reason.
 export function connectionFailure(error: unknown): string {
-  const messages = errorsIn(error).flatMap(textsOf);
-  if (messages.some((message) => message.includes('"error":"unauthorized"'))) {
-    return CASE_SYSTEM_REFUSED_TOKEN;
-  }
-  if (messages.some((message) => message.includes('"error":"identity_unavailable"'))) {
-    return CASE_SYSTEM_COULD_NOT_CHECK;
-  }
-  return CASE_SYSTEM_UNREACHABLE;
+  return readConnectionFailure(error, SENTENCES);
 }
 
 export function noAnswerWithin(timeoutMs: number): string {
@@ -83,18 +53,7 @@ export function noAnswerWithin(timeoutMs: number): string {
 
 // What the case system's answer to a tool call carries: one piece of text, which is JSON.
 export function payloadOf(result: unknown): unknown {
-  const content: unknown = typeof result === 'object' && result !== null ? Reflect.get(result, 'content') : undefined;
-  const first: unknown = Array.isArray(content) ? content[0] : undefined;
-  const text: unknown = typeof first === 'object' && first !== null ? Reflect.get(first, 'text') : undefined;
-  if (typeof text !== 'string') {
-    return { error: 'unreadable_result', detail: 'The case system answered with something that is not text.' };
-  }
-  try {
-    const parsed: unknown = JSON.parse(text);
-    return parsed;
-  } catch {
-    return text;
-  }
+  return readPayload(result, SENTENCES);
 }
 
 export async function connectCaseTools(

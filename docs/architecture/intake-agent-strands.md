@@ -15,7 +15,7 @@ Strands is used the way it comes. Its default model is Amazon Bedrock, which thi
 | Limits and sampling settings | `intake/settings.ts` (limits), `run/sampling.ts` (sampling) | The same files |
 | Startup and environment | `intake/serve.ts`, `run/serve.ts` | The same files |
 | HTTP surface, including the access-token check | `contract/server.ts`, `shared/access-token.ts` | The same files |
-| Context headers and the caller's token on requests to the case system, reading a case system answer | `tools/case-system.ts` (`caseSystemHeaders`) | The same functions |
+| Context headers and the caller's token on requests to the case system, reading a case system answer | `tools/case-system.ts` (`caseSystemHeaders`), which reads answers through `tools/mcp-answers.ts` | The same functions |
 | The loop | `intake/handwritten.ts` | Strands' `Agent` |
 | Request to the model | `model/chat.ts`: chat completions, one JSON response | Strands' `OpenAIModel` on its default: the Responses API, streamed |
 | Connection to the case system | `@modelcontextprotocol/sdk` 1.32.2 client | Strands' `McpClient`, on `@modelcontextprotocol/client` 2.4.0 |

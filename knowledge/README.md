@@ -293,7 +293,6 @@ The libraries: [yauzl](https://github.com/thejoshwolfe/yauzl) 3.4.0 reads the zi
 
 - **The search engine's security plugin is off.** It has no TLS, no sign-in and no access control: any container on the stack's network can read, change or delete every index. It publishes no port, so nothing outside that network reaches it. The retrieval service is the only path an agent is given, and it holds the token check. Do not publish the engine's port.
 - No embeddings, vector search, hybrid search or reranking: retrieval is keyword (BM25) only. No Bedrock data source.
-- No agent calls the retrieval service yet.
 - No removal of old indexes; `index.sh` lists them.
 - No backup of the index: it is rebuilt from the chunks with `index.sh`.
 - No limit on the size of a table that is not splittable: such a table is one chunk, however long.

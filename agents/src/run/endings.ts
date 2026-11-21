@@ -40,6 +40,11 @@ export function stoppedCutOff(run: EndableRun): InvocationResponse {
   return ended(run, 'stopped', 'The model reached its output allowance part way through its reply, and the reply was not returned.', '');
 }
 
+// The run stopped for a reason of the agent's own, written by the agent's code. It carries no reply.
+export function stopped(run: EndableRun, reason: string): InvocationResponse {
+  return ended(run, 'stopped', reason, '');
+}
+
 // The run could not go on. It never carries a reply: a failed run has nothing it can vouch for.
 export function failed(run: EndableRun, reason: string): InvocationResponse {
   return ended(run, 'failed', reason, '');

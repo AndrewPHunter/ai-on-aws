@@ -141,11 +141,13 @@ flowchart LR
         RS["knowledge: retrieval service<br/>MCP /mcp, /ping"]
         ID["identity: Keycloak"]
         GT(("gate.sh container"))
+        AG["expert: the label expert"]
     end
-    AG["an MCP client<br/>(no agent yet)"]
+    MC["any other MCP client<br/>on this machine"]
     CK -- "read-only mount" --> IX
     IX -- "create index, bulk, count, then move alias" --> OS
-    AG -- "Bearer token, 127.0.0.1:8002" --> RS
+    AG -- "the caller's Bearer token,<br/>knowledge:8000/mcp" --> RS
+    MC -- "Bearer token, 127.0.0.1:8002" --> RS
     RS -- "discovery and keys" --> ID
     RS -- "fetch: _search, _count on labels" --> OS
     GT -- "sign in as dana.desk" --> ID
@@ -160,6 +162,8 @@ flowchart LR
 | `search_label` | `label.source`, the label's page at DailyMed for this version | Its source location |
 | `search_label` | `chunk_id`, `part`, `type`, `section` (number, title, path), `position`, `label` (set id, version, effective date, kind) | Its metadata, and the document id. Bedrock returns these only as metadata attached at ingestion; here they are fields |
 | `find_labels` | The labels for a drug name, with set id, version, date, kind, format, names, page | No counterpart: a retrieval request there is one search; resolving the drug first is this design's own step |
+
+The agent that calls these two tools is the label expert: [expert-agent.md](expert-agent.md).
 
 ## What is pinned
 
@@ -276,7 +280,6 @@ flowchart LR
 
 - No security on the search engine: its security plugin is off, so it has no TLS, no sign-in and no access control. Any container on the stack's network can read, change or delete its indexes; only the absence of a published port keeps everything else out.
 - No embeddings, vector search, hybrid search or reranking. No Bedrock data source.
-- No agent calling the retrieval service.
 - No removal of old indexes, and no backup of an index: it is rebuilt from the chunks.
 - No size limit on a table that is not splittable; no chunk holding text and a table together.
 - No decision on which table rows are column headings beyond the one inference rule; no text read from images; no section numbers in old-format labels.

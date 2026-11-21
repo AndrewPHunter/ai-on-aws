@@ -1,8 +1,9 @@
 name: ai-on-aws-agents
 
-# What both implementations of the intake agent run with. They differ only in the file that starts
-# them, the name they record changes under, and the port published on this machine.
-x-intake-agent: &intake-agent
+# What the three agents run with: the two implementations of the intake agent and the label expert. They
+# differ only in the file that starts them, the name they record under, the service they call, and the
+# port published on this machine.
+x-agent: &agent
   build:
     context: ..
     dockerfile: toolchain/Dockerfile
@@ -43,7 +44,7 @@ x-auth: &auth
 services:
   # The intake agent with its loop written by hand.
   intake-handwritten:
-    <<: *intake-agent
+    <<: *agent
     command: ["node", "agents/src/intake/main-handwritten.ts"]
     environment:
       <<: *auth
@@ -56,7 +57,7 @@ services:
 
   # The same agent on Strands: same prompt, rules, limits and contract; Strands owns the loop.
   intake-strands:
-    <<: *intake-agent
+    <<: *agent
     command: ["node", "agents/src/intake/main-strands.ts"]
     environment:
       <<: *auth
@@ -64,3 +65,16 @@ services:
       CASE_MCP_URL: http://case-system:8000/mcp
     ports:
       - "127.0.0.1:8081:8080"
+
+  # The label expert, on Strands: answers a question about a medicine from its approved label. It calls the
+  # retrieval service and nothing that writes.
+  expert:
+    <<: *agent
+    command: ["node", "agents/src/expert/main.ts"]
+    environment:
+      <<: *auth
+      AGENT_ID: expert
+      # The retrieval service's MCP endpoint, by its service name on the shared network.
+      KNOWLEDGE_MCP_URL: http://knowledge:8000/mcp
+    ports:
+      - "127.0.0.1:8082:8080"

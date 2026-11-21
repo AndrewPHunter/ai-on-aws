@@ -10,7 +10,7 @@ Every command on this page is run from the root of the repository.
 |---|---|---|
 | Intake, hand-written loop | Notices an adverse event in a message and records it in the [case system](../tools/case-system/README.md). Does not answer clinical questions. | Works against the local model. Measured on seven prepared inquiries. |
 | Intake, on Strands | The same agent with the loop left to the Strands SDK, for comparison | Works against the local model. Measured on the same seven. |
-| Label expert | Answers from the approved label, with the passages it relied on | Not built |
+| Label expert, on Strands | Answers a question about a medicine from its approved label, with the passages it relied on; every statement is checked in code against the passage it cites. Records nothing. | Built and tested against stand-ins; not yet measured against the local model. |
 | Orchestrator | Decides which of the others a message needs | Not built |
 
 ## Run it
@@ -21,7 +21,7 @@ The agents need the model server. [Set it up](../model/README.md) first; that wr
 docker compose up -d --build --wait
 ```
 
-That starts both intake agents with the case system, the identity provider and the [client](../client/README.md). Open <http://localhost:3000>, sign in, choose an agent and send an inquiry.
+That starts both intake agents and the label expert with the case system, the retrieval service, the identity provider and the [client](../client/README.md). Open <http://localhost:3000>, sign in, choose an agent and send an inquiry.
 
 To call an agent directly, use port 8080 for the hand-written one and 8081 for the one on Strands, with an access token issued to the `desk` client that has at least 150 seconds left. Without one the answer is 401:
 
@@ -35,6 +35,8 @@ curl -s http://127.0.0.1:8080/invocations -H 'content-type: application/json' -H
 | 503 `identity_unavailable` | The identity provider's discovery document or keys cannot be fetched, or it names another issuer |
 
 The request and the answer are defined in [`shared/agent-contract.ts`](../shared/agent-contract.ts). The answer carries the reply, what was done to cases, and every step taken.
+
+The label expert, on port 8082, is described in [docs/architecture/expert-agent.md](../docs/architecture/expert-agent.md).
 
 ## How the intake agent is put together
 
@@ -68,6 +70,7 @@ The flows, the rules of a tool call, and the controls neither has are in two doc
 | [`src/run/record.ts`](src/run/record.ts) | Step timing and the run's deadline | Both |
 | [`src/model/served.ts`](src/model/served.ts) | The model settings, which model the server serves, the wording of a model failure | Both |
 | [`src/tools/case-system.ts`](src/tools/case-system.ts) | What is particular to the case system: its context headers, which tools change a case, how to read its answers, and what they mean for the run's record. Also the hand-written agent's MCP connection | Both |
+| [`src/tools/mcp-answers.ts`](src/tools/mcp-answers.ts) | Reading why connecting to an MCP service failed, and the payload of a tool result, in the words of the service named | Both, through `case-system.ts`; the label expert, through `src/expert/retrieval.ts` |
 | [`src/tools/tool-set.ts`](src/tools/tool-set.ts) | What a call can come back as (`ToolOutcome`), and what a set of tools looks like to the hand-written loop | Both use `ToolOutcome` |
 | [`src/intake/handwritten.ts`](src/intake/handwritten.ts) | The hand-written loop | Hand-written |
 | [`src/model/chat.ts`](src/model/chat.ts) | The chat API client, with `fetch` | Hand-written |

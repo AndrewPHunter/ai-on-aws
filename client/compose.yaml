@@ -25,7 +25,11 @@ services:
          {"id": "intake-strands",
           "name": "Intake agent, on Strands",
           "description": "The same intake agent, with the same prompt and rules. Strands runs its loop. It does not answer clinical questions.",
-          "url": "http://intake-strands:8080"}]
+          "url": "http://intake-strands:8080"},
+         {"id": "expert",
+          "name": "Label expert, on Strands",
+          "description": "Answers a question about a medicine from its approved label, with the passages it relied on. It records nothing, and does not take adverse event reports.",
+          "url": "http://expert:8080"}]
       # Signing desk staff in. The server fetches the provider's discovery document by its service name
       # on the shared network; the document, and every token, names the issuer the browser uses.
       OIDC_DISCOVERY_URL: http://identity:8080/realms/lab/.well-known/openid-configuration

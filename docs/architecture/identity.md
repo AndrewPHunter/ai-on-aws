@@ -2,7 +2,7 @@
 
 The lab's OpenID Connect provider: Keycloak in development mode, one realm, imported from a file at every start. It stands in for the identity provider that AgentCore's JWT authorizer trusts. To use it, see [platform/identity/README.md](../../platform/identity/README.md).
 
-Four pieces consume its tokens. The client's server signs desk staff in, keeps their tokens, and sends the access token on every call to an agent and to the case system. The agents require a valid access token on `POST /invocations` and pass it on to the case system. The case system requires a valid access token on every request but `/ping`, records the user an agent acted for, and takes the reviewer and the reviewer role from the token. The retrieval service (`knowledge/`) requires a valid access token with audience `lab-knowledge` on every request but `/ping`, and takes nothing else from it; no agent calls it yet.
+Four pieces consume its tokens. The client's server signs desk staff in, keeps their tokens, and sends the access token on every call to an agent and to the case system. The agents require a valid access token on `POST /invocations` and pass it on: the intake agents to the case system, the label expert to the retrieval service. The case system requires a valid access token on every request but `/ping`, records the user an agent acted for, and takes the reviewer and the reviewer role from the token. The retrieval service (`knowledge/`) requires a valid access token with audience `lab-knowledge` on every request but `/ping`, and takes nothing else from it.
 
 ## Terms
 
@@ -266,7 +266,7 @@ sequenceDiagram
 | Client | The ID token, from the token endpoint at sign-in | `desk` (the ID token's `aud`) | Signature, issuer, nonce, expiry; the browser that started the sign-in | Who the user is, and whether they hold `reviewer` |
 | Agent | The access token, from the client | `lab-agents` | Signature (RS256), issuer, `client_id` `desk`, 150 s left | The caller, given to the handler; the token itself, passed on |
 | Case system | The access token, from an agent or from the client | `lab-case-system` | Signature (RS256), issuer, `client_id` `desk`, not expired | The user an agent acted for; the reviewer and the reviewer role |
-| Retrieval service | The access token (no caller sends it yet; the knowledge gate does, as `dana.desk`) | `lab-knowledge` | Signature (RS256), issuer, `client_id` `desk`, not expired | Nothing |
+| Retrieval service | The access token: the label expert sends its caller's; the knowledge gate sends `dana.desk`'s | `lab-knowledge` | Signature (RS256), issuer, `client_id` `desk`, not expired | Nothing |
 
 ## Where secrets live
 

@@ -68,6 +68,7 @@ flowchart LR
 | `run/record.ts` | Measuring a step and counting down the run's time | What is being timed |
 | `tools/tool-set.ts` | The shape of any tool set and of what a call can come back as | Any particular tool |
 | `tools/case-system.ts` | The MCP connection, the context headers, which tools write, and what an answer means for the run's record | The model, the loop |
+| `tools/mcp-answers.ts` (shared with the label expert) | Reading why a connection to an MCP service failed, and the payload of a tool result, in the words of the service named. `tools/case-system.ts` reads through it in the case system's name | Any particular service |
 | `model/chat.ts` | One request to the model server, the reading of its answer, and whether a failure could go differently if the request were sent again. It never sends twice | Tools' meaning, cases, the loop |
 | `intake/serve.ts`, `intake/settings.ts`, `run/serve.ts`, `run/sampling.ts` (shared) | Reading the environment, the limits and sampling settings, asking which model is served, starting the server | The rules of a run, which implementation runs |
 | `model/served.ts` (shared) | The model settings, the question "which model do you serve", and the wording of a model failure | Chat requests |
