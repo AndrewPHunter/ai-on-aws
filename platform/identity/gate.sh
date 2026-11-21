@@ -10,7 +10,9 @@
 # on its own. The gate joins that project's default network, <compose-project>_default.
 #
 # Exit codes: 0 every statement holds, 1 a statement does not hold (the report names it),
-#             2 could not run. The JSON report goes to standard output.
+#             2 could not run, with the reason on standard error: the project's network is missing,
+#             Compose failed before the gate program ran, or the program produced no report.
+# A report goes to standard output only with exit 0 or 1, and nothing else ever does.
 set -eu
 
 say() {
@@ -40,7 +42,7 @@ fi
 network="${project}_default"
 if ! docker network inspect --format '{{.Name}}' "$network" >/dev/null 2>&1; then
   say "there is no network $network: is the identity service running in compose project $project?"
-  exit 1
+  exit 2
 fi
 
 gate_compose() {
@@ -55,7 +57,18 @@ if ! gate_compose build gate >&2; then
   exit 2
 fi
 
-# The image now exists, so run does not build it again (this Compose's run has no --no-build flag).
+report=$(mktemp)
+trap 'rm -f "$report"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# The image now exists, so run does not build it again (this Compose's run has no --no-build flag). The
+# report is held until it is known to be one: Compose itself also exits 1 when it fails before the gate runs.
 rc=0
-gate_compose run --rm -T gate || rc=$?
-exit "$rc"
+gate_compose run --rm -T gate >"$report" || rc=$?
+if { [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ]; } && [ -s "$report" ]; then
+  cat "$report"
+  exit "$rc"
+fi
+say "the gate produced no report (exit $rc): Compose failed before the gate ran, or the gate could not run."
+exit 2

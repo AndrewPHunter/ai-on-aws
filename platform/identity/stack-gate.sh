@@ -11,7 +11,9 @@
 # that project's default network, <compose-project>_default.
 #
 # Exit codes: 0 every statement holds, 1 a statement does not hold (the report lists every one that did
-# not), 2 could not run. The JSON report goes to standard output and nothing else does.
+# not), 2 could not run, with the reason on standard error: the project's network is missing, Compose
+# failed before a gate program ran, or a program produced no report. A report goes to standard output
+# only with exit 0 or 1, and nothing else ever does.
 set -eu
 
 say() {
@@ -41,7 +43,7 @@ fi
 network="${project}_default"
 if ! docker network inspect --format '{{.Name}}' "$network" >/dev/null 2>&1; then
   say "there is no network $network: is the stack running in compose project $project?"
-  exit 1
+  exit 2
 fi
 
 gate_compose() {
@@ -56,15 +58,17 @@ if ! gate_compose build stack-gate >&2; then
 fi
 
 report=$(mktemp)
-trap 'rm -f "$report"' EXIT
+merged=$(mktemp)
+trap 'rm -f "$report" "$merged"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
 started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 rc=0
 gate_compose run --rm -T stack-gate >"$report" || rc=$?
-if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
-  say "the stack gate could not run (exit $rc)."
+# Compose itself also exits 1 when it fails before the gate runs, so a report must be there too.
+if { [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; } || [ ! -s "$report" ]; then
+  say "the stack gate produced no report (exit $rc): Compose failed before the gate ran, or the gate could not run."
   exit 2
 fi
 
@@ -84,5 +88,10 @@ fi
 rc=0
 env REVOCATION_FAILURES="$failures" IDENTITY_GATE_NETWORK="$network" docker compose -f "$identity_dir/gate/compose.yaml" \
   --env-file "$identity_dir/.env" run --rm -T -e REVOCATION_FAILURES="$failures" stack-gate \
-  node /repo/platform/identity/gate/stack-gate-merge.ts <"$report" || rc=$?
-exit "$rc"
+  node /repo/platform/identity/gate/stack-gate-merge.ts <"$report" >"$merged" || rc=$?
+if { [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ]; } && [ -s "$merged" ]; then
+  cat "$merged"
+  exit "$rc"
+fi
+say "merging the client's output into the report produced no report (exit $rc)."
+exit 2

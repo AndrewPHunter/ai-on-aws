@@ -171,7 +171,7 @@ No token is written to disk or to the store, and no token is in any response bod
 | Case system: list, get, review | `Bearer <access token>` | 30 s |
 | Health checks (`/ping`) | None | — |
 
-With less time left the client renews the access token with the refresh token first. If the provider refuses or cannot be reached, the request answers 401 `not_signed_in`, the session is removed, and nothing is sent. A review is forwarded with `reviewer` set to the session user's name, and only for a user holding `reviewer`.
+With less time left the client renews the access token with the refresh token first. If the provider refuses or cannot be reached, the request answers 401 `not_signed_in`, the session is removed, and nothing is sent. A review is forwarded as `{ decision, note? }`, with no reviewer field, and only for a user holding `reviewer`; the case system takes the reviewer from the access token.
 
 ## The agents
 

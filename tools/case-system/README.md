@@ -47,7 +47,7 @@ The four elements are an identifiable patient, an identifiable reporter, a suspe
 - **One case per inbound message.** A second `create_case` for the same message with the same content returns the case already opened. With different content it is refused, names the existing case, and changes nothing.
 - **Follow-ups add, they never overwrite.** Each one is a new version; earlier versions stay readable. A follow-up from the same message is recorded once.
 - **A follow-up sends the case back to review**, or leaves it incomplete, whatever its status was, including approved.
-- **Only a person changes a case to approved, rejected or needs information.** Those are not MCP tools. They are a request to the review server, which requires the reviewer's name.
+- **Only a person changes a case to approved, rejected or needs information.** Those are not MCP tools. They are a request to the review server, which takes the reviewer's name from the access token and refuses a body that names one.
 - **An agent sees and adds to only the sender's own cases.** `find_case` returns only cases that the sender of the message being handled has reported on, and `add_follow_up` is accepted only on such a case. A case from another sender is answered exactly as a case that does not exist. Two spellings of a sender that differ only in case and spacing are the same sender. Reviewers see every case.
 - **Every change is in an audit trail** with who made it, when, and which message it came from. Replays and refused conflicts are recorded too.
 
@@ -111,7 +111,7 @@ curl -s -X POST http://127.0.0.1:8001/cases/AE-000001/review -H "authorization: 
 
 ## What was measured
 
-- The repository check runs 41 tests for this piece: 19 on the store, 14 that drive the real servers over loopback with the MCP SDK's own client, and 8 on the access token. The requests in the last two groups carry real signed tokens from a stand-in issuer.
+- The repository check runs 42 tests for this piece: 19 on the store, 14 that drive the real servers over loopback with the MCP SDK's own client, and 9 on the access token. The requests in the last two groups carry real signed tokens from a stand-in issuer.
 - By hand against the running container, on an arm64 Mac: a case created, the same call repeated, the container removed and started again on the same volume, and the same call repeated a third time. One case existed throughout, and the audit trail showed one creation and two replays.
 
 ## Known limits

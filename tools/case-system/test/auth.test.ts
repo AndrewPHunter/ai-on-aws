@@ -224,6 +224,23 @@ test('D7. each setting is required and named when missing', () => {
   }
 });
 
+test('D9. with no token, a body that is not JSON or broken context headers is 401, not 400, on both servers', async (t) => {
+  const rig = await start(t);
+  const notJson = { 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
+  const requests: [string, RequestInit][] = [
+    [`${rig.agentUrl}/mcp`, { method: 'POST', headers: notJson, body: '{"jsonrpc": ' }],
+    [`${rig.agentUrl}/mcp`, { method: 'POST', headers: { ...notJson, [CONTEXT_HEADERS.messageId]: 'm1', [CONTEXT_HEADERS.receivedAt]: 'yesterday-ish' }, body: CREATE }],
+    [`${rig.reviewUrl}/cases/AE-000001/review`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"decision": ' }],
+    [`${rig.reviewUrl}/cases/AE-000001/review`, { method: 'POST', headers: { 'content-type': 'application/json', ...CONTEXT, [CONTEXT_HEADERS.receivedAt]: 'yesterday-ish' }, body: '{}' }],
+  ];
+  for (const [url, init] of requests) {
+    const response = await fetch(url, init);
+    assert.equal(response.status, 401, url);
+    assert.equal(await reasonOf(response), 'missing', url);
+  }
+  assert.equal(rig.store.find({}).cases.length, 0);
+});
+
 test('D8. a store written before the new audit columns opens; old entries give null; a new entry has them', () => {
   const path = join(mkdtempSync(join(tmpdir(), 'case-store-audit-')), 'cases.sqlite');
   const old = new DatabaseSync(path);

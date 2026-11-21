@@ -11,8 +11,8 @@
 // are fetched and matched here rather than by jose's remote key set (which keeps its own time).
 // Only RS256 is accepted.
 
-import { createLocalJWKSet, decodeProtectedHeader, errors, jwtVerify } from 'jose';
-import type { JSONWebKeySet } from 'jose';
+import { createLocalJWKSet, decodeProtectedHeader, errors, importJWK, jwtVerify } from 'jose';
+import type { JSONWebKeySet, JWK } from 'jose';
 
 export type AccessTokenSettings = {
   discoveryUrl: string;
@@ -136,12 +136,41 @@ export function createAccessTokenCheck(settings: AccessTokenSettings, options: A
     return jwksUri;
   }
 
+  // The provider's keys, checked before they are used: a key set that cannot be used is the provider's
+  // fault, reported as unavailable, never as a refusal of the caller's token.
   async function fetchKeys(): Promise<ReturnType<typeof createLocalJWKSet>> {
     const set = await fetchJson(await jwksLocation(), 'key set', options.timeoutMs);
     if (!isRecord(set) || !Array.isArray(set.keys)) {
       throw new Unavailable("The identity provider's key set has no keys.");
     }
-    const local = createLocalJWKSet(set as unknown as JSONWebKeySet);
+    for (const key of set.keys) {
+      if (!isRecord(key)) {
+        throw new Unavailable("The identity provider's key set holds an entry that is not a key.");
+      }
+      // Every RSA signing key must import as an RS256 public key. Keys of other kinds, and keys marked
+      // for encryption, are never used to verify a token and are left to jose.
+      if (key.kty === 'RSA' && key.use !== 'enc' && (key.alg === undefined || key.alg === 'RS256')) {
+        let usable = false;
+        try {
+          const imported = await importJWK(key as JWK, 'RS256');
+          // RS256 needs a modulus of at least 2048 bits; jose would refuse a smaller key only at verify time.
+          const algorithm: unknown = typeof imported === 'object' && 'algorithm' in imported ? imported.algorithm : undefined;
+          const bits: unknown = typeof algorithm === 'object' && algorithm !== null ? Reflect.get(algorithm, 'modulusLength') : undefined;
+          usable = typeof bits !== 'number' || bits >= 2048;
+        } catch {
+          usable = false;
+        }
+        if (!usable) {
+          throw new Unavailable("The identity provider's key set holds an RSA key that is not a valid RS256 public key.");
+        }
+      }
+    }
+    let local: ReturnType<typeof createLocalJWKSet>;
+    try {
+      local = createLocalJWKSet(set as unknown as JSONWebKeySet);
+    } catch {
+      throw new Unavailable("The identity provider's key set is not a valid JSON Web Key Set.");
+    }
     keys = { set: local, fetchedAt: options.now().getTime() };
     return local;
   }

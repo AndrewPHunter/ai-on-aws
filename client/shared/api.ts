@@ -60,7 +60,8 @@ export type SessionView = { user: SessionUser };
 // POST /auth/logout: where to send the browser to end the session at the identity provider too.
 export type SignOutResponse = { sign_out_url: string };
 
-// POST /api/cases/<id>/review from the app. The server adds the reviewer: the signed-in user's name.
+// POST /api/cases/<id>/review from the app. Nobody names the reviewer: the client's server forwards this
+// with the signed-in user's access token, and the case system takes the reviewer from the token.
 export type ReviewDecisionRequest = { decision: ReviewDecision; note?: string };
 
 // One attempt by one agent to handle an inquiry.

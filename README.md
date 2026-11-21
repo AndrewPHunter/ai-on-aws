@@ -52,7 +52,7 @@ ai-on-aws/
 | [`tools/`](tools/README.md) | The agents' tools: MCP servers and APIs. Not developer tooling, which is `toolchain/` | One tool: the case system, used by both intake agents |
 | [`knowledge/`](knowledge/README.md) | Documents in, search, retrieval for agents | Placeholder |
 | [`platform/`](platform/README.md) | Local stand-ins for the AgentCore services around the runtime | One stand-in: an OpenID Connect provider (Keycloak) with one realm, started with the lab. The client signs desk staff in through it and validates their ID tokens; the agents and the case system each check the access token on every request. No stand-in yet for memory, policy or tracing |
-| [`test-support/`](test-support/README.md) | Code only tests use: stand-ins for services a test cannot start. Copied into no piece's image | One stand-in: an OpenID Connect issuer, used by the client's tests |
+| [`test-support/`](test-support/README.md) | Code only tests use: stand-ins for services a test cannot start. Copied into no piece's image | One stand-in: an OpenID Connect issuer, used by the tests of the client, the agents, the case system and the shared token check |
 | [`evaluation/`](evaluation/README.md) | Measures the other pieces | Placeholder |
 
 A placeholder folder holds a README that says what will live there, and nothing else.

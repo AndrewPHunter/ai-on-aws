@@ -176,3 +176,31 @@ test('K7. a correctly signed token lacking sub, preferred_username or name is re
     assert.ok(!detail.includes(token), missing);
   }
 });
+
+test('K8. a key set the provider serves that cannot be used makes the check unavailable, and it recovers', async (t) => {
+  for (const misbehaviour of ['jwks_not_json', 'jwks_without_keys', 'jwks_with_bad_key'] as const) {
+    const r = await rig(t);
+    const token = await r.mint();
+    r.issuer.misbehave(misbehaviour);
+    const broken = await r.check(`Bearer ${token}`);
+    assert.equal(broken.kind, 'unavailable', misbehaviour);
+    r.issuer.misbehave('none');
+    assert.equal((await r.check(`Bearer ${token}`)).kind, 'caller', misbehaviour);
+  }
+});
+
+test('K9. a token signed with a key not yet seen, before the refetch wait, fetches nothing and is refused; after the wait it is accepted', async (t) => {
+  const r = await rig(t, {}, 30_000);
+  assert.equal((await r.check(`Bearer ${await r.mint()}`)).kind, 'caller');
+  assert.equal(keyFetches(r.issuer), 1);
+
+  await r.issuer.rotateKey();
+  const newKey = await r.mint();
+  r.clock.advance(29_000);
+  assert.equal(refusal(await r.check(`Bearer ${newKey}`)).reason, 'bad_signature');
+  assert.equal(keyFetches(r.issuer), 1, 'the keys were fetched again before the wait had passed');
+
+  r.clock.advance(1_000);
+  assert.equal((await r.check(`Bearer ${newKey}`)).kind, 'caller');
+  assert.equal(keyFetches(r.issuer), 2);
+});

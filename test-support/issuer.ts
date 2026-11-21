@@ -56,7 +56,11 @@ export type Misbehaviour =
   // The revocation endpoint answers 503 and revokes nothing.
   | 'refuse_revocation'
   // Every request is answered by closing the connection.
-  | 'no_answer';
+  | 'no_answer'
+  // The keys endpoint answers 200 with something that is not a usable key set.
+  | 'jwks_not_json'
+  | 'jwks_without_keys'
+  | 'jwks_with_bad_key';
 
 export type StandInIssuerOptions = {
   clientId: string;
@@ -356,6 +360,20 @@ export async function startStandInIssuer(options: StandInIssuerOptions): Promise
         });
         return;
       case 'GET /jwks':
+        if (misbehaviour === 'jwks_not_json') {
+          response.writeHead(200, { 'content-type': 'application/json' });
+          response.end('{"keys": [');
+          return;
+        }
+        if (misbehaviour === 'jwks_without_keys') {
+          sendJson(response, 200, { signing: [publicJwk] });
+          return;
+        }
+        if (misbehaviour === 'jwks_with_bad_key') {
+          // An RSA key with no modulus.
+          sendJson(response, 200, { keys: [{ kty: 'RSA', kid, alg: 'RS256', use: 'sig', e: 'AQAB' }] });
+          return;
+        }
         sendJson(response, 200, { keys: [publicJwk] });
         return;
       case 'GET /authorize':

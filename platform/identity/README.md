@@ -104,11 +104,11 @@ The gate runs in the pinned Node image on the project's default network (`<compo
 1. fetches the discovery document at `http://identity:8080` and checks its issuer, and that its key set answers;
 2. signs each user in through the Authorization Code flow with PKCE: it requests the authorization endpoint, posts the sign-in form with a cookie jar, reads the redirect to the callback without requesting it, and exchanges the code at the token endpoint with the client secret and the code verifier;
 3. verifies each access token's signature against the published keys and checks every claim in the table above, then verifies each ID token (signature, issuer, audience) and checks its `roles`;
-4. checks that the token endpoint refuses the password grant.
+4. checks that the token endpoint refuses the password grant and the client-credentials grant, and that the authorization endpoint refuses a request with no `code_challenge`, one with `code_challenge_method=plain`, and one with `response_type=token`.
 
 The gate is the browser here, but it runs inside the network, where `localhost:8090` is the gate's own container. So the front-channel URLs the provider hands out on `http://localhost:8090` (the authorization endpoint and the sign-in form's action) are sent to `http://identity:8080` with the same path and query. Back-channel URLs from discovery are used as given.
 
-It prints a JSON report: the endpoints from discovery, and for each user the token's header and decoded claims. It prints no password, secret, code or token. On the first statement that does not hold it exits 1 and names it in `failed`; if it cannot run, it exits 2.
+It prints a JSON report: the endpoints from discovery, and for each user the token's header and decoded claims. It prints no password, secret, code or token. On the first statement that does not hold it exits 1 and names it in `failed`. Exit 1 always comes with a report on standard output. Any way of ending without one (no network for the project, Compose failing before the gate runs, a gate that writes nothing) is exit 2, with the reason on standard error.
 
 ## The stack gate
 
@@ -132,7 +132,7 @@ It uses the same image as `gate.sh` and joins `<compose-project>_default` the sa
 10. a review by `dana.desk` of a case that does not exist is 403 `not_a_reviewer`, and by `riley.reviewer` 404 `case_not_found`;
 11. sign-out answers with the provider's end-session address carrying no token, and the same cookie is then 401. After the run, on the Docker host, the script reads the client's output since the gate started and requires no revocation failure in it; only the count of such lines is passed to the report.
 
-Every statement is checked even after one fails. The JSON report lists `held` and `failed`; it carries no password, code or token. Exit 1 if any statement does not hold, 2 if the gate cannot run.
+Every statement is checked even after one fails. The JSON report lists `held` and `failed`; it carries no password, code or token. Exit 1 if any statement does not hold, always with the report on standard output; exit 2, with the reason on standard error and nothing on standard output, for any way of ending without a report.
 
 ## Development only
 

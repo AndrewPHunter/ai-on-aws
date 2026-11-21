@@ -137,6 +137,10 @@ test('C1. without a session every API route and sign-out answer 401 not_signed_i
     ['GET', '/api/cases'],
     ['GET', '/api/session'],
     ['POST', '/api/inquiries'],
+    ['GET', '/api/inquiries/id-1'],
+    ['POST', '/api/inquiries/id-1/runs'],
+    ['GET', '/api/cases/AE-000001'],
+    ['POST', '/api/cases/AE-000001/review'],
     ['POST', '/auth/logout'],
   ];
   for (const [method, path] of requests) {
@@ -608,4 +612,57 @@ test('C18. a decision reaches the case system as { decision, note? } with the be
   const passedBack = await postJson(`${client.url}/api/cases/AE-000002/review`, { decision: 'approve' });
   assert.equal(passedBack.status, 403);
   assert.deepEqual(passedBack.body, refusal);
+});
+
+const refreshes = (client: RunningClient): number =>
+  client.issuer.received.filter((request) => request.form.grant_type === 'refresh_token').length;
+
+const CASE_CALLS: { name: string; send: (client: RunningClient) => Promise<{ status: number; body: unknown }> }[] = [
+  { name: 'list', send: (client) => getJson(`${client.url}/api/cases`) },
+  { name: 'get', send: (client) => getJson(`${client.url}/api/cases/AE-000001`) },
+  { name: 'review', send: (client) => postJson(`${client.url}/api/cases/AE-000001/review`, { decision: 'approve' }) },
+];
+
+test('C19. a token with under 30 seconds left is renewed before a case-system call; a refused renewal ends the session; both thresholds are exact', async (t) => {
+  for (const call of CASE_CALLS) {
+    const cases = await startCaseSystem(t);
+    const client = await startClient(t, { agents: [], caseReviewUrl: cases.url, webRoot: tempDir(t) });
+    const first = lastIssued(client).access_token;
+
+    client.clock.advance((600 - 29) * 1000);
+    assert.equal((await call.send(client)).status, 200, call.name);
+    const renewed = lastIssued(client).access_token;
+    assert.notEqual(renewed, first, call.name);
+    assert.deepEqual(cases.received.map((entry) => entry.authorization), [`Bearer ${renewed}`], call.name);
+
+    client.issuer.misbehave('refuse_refresh');
+    client.clock.advance((600 - 29) * 1000);
+    const refused = await call.send(client);
+    assert.equal(refused.status, 401, call.name);
+    assert.equal(prop(refused.body, 'error'), 'not_signed_in', call.name);
+    assert.equal(cases.received.length, 1, `${call.name}: the case system was called with a token that could not be renewed`);
+    assert.equal((await getJson(`${client.url}/api/session`)).status, 401, `${call.name}: the session survived`);
+  }
+
+  // Exactly at each threshold no renewal is needed; one second under it, there is.
+  const cases = await startCaseSystem(t);
+  const atCase = await startClient(t, { agents: [], caseReviewUrl: cases.url, webRoot: tempDir(t) });
+  atCase.clock.advance((600 - 30) * 1000);
+  assert.equal((await getJson(`${atCase.url}/api/cases`)).status, 200);
+  assert.equal(refreshes(atCase), 0, 'renewed with exactly 30 s left');
+  atCase.clock.advance(1000);
+  assert.equal((await getJson(`${atCase.url}/api/cases`)).status, 200);
+  assert.equal(refreshes(atCase), 1, 'not renewed with 29 s left');
+
+  const { agent, client: atAgent } = await withAgent(t);
+  atAgent.clock.advance((600 - 180) * 1000);
+  assert.equal((await postJson(`${atAgent.url}/api/inquiries`, INQUIRY)).status, 202);
+  assert.equal(refreshes(atAgent), 0, 'renewed with exactly 180 s left');
+  atAgent.clock.advance(1000);
+  assert.equal((await postJson(`${atAgent.url}/api/inquiries`, INQUIRY)).status, 202);
+  assert.equal(refreshes(atAgent), 1, 'not renewed with 179 s left');
+  await eventually(
+    async () => invocations(agent).length,
+    (count) => count === 2,
+  );
 });

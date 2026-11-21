@@ -47,7 +47,7 @@ flowchart TD
 8. No `.git`, `node_modules`, `.env` file (other than `.env.example`), `secrets` folder or gate report enters an image.
 9. The only place `toolchain/` names a piece is the Node pin test, which reads `model/gate/compose.yaml`. `model/` does not depend on the toolchain: its setup, its gate and its own test command run in the bare Node image with only `model/` mounted and no installed dependency.
 10. TypeScript is run by Node directly, in the check and in a running piece. The compiler emits nothing.
-11. A piece's image holds the run-time dependencies, `shared/`, and that piece's `src/` folder: no tests, no other piece, and none of the check's tools. A piece with a React app also holds that app's built static files, and none of the libraries it was built from.
+11. A piece's image holds the run-time dependencies, the source files at the top of `shared/`, and that piece's `src/` folder: no tests, no other piece, and none of the check's tools. A piece with a React app also holds that app's built static files, and none of the libraries it was built from.
 
 ## Where each thing runs
 

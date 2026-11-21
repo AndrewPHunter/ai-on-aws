@@ -9,7 +9,9 @@
 //   3. Each access token is a JWS signed with RS256 by a key at jwks_uri, and carries the claims in the
 //      README's claims table. Each ID token is signed the same way, names the issuer and the client, and
 //      carries the user's roles.
-//   4. The token endpoint refuses the password grant.
+//   4. The token endpoint refuses the password grant and the client-credentials grant, and the
+//      authorization endpoint refuses a request with no PKCE challenge, with the plain method, and for
+//      the implicit flow (response_type=token).
 //
 // The gate stands in for the browser while running inside the network. The browser reaches the provider at
 // the issuer's origin (http://localhost:8090), which inside a container is the container itself, so every
@@ -328,6 +330,50 @@ async function passwordGrantRefused(http: Http, config: GateConfig, discovery: D
   return { status: response.status, error: body.error }
 }
 
+type Refused = { status: number; error: string | null };
+
+// An authorization request the provider must refuse. Refused means: answered 400, or redirected back with
+// error= and without a code or a token. The redirect is read, not followed.
+async function authorizationRefused(
+  http: Http,
+  transport: string,
+  config: GateConfig,
+  discovery: Discovery,
+  statement: string,
+  parameters: Record<string, string>,
+): Promise<Refused> {
+  const browserOrigin = new URL(config.issuer).origin
+  const url = new URL(toTransport(discovery.authorization_endpoint, browserOrigin, transport))
+  url.search = new URLSearchParams({ client_id: config.clientId, redirect_uri: config.redirectUri, scope: 'openid', state: 'gate-refusal', ...parameters }).toString()
+  const response = await request(http, url.toString())
+  await response.arrayBuffer()
+  if (response.status === 400) {
+    holds(statement)
+    return { status: 400, error: null }
+  }
+  const location = response.headers.get('location') ?? ''
+  must(response.status === 302 || response.status === 303, statement, `status ${response.status}`)
+  const back = new URL(location, url)
+  const answer = new URLSearchParams(back.hash.startsWith('#') ? back.hash.slice(1) : back.search)
+  const error = answer.get('error')
+  must(error !== null && !answer.has('code') && !answer.has('access_token') && !answer.has('id_token'), statement, `redirected without an error, or with a code or token`)
+  holds(statement)
+  return { status: response.status, error }
+}
+
+async function clientCredentialsRefused(http: Http, config: GateConfig, discovery: Discovery, secrets: Secrets): Promise<Refused> {
+  const statement = 'the token endpoint refuses the client-credentials grant'
+  const response = await request(http, discovery.token_endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ grant_type: 'client_credentials', client_id: config.clientId, client_secret: secrets.clientSecret }).toString(),
+  })
+  const body = await json(response)
+  must(response.status >= 400 && response.status < 500 && body.access_token === undefined, statement, `status ${response.status}`)
+  holds(statement)
+  return { status: response.status, error: typeof body.error === 'string' ? body.error : null }
+}
+
 // ---------- main ----------
 
 type Report = {
@@ -337,6 +383,7 @@ type Report = {
   discovery: Discovery | null
   users: { username: string; header: Record<string, unknown>; claims: Record<string, unknown>; idTokenRoles: unknown }[]
   passwordGrant: { status: number; error: unknown } | null
+  refused: Record<string, Refused>
   held: string[]
 }
 
@@ -350,7 +397,7 @@ async function main(): Promise<number> {
     passwords: new Map(config.users.map((user) => [user.username, requiredEnv(user.passwordVariable)])),
   }
   const http: Http = { timeoutMs: config.requestTimeoutMs }
-  const report: Report = { passed: false, failed: null, transport, discovery: null, users: [], passwordGrant: null, held }
+  const report: Report = { passed: false, failed: null, transport, discovery: null, users: [], passwordGrant: null, refused: {}, held }
 
   try {
     const discovery = await discover(http, transport, config)
@@ -379,6 +426,31 @@ async function main(): Promise<number> {
     const firstUser = config.users[0]
     if (firstUser === undefined) throw new UsageError('config: users is empty')
     report.passwordGrant = await passwordGrantRefused(http, config, discovery, firstUser, secrets)
+    report.refused.client_credentials = await clientCredentialsRefused(http, config, discovery, secrets)
+    report.refused.no_code_challenge = await authorizationRefused(
+      http,
+      transport,
+      config,
+      discovery,
+      'the authorization endpoint refuses a request with no code_challenge',
+      { response_type: 'code' },
+    )
+    report.refused.plain_code_challenge = await authorizationRefused(
+      http,
+      transport,
+      config,
+      discovery,
+      'the authorization endpoint refuses code_challenge_method=plain',
+      { response_type: 'code', code_challenge: codeVerifier(randomBytes(32)), code_challenge_method: 'plain' },
+    )
+    report.refused.implicit = await authorizationRefused(
+      http,
+      transport,
+      config,
+      discovery,
+      'the authorization endpoint refuses response_type=token',
+      { response_type: 'token', nonce: 'gate-refusal', code_challenge: codeChallengeS256(codeVerifier(randomBytes(32))), code_challenge_method: 'S256' },
+    )
     report.passed = true
   } catch (error) {
     if (!(error instanceof StatementFailed)) throw error
