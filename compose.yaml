@@ -1,4 +1,5 @@
-# The lab, started together on one network: the agents, the case system they write to, and the client.
+# The lab, started together on one network: the agents, the case system they write to, the client, the identity
+# provider, and the search engine with the retrieval service.
 #
 #   docker compose up -d --build --wait
 #
@@ -13,3 +14,5 @@ include:
   - path: client/compose.yaml
     env_file: platform/identity/.env
   - platform/identity/compose.yaml
+  # The search engine and the retrieval service. The index is built into the running stack with knowledge/index.sh.
+  - knowledge/compose.yaml

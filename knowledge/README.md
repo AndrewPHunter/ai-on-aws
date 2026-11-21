@@ -2,7 +2,7 @@
 
 A local stand-in for Amazon Bedrock Knowledge Bases: taking documents in, storing them for search, and answering retrieval requests from agents.
 
-The documents are US drug labels from DailyMed. What exists so far gets them onto disk, reproducibly, counts what they are, parses each into a structured document, and splits it into chunks that can be searched and cited: the labels of the public benchmark [FDARxBench](https://github.com/xiongbetty/FDARxBench), each pinned at one version of its DailyMed label. Which ones are pinned, and why the others are not, is in `knowledge/corpus/manifest.json`. Nothing searches them yet.
+The documents are US drug labels from DailyMed. What exists so far gets them onto disk, reproducibly, counts what they are, parses each into a structured document, and splits it into chunks that can be searched and cited: the labels of the public benchmark [FDARxBench](https://github.com/xiongbetty/FDARxBench), each pinned at one version of its DailyMed label. Which ones are pinned, and why the others are not, is in `knowledge/corpus/manifest.json`. The chunks are indexed in a search engine (OpenSearch), and a retrieval service gives agents keyword search over them as two MCP tools, behind the same token check as the rest of the lab. See "Search and retrieval" below.
 
 ## The corpus as pinned
 
@@ -23,7 +23,7 @@ The corpus therefore holds both prescription and over-the-counter labels. Nothin
 
 Every command on this page is run from the root of the repository. The host needs a shell and Docker; Node is not needed on it.
 
-## The five commands
+## The corpus commands
 
 | Command | What it does | Network | Writes |
 |---|---|---|---|
@@ -32,6 +32,8 @@ Every command on this page is run from the root of the repository. The host need
 | `knowledge/census.sh` | Counts what the fetched labels are, and how much of the benchmark's text appears word for word in them. Counts and codes only, never label text | None | `knowledge/data/census.json`, and a summary on standard output |
 | `knowledge/parse.sh` | Parses every fetched label into a structured document, checks that no text was lost, and reports what did not parse cleanly. Numbers, codes and identifiers only in the report | None | `knowledge/data/parsed/<set id>/<version>.json` for each label without an error; `knowledge/data/parse-report.json` |
 | `knowledge/chunk.sh` | Splits every parsed label into chunks, checks that nothing was lost or doubled, and reports what it made. Numbers, codes and identifiers only in the report | None | `knowledge/data/chunks/<set id>/<version>.jsonl`, one chunk per line in document order; `knowledge/data/chunk-report.json` |
+
+`knowledge/index.sh` and `knowledge/gate.sh`, which work on a running stack, are described under "Search and retrieval".
 
 Each takes no arguments. Each builds the image `knowledge-corpus:checkout-<number>` from the `run` stage of `toolchain/Dockerfile`, named for the checkout like the toolchain's check image, and runs the tool in it as your user, with a read-only root filesystem and no capabilities, with only `knowledge/corpus/` and `knowledge/data/` mounted.
 
@@ -145,6 +147,94 @@ Tables:
 
 **The check that nothing was lost or doubled** takes its own walk of the parsed document. One side is every word in the document's blocks and Highlights blocks; titles are left out, being in `context`. The other is every word in the chunks' text, less the words of their `repeated` lines. The parser's footnote marks are removed from both, both are cut into tokens at every character that is not a letter or a digit, and the two collections with their counts must be equal. A label that fails gets no chunk file and is listed in the report with the numbers missing and extra.
 
+## Search and retrieval
+
+Two services in `knowledge/compose.yaml`, started with the rest of the lab by the root `compose.yaml`, and two commands that work on a running stack:
+
+| | What it is |
+|---|---|
+| `search` | OpenSearch 3.9.0, released 2026-09-29: the newest stable 3.x release published at least 14 days before it was pinned. Pinned by the digest of its multi-architecture index (linux/amd64, linux/arm64). It has the score ranker processor that hybrid search with rank fusion needs (a search pipeline using it was accepted by the running engine), though nothing here uses it yet. One node, a 1 GB heap, its data in the named volume `search-data`. It publishes no port: only containers on the stack's network reach it. Healthy once the cluster answers and is not red |
+| `knowledge` | The retrieval service, built from `knowledge/src/` with the `run` stage of `toolchain/Dockerfile`. MCP at `POST /mcp` and `GET /ping` on port 8000, published at `127.0.0.1:8002` |
+| `knowledge/index.sh <compose-project>` | Loads the chunks into the stack's search engine, from a container on its network |
+| `knowledge/gate.sh <compose-project>` | Checks the retrieval path of a running stack whose index is built |
+
+Start-up, from the repository root: `knowledge/fetch.sh`, `knowledge/parse.sh` and `knowledge/chunk.sh`; then `docker compose up -d --build --wait`; then `knowledge/index.sh ai-on-aws`.
+
+### Indexing
+
+- The index is named `labels-` and 16 hex characters of a SHA-256 of the chunk report's bytes and of the index definition below. A different set of chunks, or a different mapping, is a different index.
+- It creates the index with the explicit definition and loads every chunk once, in bulk requests of 500, using each chunk's id as the document id. If the engine reports an error for any item of a bulk request, the run fails whatever the count, and the output gives the number of items refused and the first one's error type. Otherwise it checks that the engine's count of documents equals the number of chunks read. Only then does it point the alias `labels` at the new index. On a refused item or a count that differs, it leaves the alias where it was, removes the index it made, and exits 1.
+- If the index for this hash already exists with the right count and the alias points at it, it changes nothing and says so. With the right count and the alias elsewhere, it only moves the alias.
+- Older indexes are left in place and listed in the output.
+
+| Exit code | `index.sh` |
+|---|---|
+| 0 | The alias points at a complete index, built now or already |
+| 1 | The engine refused an item of a bulk request, or its count differed from the chunks read; the new index was removed and the alias left as it was |
+| 2 | Could not run: no such stack, the chunk files disagree with the chunk report, or the engine could not be asked |
+
+The mapping is strict: a chunk with a field not named here is refused.
+
+| Field | Held as | Searched |
+|---|---|---|
+| `text`, `context` | Text, standard analyzer | Yes, by `search_label` (BM25) |
+| `drug` | Text, standard analyzer, and `drug.exact`: a keyword compared without case or surrounding white space | Yes, by `find_labels` |
+| `setId`, `version`, `kind`, `format`, `part`, `type`, `section.id`, `section.code`, `section.number` | Exact keywords | As filters |
+| `id`, `effectiveTime`, `documentTypeCode`, `source`, `section.title`, `section.path` | Keywords, stored, not indexed (`effectiveTime` is sortable) | No |
+| `repeated` | Text, stored, not indexed | No |
+| `words` | Integer, stored, not indexed | No |
+| `position` | Object, stored, not indexed | No |
+
+The index has one shard and no replica.
+
+### The retrieval service
+
+Settings, each required and read by name: `SEARCH_URL` (`http://search:9200`), `SEARCH_INDEX` (`labels`), and `AUTH_DISCOVERY_URL`, `AUTH_ISSUER`, `AUTH_ALLOWED_AUDIENCE` (`lab-knowledge`), `AUTH_ALLOWED_CLIENTS` (`desk`) and `AUTH_ROLES_CLAIM` (`roles`), in the form the case system uses. Every route but `GET /ping` requires a valid access token, checked with `shared/access-token.ts` before the body is read. A refusal is 401 with `WWW-Authenticate` and `{error, reason, detail}`; a provider that cannot be asked is 503.
+
+It talks to the engine with `fetch` and its REST API, with no client library. Each request may take 5 seconds.
+
+| Tool | Input | Returns |
+|---|---|---|
+| `find_labels` | `drug`: a name as a person would write it | The labels whose product, generic or active-ingredient name is that name, compared without case or surrounding white space; if none, the labels whose names hold every word given. At most 10, newest effective date first, and `more_matched` says whether more matched. For each: set id, version, effective date, kind, format, the names, and the label's page at DailyMed. No match is an empty list |
+| `search_label` | `set_id`; `query`; `part` (`body` or `highlights`, or both when left out); `max_results` (1 to 10, default 5) | Passages from that one label only, best first, ranked by BM25 over the chunk's text and context line. For each: chunk id, text, score, part, type, the section's number, title and path, the position, and the label's set id, version, effective date, kind and page at DailyMed |
+
+How the input is held:
+
+- The query goes only into a full-text match. The engine never reads it as a query language, so operator characters, field names and other set ids in it have no effect.
+- The set id (and the part) are exact filters, set by code from the tool's arguments.
+- Input outside the limits is refused before anything is sent: an empty query, `max_results` outside 1 to 10, an unknown `part`, or a set id that is not a lowercase GUID.
+
+Every failure is an error result that says which; none is ever an empty list.
+
+| Error | When |
+|---|---|
+| `invalid_input` | The input is outside the limits |
+| `label_not_found` | No document has that set id. The error names it, so "no such label" cannot be read as "the label says nothing" |
+| `index_not_built` | The alias does not exist: run `knowledge/index.sh` |
+| `search_timed_out` | The engine did not answer in time |
+| `search_unreachable` | The engine could not be reached |
+| `search_error` | The engine answered with an error status |
+| `search_unexpected_answer` | The engine answered in a form the service does not expect |
+
+### The gate
+
+`knowledge/gate.sh <compose-project>` runs from inside the stack's network. It prints a JSON report on standard output and nothing else, and exits 0, 1 or 2 by the same rules as `platform/identity/stack-gate.sh`. Neither its report nor standard error carries a secret, a token or label text: identifiers, codes and counts only. It signs in as `dana.desk` through the `desk` client, as the identity gate does, with the secrets passed from `platform/identity/.env` by Compose. It runs the knowledge image named for this checkout (`knowledge-corpus:checkout-<number>`), in a compose project also named for it, and prints the image on standard error. Its statements:
+
+1. The service answers 401 with reason `missing` to no token, and 200 on `/ping`.
+2. The alias `labels` exists and holds exactly as many documents as the chunk report counts.
+3. `find_labels` returns the manifest's first label for that label's name shared by the fewest labels. The same name in other case, with spaces around it, returns the same label by exact match. The words of a multi-word name, reordered and matching no name exactly, return its label by the every-word fallback; that name is the first in manifest order whose words match at most 10 labels. A name no label has gives an empty list.
+4. `search_label` on that label, with a word from one of its chunks, returns at least one passage. Every passage carries that set id and every field listed above, and the scores do not increase down the list.
+5. A query made only of query-language characters, and one naming another field and another set id, each return only passages from the one label, or none, and no error.
+6. A GUID not in the index returns `label_not_found`.
+7. `max_results` 1 returns one passage, 10 at most ten, and 11 is refused.
+8. 200 benchmark searches, each restricted to the question's own label, answer without an error.
+
+It also measures, and does not assert, how often a passage from a referenced section is among the first five results. The 200 questions are those whose label is indexed and whose `references` is a list, sorted by `qid` and taken evenly. A hit is a passage among the first five whose section number equals the number a reference starts with, or whose title equals a reference, ignoring case and spacing. The report also gives the median and 95th-percentile time of its `search_label` calls.
+
+### Hardening
+
+The retrieval service runs with a read-only root, no capabilities, no new privileges and an init process, like the case system. The search engine runs with no capabilities, no new privileges and an init process, with `/tmp` and its log folder on tmpfs. It cannot have a read-only root: at every start OpenSearch writes `config/opensearch.keystore` into its configuration folder, whose other files must come from the image. A tmpfs over that folder would hide them. With every other writable folder given a tmpfs, a read-only root still stopped it at start (exit 70).
+
 ## Where data goes
 
 ```
@@ -197,11 +287,15 @@ The libraries: [yauzl](https://github.com/thejoshwolfe/yauzl) 3.4.0 reads the zi
 
 ## Tests
 
-`knowledge/test/` holds tests F1 to F13 for pinning, fetching and the census, P1 to P21 for parsing, and U1 to U18 for chunking, run by `toolchain/check.sh` with everything else. The first use a labelled stand-in for DailyMed and for the benchmark's host, on loopback, serving synthetic labels and zips built in the tests; the parser's and the splitter's tests use synthetic labels in `knowledge/test/support/labels.ts` and `knowledge/test/support/chunking.ts`. No real label text is in them.
+`knowledge/test/` holds tests F1 to F13 for pinning, fetching and the census, P1 to P21 for parsing, U1 to U18 for chunking, and S1 to S14 for indexing and retrieval, run by `toolchain/check.sh` with everything else. The first use a labelled stand-in for DailyMed and for the benchmark's host, on loopback, serving synthetic labels and zips built in the tests; the parser's and the splitter's tests use synthetic labels in `knowledge/test/support/labels.ts` and `knowledge/test/support/chunking.ts`. The retrieval tests use a labelled stand-in for the search engine that records requests and answers as told: it shows the wiring and the handling of each failure, not ranking. Their tokens are real signed ones from `test-support/issuer.ts`. No real label text is in them.
 
 ## Not present
 
-- No embeddings, no search index, no retrieval API, no Bedrock data source.
+- **The search engine's security plugin is off.** It has no TLS, no sign-in and no access control: any container on the stack's network can read, change or delete every index. It publishes no port, so nothing outside that network reaches it. The retrieval service is the only path an agent is given, and it holds the token check. Do not publish the engine's port.
+- No embeddings, vector search, hybrid search or reranking: retrieval is keyword (BM25) only. No Bedrock data source.
+- No agent calls the retrieval service yet.
+- No removal of old indexes; `index.sh` lists them.
+- No backup of the index: it is rebuilt from the chunks with `index.sh`.
 - No limit on the size of a table that is not splittable: such a table is one chunk, however long.
 - No chunk that holds text and a table together.
 - No decision on which rows of a table are really column headings: the parser infers header rows by one fixed rule and records, for every row, whether it is wholly bold and how many cells have text. Telling a column heading from a group label is left to the step that splits tables.

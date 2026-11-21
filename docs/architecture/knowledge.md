@@ -1,6 +1,6 @@
 # Knowledge
 
-The corpus of the lab's Bedrock Knowledge Bases stand-in: US drug labels from DailyMed, pinned by set id and version, fetched onto disk, counted, parsed into structured documents, and split into chunks. To use it, see [knowledge/README.md](../../knowledge/README.md).
+The corpus of the lab's Bedrock Knowledge Bases stand-in: US drug labels from DailyMed, pinned by set id and version, fetched onto disk, counted, parsed into structured documents, and split into chunks. The chunks are indexed in a search engine, and a retrieval service serves keyword search over them to agents as MCP tools. To use it, see [knowledge/README.md](../../knowledge/README.md).
 
 ## The corpus as pinned
 
@@ -35,6 +35,10 @@ The corpus holds both prescription and over-the-counter labels. Nothing downstre
 | Chunk | One line of `chunks/<set id>/<version>.jsonl`: a piece of one section's text or of one table, with where it came from and the lines it repeats |
 | Splittable table | A table with a `thead` header, no nested table, no short row, and no wholly bold row below the header except group labels (one filled cell) |
 | Group label | A wholly bold row below the header with exactly one filled cell: it labels the rows under it |
+| Search engine | The `search` service: OpenSearch 3.9.0, one node, security plugin off, no published port |
+| Index | `labels-<hash>`: the chunks, one document each, under an explicit mapping. The hash is of the chunk report and the mapping |
+| Alias | `labels`: the name the retrieval service searches. The index command moves it, and only to a complete index |
+| Retrieval service | The `knowledge` service: MCP tools `find_labels` and `search_label` behind the token check |
 
 ## What moves where
 
@@ -124,10 +128,45 @@ flowchart LR
     I --> S["SHA-256 of zip and XML"]
 ```
 
+## Search and retrieval
+
+```mermaid
+flowchart LR
+    subgraph Host
+        CK["knowledge/data/chunks/ + chunk-report.json"]
+    end
+    subgraph Net["The stack's network"]
+        IX(("index.sh container"))
+        OS["search: OpenSearch<br/>index labels-&lt;hash&gt;, alias labels<br/>(no published port)"]
+        RS["knowledge: retrieval service<br/>MCP /mcp, /ping"]
+        ID["identity: Keycloak"]
+        GT(("gate.sh container"))
+    end
+    AG["an MCP client<br/>(no agent yet)"]
+    CK -- "read-only mount" --> IX
+    IX -- "create index, bulk, count, then move alias" --> OS
+    AG -- "Bearer token, 127.0.0.1:8002" --> RS
+    RS -- "discovery and keys" --> ID
+    RS -- "fetch: _search, _count on labels" --> OS
+    GT -- "sign in as dana.desk" --> ID
+    GT -- "MCP with the token" --> RS
+    GT -- "alias and count" --> OS
+```
+
+| Tool | Returns | Its counterpart in a Bedrock Knowledge Base retrieval result |
+|---|---|---|
+| `search_label` | `text` | The passage's text (content) |
+| `search_label` | `score` | Its relevance score |
+| `search_label` | `label.source`, the label's page at DailyMed for this version | Its source location |
+| `search_label` | `chunk_id`, `part`, `type`, `section` (number, title, path), `position`, `label` (set id, version, effective date, kind) | Its metadata, and the document id. Bedrock returns these only as metadata attached at ingestion; here they are fields |
+| `find_labels` | The labels for a drug name, with set id, version, date, kind, format, names, page | No counterpart: a retrieval request there is one search; resolving the drug first is this design's own step |
+
 ## What is pinned
 
 | Thing | Pinned by | Where |
 |---|---|---|
+| The search engine | OpenSearch 3.9.0, by the digest of its multi-architecture index | `knowledge/compose.yaml` |
+| The index's definition | The mapping and settings, part of the index's name | `knowledge/src/search/mapping.ts` |
 | The benchmark | Repository, 40-character revision, and each file's SHA-256 | `knowledge/corpus/benchmark.json` |
 | Each label | Set id, version, document id, and the SHA-256 of its XML | `knowledge/corpus/manifest.json` |
 | The image the commands run in | The `run` stage of `toolchain/Dockerfile`, from the Node image pinned there by digest, with the locked run-time dependencies | `toolchain/Dockerfile`, `package-lock.json` |
@@ -164,6 +203,13 @@ flowchart LR
 26. A chunk id is unique within its label and depends only on the set id, version, section and the chunk's position in the section.
 27. A table that is not splittable is one chunk, whatever its size. A split table's chunks each hold the caption, every header row and the group label in force: the first holds the caption and header rows in their place, and each later one repeats them and lists them in `repeated`. No chunk ends on a group label or inside a row span.
 28. A chunk holds text or a table, never both.
+29. The alias `labels` points only at an index into which the engine accepted every item, and whose count of documents equals the number of chunks read. A refused item, or a count that differs, leaves the alias where it was and removes the new index.30. An index's name is a hash of the chunk report and the mapping. Indexing unchanged chunks changes nothing.
+31. The search engine publishes no port. Only containers on the stack's network reach it.
+32. Every route of the retrieval service but `GET /ping` needs a valid access token with audience `lab-knowledge`, judged before the body is read.
+33. `search_label` searches one label only. The set id filter is set by code and is exact, and the query goes only into a full-text match, never a query language. Input outside the limits is refused before anything is sent.
+34. No failure of the engine reads as an empty answer: each is an error result naming its kind. A set id with no documents is the error `label_not_found`.
+35. The retrieval service reaches the engine only with `fetch` and its REST API, and each request has a time limit.
+36. Every gate image and gate compose project is named for the checkout it was built from, so a gate run from one checkout never runs an image another checkout built.
 
 ## Where each step runs
 
@@ -175,7 +221,11 @@ flowchart LR
 | `census` | The same | None | `corpus/` read-only, `data/` read-write |
 | `parse` | The same | None | `corpus/` read-only, `data/` read-write |
 | `chunk` | The same | None | `corpus/` read-only, `data/` read-write |
-| Tests F1 to F13, P1 to P21, U1 to U18 | `toolchain/check.sh` | None; the stand-in listens on loopback | None |
+| `index` | The same image, on the stack's network | The search engine only | `corpus/` read-only, `data/` read-write (read only) |
+| `search` service | OpenSearch, no capabilities, no new privileges, not read-only (it writes its keystore at start) | The stack's network, no published port | None; a named volume for its data |
+| `knowledge` service | The `run` stage image, read-only, no capabilities | The stack's network; `127.0.0.1:8002` | None |
+| Gate | The same image, on the stack's network, through `knowledge/gate/compose.yaml` | The stack's network | `data/`, `corpus/` and `platform/identity/src/`, read-only |
+| Tests F1 to F13, P1 to P21, U1 to U18, S1 to S14 | `toolchain/check.sh` | None; the stand-in listens on loopback | None |
 
 ## Parsing: problems and what follows
 
@@ -215,12 +265,19 @@ flowchart LR
 | `knowledge/corpus/` | What the corpus is: written by `pin.sh`, read by everything else |
 | `knowledge/src/chunk/` | What a chunk is (`model.ts`), the splitter (`split.ts`), the check that nothing was lost or doubled (`check.ts`), and the command (`run.ts`) |
 | `knowledge/chunk.sh` | The text limit and the table limit |
+| `knowledge/src/search/` | The mapping and index name, indexing, the engine client, the two tools, the MCP and HTTP servers, the settings |
+| `knowledge/compose.yaml` | The search engine's and the retrieval service's containers: images, settings, hardening, ports |
+| `knowledge/index.sh` | The alias, batch size and time limit of indexing |
+| `knowledge/gate.sh`, `knowledge/gate/`, `knowledge/src/gate/` | The gate of the retrieval path |
 | `knowledge/data/` | Local copies; regenerated by `fetch.sh`, `census.sh`, `parse.sh` and `chunk.sh` |
 | `toolchain/Dockerfile` | The `run` stage the image is built from, and the Node pin |
 
 ## What is not present
 
-- No embeddings, no search index, no retrieval API, no Bedrock data source.
+- No security on the search engine: its security plugin is off, so it has no TLS, no sign-in and no access control. Any container on the stack's network can read, change or delete its indexes; only the absence of a published port keeps everything else out.
+- No embeddings, vector search, hybrid search or reranking. No Bedrock data source.
+- No agent calling the retrieval service.
+- No removal of old indexes, and no backup of an index: it is rebuilt from the chunks.
 - No size limit on a table that is not splittable; no chunk holding text and a table together.
 - No decision on which table rows are column headings beyond the one inference rule; no text read from images; no section numbers in old-format labels.
 - No label version beyond the one pinned per set id, and no rule for choosing among several labels of one drug.

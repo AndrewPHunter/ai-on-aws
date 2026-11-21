@@ -1,5 +1,5 @@
-// The command line of the five corpus commands, run through knowledge/src/main.ts by knowledge/pin.sh, fetch.sh,
-// census.sh, parse.sh and chunk.sh in the pinned Node image. Every setting is a named flag, and every flag a command takes is
+// The command line of the corpus commands, run through knowledge/src/main.ts by knowledge/pin.sh, fetch.sh,
+// census.sh, parse.sh, chunk.sh and index.sh in the pinned Node image. Every setting is a named flag, and every flag a command takes is
 // required: nothing has a default. Input and output (the transport, waiting, the two output streams) are passed
 // in, so the whole command line runs in tests against the stand-in.
 //
@@ -9,17 +9,21 @@
 //   node knowledge/src/main.ts census --corpus <dir> --data <dir>
 //   node knowledge/src/main.ts parse  --corpus <dir> --data <dir>
 //   node knowledge/src/main.ts chunk  --corpus <dir> --data <dir> --text-limit <words> --table-limit <words>
+//   node knowledge/src/main.ts index  --data <dir> --search-url <url> --alias <name> --batch-size <n> --timeout-ms <n>
 //
 //   client flags: --raw-base <url> --dailymed-base <url> --user-agent <text> --dailymed-concurrency <n>
 //                 --github-concurrency <n> --workers <n> --attempts <n> --waits-ms <n,n,...> --timeout-ms <n>
 //                 --zip-max-bytes <n> --xml-max-bytes <n>
 //
 // Exit codes: 0 done (for parse and chunk: ran to the end, whatever the labels' results); 1 done, with labels or files
-//             refused (fetch, census) or a request that failed (pin); 2 could not run (flags, or tracked files
-//             that do not pass the schema).
+//             refused (fetch, census), a request that failed (pin), or an index whose count differed (index);
+//             2 could not run (flags, tracked files that do not pass the schema, or a search engine that could not
+//             be asked).
 
 import { runCensus } from './census.ts'
 import { runChunk } from './chunk/run.ts'
+import { createEngine } from './search/engine.ts'
+import { IndexingError, indexChunks } from './search/indexing.ts'
 import { runParse } from './parse/run.ts'
 import { InputError, fetchCorpus } from './fetch.ts'
 import { PoliteClient } from './http.ts'
@@ -48,6 +52,7 @@ const FLAGS = {
   census: ['corpus', 'data'],
   parse: ['corpus', 'data'],
   chunk: ['corpus', 'data', 'text-limit', 'table-limit'],
+  index: ['data', 'search-url', 'alias', 'batch-size', 'timeout-ms'],
 } as const
 
 type Command = keyof typeof FLAGS
@@ -126,12 +131,33 @@ export async function runCommand(argv: readonly string[], io: CommandIo): Promis
 async function run(argv: readonly string[], io: CommandIo): Promise<number> {
   const { log, warn } = io
   const [command, ...rest] = argv
-  if (command !== 'pin' && command !== 'fetch' && command !== 'census' && command !== 'parse' && command !== 'chunk') {
-    throw new UsageError('the first argument must be pin, fetch, census, parse or chunk')
+  if (command !== 'pin' && command !== 'fetch' && command !== 'census' && command !== 'parse' && command !== 'chunk' && command !== 'index') {
+    throw new UsageError('the first argument must be pin, fetch, census, parse, chunk or index')
   }
   const flags = parseFlags(command, rest)
-  const corpusDir = text(flags, 'corpus')
   const dataDir = text(flags, 'data')
+
+  if (command === 'index') {
+    const timeoutMs = count(flags, 'timeout-ms')
+    const batchSize = count(flags, 'batch-size')
+    if (timeoutMs < 1 || batchSize < 1) throw new UsageError('--timeout-ms and --batch-size must be at least 1')
+    const engine = createEngine({ baseUrl: text(flags, 'search-url'), fetch: io.fetch, deadline: () => AbortSignal.timeout(timeoutMs) })
+    const started = process.hrtime.bigint()
+    try {
+      const outcome = await indexChunks({ engine, dataDir, alias: text(flags, 'alias'), batchSize, log })
+      for (const older of outcome.olderIndexes) log(`older index left in place: ${older}`)
+      log(`time: ${Number((process.hrtime.bigint() - started) / 1_000_000n) / 1000} s`)
+      return outcome.exitCode
+    } catch (error) {
+      if (error instanceof IndexingError) {
+        warn(error.message)
+        return 2
+      }
+      throw error
+    }
+  }
+
+  const corpusDir = text(flags, 'corpus')
 
   if (command === 'census') {
     const { exitCode } = await runCensus({ corpusDir, dataDir, log, warn })

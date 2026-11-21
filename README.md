@@ -50,7 +50,7 @@ ai-on-aws/
 | [`shared/`](shared/README.md) | The contracts between pieces | Two contracts: what an agent is sent and returns, and what the case system sends. Both intake agents implement the first |
 | [`agents/`](agents/README.md) | The agents, each its own container, each serving the AgentCore Runtime contract | One agent, intake, built twice: with its loop written by hand, and on Strands. Both work against the local model |
 | [`tools/`](tools/README.md) | The agents' tools: MCP servers and APIs. Not developer tooling, which is `toolchain/` | One tool: the case system, used by both intake agents |
-| [`knowledge/`](knowledge/README.md) | Documents in, search, retrieval for agents. The documents are US drug labels from DailyMed, prescription and over-the-counter | The corpus: the labels of the FDARxBench benchmark that DailyMed serves, pinned by set id and version, fetched and checked by checksum, counted, parsed into structured documents, and split into citable chunks, each step checked for lost text. No search or retrieval yet |
+| [`knowledge/`](knowledge/README.md) | Documents in, search, retrieval for agents. The documents are US drug labels from DailyMed, prescription and over-the-counter | The corpus: the labels of the FDARxBench benchmark that DailyMed serves, pinned by set id and version, fetched and checked by checksum, counted, parsed into structured documents, and split into citable chunks, each step checked for lost text. The chunks are indexed in OpenSearch and served to agents as two MCP tools behind the token check: find a drug's label, then keyword (BM25) search inside it. No vector search or reranking yet, and no agent calls it yet |
 | [`platform/`](platform/README.md) | Local stand-ins for the AgentCore services around the runtime | One stand-in: an OpenID Connect provider (Keycloak) with one realm, started with the lab. The client signs desk staff in through it and validates their ID tokens; the agents and the case system each check the access token on every request. No stand-in yet for memory, policy or tracing |
 | [`test-support/`](test-support/README.md) | Code only tests use: stand-ins for services a test cannot start. Copied into no piece's image | One stand-in: an OpenID Connect issuer, used by the tests of the client, the agents, the case system and the shared token check |
 | [`evaluation/`](evaluation/README.md) | Measures the other pieces | Placeholder |
@@ -83,9 +83,15 @@ Setup selects the largest model that fits the GPU's free memory, starts the serv
 With the model server set up as above, on the machine you work on:
 
 ```bash
+knowledge/fetch.sh
+knowledge/parse.sh
+knowledge/chunk.sh
 platform/identity/setup.sh
 docker compose up -d --build --wait
+knowledge/index.sh ai-on-aws
 ```
+
+The first three get the drug labels the corpus pins, parse them, and split them into chunks (see [knowledge/README.md](knowledge/README.md)); the last loads the chunks into the running stack's search engine. Without it the retrieval service answers that the index has not been built.
 
 Then open <http://localhost:3000> (use `localhost`, not `127.0.0.1`: sign-in returns to `localhost`) and sign in as one of the lab's two synthetic users:
 
@@ -94,7 +100,7 @@ Then open <http://localhost:3000> (use `localhost`, not `127.0.0.1`: sign-in ret
 | `riley.reviewer` | Yes, holds the `reviewer` role | `IDENTITY_RILEY_PASSWORD` in `platform/identity/.env` |
 | `dana.desk` | No | `IDENTITY_DANA_PASSWORD` in `platform/identity/.env` |
 
-The first command writes `platform/identity/.env`, the secrets of the lab's identity provider, with random values; run again, it changes nothing. The second starts the agents, the case system they write to, the client and the identity provider, on one network. It reads `model/.env`, which model setup wrote, to find the model server, and `platform/identity/.env`; without either file it stops and says what is missing. The identity provider is described in [platform/identity/README.md](platform/identity/README.md). If the model server is on a different machine from the one you work on, run setup with `--host` from the machine you work on, as described in [model/README.md](model/README.md), so that `model/.env` is here.
+`platform/identity/setup.sh` writes `platform/identity/.env`, the secrets of the lab's identity provider, with random values; run again, it changes nothing. `docker compose up` starts the agents, the case system they write to, the client, the identity provider, the search engine and the retrieval service, on one network. It reads `model/.env`, which model setup wrote, to find the model server, and `platform/identity/.env`; without either file it stops and says what is missing. The identity provider is described in [platform/identity/README.md](platform/identity/README.md). If the model server is on a different machine from the one you work on, run setup with `--host` from the machine you work on, as described in [model/README.md](model/README.md), so that `model/.env` is here.
 
 What each screen does is in [client/README.md](client/README.md), and what each agent does is in [agents/README.md](agents/README.md).
 
@@ -105,7 +111,11 @@ platform/identity/stack-gate.sh ai-on-aws
 platform/identity/gate.sh ai-on-aws
 ```
 
-Both print a JSON report and exit 0 only if every statement holds; see [platform/identity/README.md](platform/identity/README.md).
+Both print a JSON report and exit 0 only if every statement holds; see [platform/identity/README.md](platform/identity/README.md). To check the retrieval path once the index is built (the token check, the index's count, both tools, their refusals):
+
+```bash
+knowledge/gate.sh ai-on-aws
+```
 
 ### Check the code
 
