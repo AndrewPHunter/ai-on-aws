@@ -47,3 +47,23 @@ export function capacityVerdict(capacity: Capacity, maxModelLen: number, maxNumS
   }
   return { ok: true }
 }
+
+// The embedding server's start-up line has the same form. Its cache must be sized for inputs of
+// EMBED_MAX_MODEL_LEN tokens and hold at least one of them.
+export function embedCapacityVerdict(capacity: Capacity, maxModelLen: number): CapacityVerdict {
+  if (capacity.context !== maxModelLen) {
+    return {
+      ok: false,
+      message: `the embedding server sized its cache for inputs of ${capacity.context} tokens, but retrieval.env's EMBED_MAX_MODEL_LEN is ${maxModelLen}`,
+    }
+  }
+  if (capacity.concurrency < 1) {
+    return {
+      ok: false,
+      message:
+        `capacity short: the embedding server's cache of ${capacity.tokens} tokens holds ${capacity.concurrency} inputs of ` +
+        `${capacity.context} tokens, less than one`,
+    }
+  }
+  return { ok: true }
+}

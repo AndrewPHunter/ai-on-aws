@@ -7,6 +7,8 @@ export type Options = {
   cacheDir: string | null // null only with --keep-env
   bind: string | null // null only with --keep-env (read from model/.env)
   port: number | null // null only with --keep-env (read from model/.env)
+  embedPort: number | null // null only with --keep-env (read from model/.env)
+  rerankPort: number | null // null only with --keep-env (read from model/.env)
   host: string | null
   tier: string | null
   check: boolean
@@ -17,8 +19,11 @@ export type ParseResult = { ok: true; options: Options } | { ok: false; message:
 
 export const DEFAULT_BIND = '127.0.0.1'
 export const DEFAULT_PORT = 8000
+export const DEFAULT_EMBED_PORT = 8001
+export const DEFAULT_RERANK_PORT = 8002
 
-const VALUE_FLAGS = ['--cache-dir', '--bind', '--port', '--host', '--tier'] as const
+const VALUE_FLAGS = ['--cache-dir', '--bind', '--port', '--embed-port', '--rerank-port', '--host', '--tier'] as const
+const PORT_FLAGS = ['--port', '--embed-port', '--rerank-port'] as const
 const SWITCH_FLAGS = ['--check', '--keep-env'] as const
 
 type ValueFlag = (typeof VALUE_FLAGS)[number]
@@ -44,6 +49,25 @@ export function isLoopbackIpv4(text: string): boolean {
 
 function fail(message: string): ParseResult {
   return { ok: false, message }
+}
+
+// The chat, embedding and reranker servers are published on three ports of one address, so the three must
+// differ. Takes each port with the name it is known by (a flag, or a variable of model/.env); returns a
+// message naming the first two that are equal, or null.
+export function portClash(ports: readonly (readonly [string, number])[]): string | null {
+  for (let i = 0; i < ports.length; i++) {
+    for (let j = i + 1; j < ports.length; j++) {
+      const a = ports[i]
+      const b = ports[j]
+      if (a === undefined || b === undefined) throw new Error('portClash: index out of range')
+      if (a[1] === b[1]) return `${a[0]} and ${b[0]} must differ (both ${a[1]}): the three servers each need their own port`
+    }
+  }
+  return null
+}
+
+function portOf(given: string | undefined, fallback: number): number {
+  return given === undefined ? fallback : Number(given)
 }
 
 export function parseArgs(argv: readonly string[], tierNames: readonly string[]): ParseResult {
@@ -76,7 +100,7 @@ export function parseArgs(argv: readonly string[], tierNames: readonly string[])
   const tier = values.get('--tier') ?? null
 
   if (keepEnv) {
-    for (const flag of ['--cache-dir', '--bind', '--port'] as const) {
+    for (const flag of ['--cache-dir', '--bind', ...PORT_FLAGS] as const) {
       if (values.has(flag)) return fail(`${flag} is not accepted with --keep-env (the value comes from model/.env)`)
     }
   } else {
@@ -92,12 +116,18 @@ export function parseArgs(argv: readonly string[], tierNames: readonly string[])
     if (host !== null && bindGiven !== null && isLoopbackIpv4(bindGiven)) {
       return fail(`--bind must not be a loopback address with --host, got: ${bindGiven}`)
     }
-    if (portGiven !== null && !/^[1-9][0-9]*$/.test(portGiven)) {
-      return fail(`--port must be an integer from 1 to 65535, got: ${portGiven}`)
+    for (const flag of PORT_FLAGS) {
+      const given = values.get(flag)
+      if (given !== undefined && (!/^[1-9][0-9]*$/.test(given) || Number(given) > 65535)) {
+        return fail(`${flag} must be an integer from 1 to 65535, got: ${given}`)
+      }
     }
-    if (portGiven !== null && Number(portGiven) > 65535) {
-      return fail(`--port must be an integer from 1 to 65535, got: ${portGiven}`)
-    }
+    const clash = portClash([
+      ['--port', portOf(values.get('--port'), DEFAULT_PORT)],
+      ['--embed-port', portOf(values.get('--embed-port'), DEFAULT_EMBED_PORT)],
+      ['--rerank-port', portOf(values.get('--rerank-port'), DEFAULT_RERANK_PORT)],
+    ])
+    if (clash !== null) return fail(clash)
   }
 
   if (tier !== null && !tierNames.includes(tier)) {
@@ -110,6 +140,8 @@ export function parseArgs(argv: readonly string[], tierNames: readonly string[])
       cacheDir,
       bind: keepEnv ? null : (bindGiven ?? DEFAULT_BIND),
       port: keepEnv ? null : portGiven === null ? DEFAULT_PORT : Number(portGiven),
+      embedPort: keepEnv ? null : portOf(values.get('--embed-port'), DEFAULT_EMBED_PORT),
+      rerankPort: keepEnv ? null : portOf(values.get('--rerank-port'), DEFAULT_RERANK_PORT),
       host,
       tier,
       check,

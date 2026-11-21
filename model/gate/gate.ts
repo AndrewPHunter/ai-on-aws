@@ -1,17 +1,41 @@
-// Gate test for the model server.
+// Gate test for the model servers.
 //
-// Answers one question: does this OpenAI-compatible server meet what the lab needs from it?
+// Answers one question: do the lab's three OpenAI-compatible servers meet what the lab needs from them?
+// The chat server:
 //   1. It rejects missing and wrong API keys.
 //   2. It completes tool-calling conversations correctly while several run at once,
 //      both streaming and non-streaming.
 //   3. It holds several long prompts in context at the same time.
+// The embedding server:
+//   4. It rejects missing and wrong keys, lists its model, returns vectors of the configured number of
+//      dimensions and of unit length, ranks the passage that answers a query first, refuses an input over its
+//      limit, and answers several batches sent at once.
+// The reranker server:
+//   5. It rejects missing and wrong keys, lists its model, ranks the passage that answers a query first,
+//      refuses a document over its limit unless max_tokens_per_doc is sent, and answers several requests
+//      sent at once.
 //
 // Zero dependencies: Node 22 built-ins only, so it runs in a stock Node image with no install step.
-// Usage: node gate.ts <config.json>   (MODEL_BASE_URL, MODEL_ID and MODEL_API_KEY must be set)
+// Usage: node gate.ts <config.json>
+//   Environment, all required: MODEL_BASE_URL, MODEL_ID, MODEL_API_KEY (the chat server and the key of all
+//   three); MODEL_EMBED_BASE_URL, EMBED_MODEL_ID, EMBED_DIMENSIONS, EMBED_MAX_MODEL_LEN (the embedding server);
+//   MODEL_RERANK_BASE_URL, RERANK_MODEL_ID, RERANK_MAX_MODEL_LEN (the reranker server).
 // Exit codes: 0 = gate passed, 1 = gate failed, 2 = the test itself could not run.
 // The JSON report goes to stdout; progress goes to stderr.
 
 import { readFileSync } from 'node:fs'
+
+import { passagesOf, RETRIEVAL_CASES } from './retrieval-cases.ts'
+import {
+  answeredFirst,
+  cosine,
+  embeddingVerdict,
+  isUnitLength,
+  rerankerVerdict,
+  type EmbeddingEvidence,
+  type KeyStatuses,
+  type RerankerEvidence,
+} from './retrieval.ts'
 
 // ---------- configuration ----------
 
@@ -21,6 +45,8 @@ type GateConfig = {
   requestTimeoutMs: number
   toolCalling: { rounds: number; concurrency: number; maxTokens: number; minCorrectRate: number }
   context: { concurrency: number; minPromptTokens: number; maxTokens: number }
+  embedding: { unitLengthTolerance: number; minAnsweredFirstRate: number; concurrency: number; batchSize: number }
+  reranker: { minAnsweredFirstRate: number; concurrency: number; maxTokensPerDoc: number }
 }
 
 class UsageError extends Error {}
@@ -62,7 +88,24 @@ function loadConfig(path: string): GateConfig {
       minPromptTokens: numberAt(raw, ['context', 'minPromptTokens']),
       maxTokens: numberAt(raw, ['context', 'maxTokens']),
     },
+    embedding: {
+      unitLengthTolerance: numberAt(raw, ['embedding', 'unitLengthTolerance']),
+      minAnsweredFirstRate: numberAt(raw, ['embedding', 'minAnsweredFirstRate']),
+      concurrency: numberAt(raw, ['embedding', 'concurrency']),
+      batchSize: numberAt(raw, ['embedding', 'batchSize']),
+    },
+    reranker: {
+      minAnsweredFirstRate: numberAt(raw, ['reranker', 'minAnsweredFirstRate']),
+      concurrency: numberAt(raw, ['reranker', 'concurrency']),
+      maxTokensPerDoc: numberAt(raw, ['reranker', 'maxTokensPerDoc']),
+    },
   }
+}
+
+function positiveIntegerEnv(name: string): number {
+  const value = requiredEnv(name)
+  if (!/^[1-9][0-9]*$/.test(value)) throw new UsageError(`Environment variable ${name} must be a positive integer`)
+  return Number(value)
 }
 
 // ---------- deterministic test data ----------
@@ -533,6 +576,285 @@ async function checkContext(client: Client, config: GateConfig, random: () => nu
   return { concurrency, minPromptTokens, requests, wallMs, passed }
 }
 
+// ---------- the embedding and reranker servers: a client for their JSON endpoints ----------
+
+type PoolingClient = {
+  status(path: string, apiKey: string | null): Promise<number>
+  listedIds(): Promise<string[]>
+  post(path: string, body: unknown): Promise<{ status: number; body: unknown }>
+}
+
+function createPoolingClient(baseUrl: string, apiKey: string, config: GateConfig): PoolingClient {
+  const root = baseUrl.replace(/\/+$/, '')
+  const headers = (key: string | null): Record<string, string> =>
+    key === null
+      ? { 'Content-Type': 'application/json' }
+      : { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` }
+  const timeout = (): AbortSignal => AbortSignal.timeout(config.requestTimeoutMs)
+
+  async function status(path: string, key: string | null): Promise<number> {
+    const response = await fetch(`${root}${path}`, { headers: headers(key), signal: timeout() })
+    await response.arrayBuffer()
+    return response.status
+  }
+
+  async function listedIds(): Promise<string[]> {
+    const response = await fetch(`${root}/models`, { headers: headers(apiKey), signal: timeout() })
+    const text = await response.text()
+    if (!response.ok) throw new HttpError(response.status, text)
+    return asArray(asRecord(JSON.parse(text)).data).map((entry) => asString(asRecord(entry).id))
+  }
+
+  async function post(path: string, body: unknown): Promise<{ status: number; body: unknown }> {
+    const response = await fetch(`${root}${path}`, {
+      method: 'POST',
+      headers: headers(apiKey),
+      body: JSON.stringify(body),
+      signal: timeout(),
+    })
+    const text = await response.text()
+    let parsed: unknown = null
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      parsed = text.slice(0, 300)
+    }
+    return { status: response.status, body: parsed }
+  }
+
+  return { status, listedIds, post }
+}
+
+async function checkKeys(client: PoolingClient, apiKey: string): Promise<KeyStatuses> {
+  return {
+    missingKeyStatus: await client.status('/models', null),
+    wrongKeyStatus: await client.status('/models', `${apiKey}-wrong`),
+    validKeyStatus: await client.status('/models', apiKey),
+  }
+}
+
+const describeError = (error: unknown): string => (error instanceof Error ? error.message : String(error))
+
+// Synthetic text of at least `words` words. Every word is at least one token, so `words` above a server's
+// limit in tokens makes an input over that limit.
+function textOfWords(random: () => number, words: number): string {
+  const lines: string[] = []
+  for (let line = 0; line * 12 < words; line++) lines.push(fillerLine(random, line))
+  return lines.join('\n')
+}
+
+// ---------- check 4: the embedding server ----------
+
+type EmbeddingServer = { baseUrl: string; modelId: string; dimensions: number; maxModelLen: number }
+
+type EmbedReply = { status: number | null; vectors: number[][] | null; detail: string }
+
+async function embed(client: PoolingClient, modelId: string, inputs: string[]): Promise<EmbedReply> {
+  try {
+    const reply = await client.post('/embeddings', { model: modelId, input: inputs })
+    if (reply.status !== 200) return { status: reply.status, vectors: null, detail: JSON.stringify(reply.body).slice(0, 300) }
+    const data = asArray(asRecord(reply.body).data).map((entry) => asRecord(entry))
+    const ordered = [...data].sort((a, b) => Number(a.index) - Number(b.index))
+    const vectors = ordered.map((entry) => asArray(entry.embedding).filter((value): value is number => typeof value === 'number'))
+    if (vectors.length !== inputs.length) {
+      return { status: reply.status, vectors: null, detail: `${vectors.length} vectors for ${inputs.length} inputs` }
+    }
+    return { status: reply.status, vectors, detail: '' }
+  } catch (error) {
+    return { status: null, vectors: null, detail: describeError(error) }
+  }
+}
+
+type EmbeddingResult = EmbeddingEvidence & {
+  modelId: string
+  dimensions: number
+  maxModelLen: number
+  rankingCases: { query: string; answered: boolean; answerScore: number | null; bestOtherScore: number | null; detail: string }[]
+  overLimitDetail: string
+  concurrentFailures: string[]
+  failures: string[]
+  passed: boolean
+}
+
+async function checkEmbedding(server: EmbeddingServer, apiKey: string, config: GateConfig, random: () => number): Promise<EmbeddingResult> {
+  const client = createPoolingClient(server.baseUrl, apiKey, config)
+  const { unitLengthTolerance, minAnsweredFirstRate, concurrency, batchSize } = config.embedding
+  const vectors = { count: 0, wrongDimensions: 0, notUnitLength: 0 }
+  const tally = (received: number[][]): void => {
+    for (const vector of received) {
+      vectors.count++
+      if (vector.length !== server.dimensions) vectors.wrongDimensions++
+      if (!isUnitLength(vector, unitLengthTolerance)) vectors.notUnitLength++
+    }
+  }
+
+  process.stderr.write('embedding: checking key handling\n')
+  const keys = await checkKeys(client, apiKey)
+  const modelListed = (await client.listedIds()).includes(server.modelId)
+
+  process.stderr.write('embedding: ranking the fixed set\n')
+  const rankingCases: EmbeddingResult['rankingCases'] = []
+  for (const [caseIndex, entry] of RETRIEVAL_CASES.entries()) {
+    const { passages, answerIndex } = passagesOf(entry, caseIndex)
+    const reply = await embed(client, server.modelId, [entry.query, ...passages])
+    if (reply.vectors === null) {
+      rankingCases.push({ query: entry.query, answered: false, answerScore: null, bestOtherScore: null, detail: `HTTP ${String(reply.status)}: ${reply.detail}` })
+      continue
+    }
+    tally(reply.vectors)
+    const [queryVector, ...passageVectors] = reply.vectors
+    if (queryVector === undefined || reply.vectors.some((vector) => vector.length !== server.dimensions)) {
+      rankingCases.push({ query: entry.query, answered: false, answerScore: null, bestOtherScore: null, detail: 'vectors of the wrong number of dimensions' })
+      continue
+    }
+    const scores = passageVectors.map((vector) => cosine(queryVector, vector))
+    const others = scores.filter((_, index) => index !== answerIndex)
+    rankingCases.push({
+      query: entry.query,
+      answered: answeredFirst(scores, answerIndex),
+      answerScore: scores[answerIndex] ?? null,
+      bestOtherScore: others.length === 0 ? null : Math.max(...others),
+      detail: '',
+    })
+  }
+
+  process.stderr.write('embedding: sending an input over the limit\n')
+  const overLimit = await embed(client, server.modelId, [textOfWords(random, 2 * server.maxModelLen)])
+
+  process.stderr.write('embedding: sending batches together\n')
+  const batches: string[][] = []
+  for (let batch = 0; batch < concurrency; batch++) {
+    const inputs: string[] = []
+    for (let line = 0; line < batchSize; line++) inputs.push(fillerLine(random, line))
+    batches.push(inputs)
+  }
+  const replies = await Promise.all(batches.map((inputs) => embed(client, server.modelId, inputs)))
+  const concurrentFailures: string[] = []
+  let answered = 0
+  for (const reply of replies) {
+    if (reply.vectors === null) {
+      concurrentFailures.push(`HTTP ${String(reply.status)}: ${reply.detail}`)
+    } else {
+      tally(reply.vectors)
+      answered++
+    }
+  }
+
+  const evidence: EmbeddingEvidence = {
+    keys,
+    modelListed,
+    vectors,
+    ranking: { cases: rankingCases.length, answeredFirst: rankingCases.filter((entry) => entry.answered).length },
+    overLimitStatus: overLimit.status,
+    concurrent: { requests: replies.length, answered },
+  }
+  const failures = embeddingVerdict(evidence, { minAnsweredFirstRate })
+  return {
+    modelId: server.modelId,
+    dimensions: server.dimensions,
+    maxModelLen: server.maxModelLen,
+    ...evidence,
+    rankingCases,
+    overLimitDetail: overLimit.detail,
+    concurrentFailures,
+    failures,
+    passed: failures.length === 0,
+  }
+}
+
+// ---------- check 5: the reranker server ----------
+
+type RerankerServer = { baseUrl: string; modelId: string; maxModelLen: number }
+
+type RerankReply = { status: number | null; ranked: number[] | null; detail: string }
+
+// The documents' indexes in the order the server ranked them, best first.
+async function rerank(client: PoolingClient, modelId: string, query: string, documents: string[], maxTokensPerDoc: number | null): Promise<RerankReply> {
+  const body: Record<string, unknown> = { model: modelId, query, documents }
+  if (maxTokensPerDoc !== null) body.max_tokens_per_doc = maxTokensPerDoc
+  try {
+    const reply = await client.post('/rerank', body)
+    if (reply.status !== 200) return { status: reply.status, ranked: null, detail: JSON.stringify(reply.body).slice(0, 300) }
+    const ranked = asArray(asRecord(reply.body).results).map((entry) => asRecord(entry).index)
+    if (ranked.length !== documents.length || !ranked.every((index): index is number => typeof index === 'number')) {
+      return { status: reply.status, ranked: null, detail: `results do not rank each of the ${documents.length} documents once` }
+    }
+    return { status: reply.status, ranked, detail: '' }
+  } catch (error) {
+    return { status: null, ranked: null, detail: describeError(error) }
+  }
+}
+
+type RerankerResult = RerankerEvidence & {
+  modelId: string
+  maxModelLen: number
+  rankingCases: { query: string; answered: boolean; rankedFirst: number | null; answerIndex: number; detail: string }[]
+  overLimitDetail: { withoutLimit: string; withLimit: string }
+  concurrentFailures: string[]
+  failures: string[]
+  passed: boolean
+}
+
+async function checkReranker(server: RerankerServer, apiKey: string, config: GateConfig, random: () => number): Promise<RerankerResult> {
+  const client = createPoolingClient(server.baseUrl, apiKey, config)
+  const { minAnsweredFirstRate, concurrency, maxTokensPerDoc } = config.reranker
+
+  process.stderr.write('reranker: checking key handling\n')
+  const keys = await checkKeys(client, apiKey)
+  const modelListed = (await client.listedIds()).includes(server.modelId)
+
+  process.stderr.write('reranker: ranking the fixed set\n')
+  const rankingCases: RerankerResult['rankingCases'] = []
+  for (const [caseIndex, entry] of RETRIEVAL_CASES.entries()) {
+    const { passages, answerIndex } = passagesOf(entry, caseIndex)
+    const reply = await rerank(client, server.modelId, entry.query, passages, null)
+    const rankedFirst = reply.ranked?.[0] ?? null
+    rankingCases.push({
+      query: entry.query,
+      answered: rankedFirst === answerIndex,
+      rankedFirst,
+      answerIndex,
+      detail: reply.ranked === null ? `HTTP ${String(reply.status)}: ${reply.detail}` : '',
+    })
+  }
+
+  process.stderr.write('reranker: sending a document over the limit, without and with max_tokens_per_doc\n')
+  const first = RETRIEVAL_CASES[0]
+  if (first === undefined) throw new Error('checkReranker: the fixed set is empty')
+  const longDocuments = [first.answer, textOfWords(random, 2 * server.maxModelLen)]
+  const withoutLimit = await rerank(client, server.modelId, first.query, longDocuments, null)
+  const withLimit = await rerank(client, server.modelId, first.query, longDocuments, maxTokensPerDoc)
+
+  process.stderr.write('reranker: sending requests together\n')
+  const requests = Array.from({ length: concurrency }, (_, index) => {
+    const caseIndex = index % RETRIEVAL_CASES.length
+    const entry = RETRIEVAL_CASES[caseIndex]
+    if (entry === undefined) throw new Error(`checkReranker: no case at index ${caseIndex}`)
+    return { query: entry.query, passages: passagesOf(entry, caseIndex).passages }
+  })
+  const replies = await Promise.all(requests.map((request) => rerank(client, server.modelId, request.query, request.passages, null)))
+  const concurrentFailures = replies.filter((reply) => reply.ranked === null).map((reply) => `HTTP ${String(reply.status)}: ${reply.detail}`)
+
+  const evidence: RerankerEvidence = {
+    keys,
+    modelListed,
+    ranking: { cases: rankingCases.length, answeredFirst: rankingCases.filter((entry) => entry.answered).length },
+    overLimit: { withoutLimitStatus: withoutLimit.status, withLimitStatus: withLimit.status },
+    concurrent: { requests: replies.length, answered: replies.length - concurrentFailures.length },
+  }
+  const failures = rerankerVerdict(evidence, { minAnsweredFirstRate })
+  return {
+    modelId: server.modelId,
+    maxModelLen: server.maxModelLen,
+    ...evidence,
+    rankingCases,
+    overLimitDetail: { withoutLimit: withoutLimit.detail, withLimit: withLimit.detail },
+    concurrentFailures,
+    failures,
+    passed: failures.length === 0,
+  }
+}
+
 // ---------- entry point ----------
 
 async function main(): Promise<number> {
@@ -542,6 +864,17 @@ async function main(): Promise<number> {
   const baseUrl = requiredEnv('MODEL_BASE_URL')
   const modelId = requiredEnv('MODEL_ID')
   const apiKey = requiredEnv('MODEL_API_KEY')
+  const embeddingServer: EmbeddingServer = {
+    baseUrl: requiredEnv('MODEL_EMBED_BASE_URL'),
+    modelId: requiredEnv('EMBED_MODEL_ID'),
+    dimensions: positiveIntegerEnv('EMBED_DIMENSIONS'),
+    maxModelLen: positiveIntegerEnv('EMBED_MAX_MODEL_LEN'),
+  }
+  const rerankerServer: RerankerServer = {
+    baseUrl: requiredEnv('MODEL_RERANK_BASE_URL'),
+    modelId: requiredEnv('RERANK_MODEL_ID'),
+    maxModelLen: positiveIntegerEnv('RERANK_MAX_MODEL_LEN'),
+  }
   const client = createClient(baseUrl, modelId, apiKey, config)
   const random = seededRandom(config.seed)
 
@@ -558,11 +891,18 @@ async function main(): Promise<number> {
   process.stderr.write('context: sending long prompts together\n')
   const context = await checkContext(client, config, random)
 
+  // The embedding and reranker checks draw from a generator of their own, so the chat checks' data stays as it was.
+  const retrievalRandom = seededRandom(config.seed)
+  const embedding = await checkEmbedding(embeddingServer, apiKey, config, retrievalRandom)
+  const reranker = await checkReranker(rerankerServer, apiKey, config, retrievalRandom)
+
   const failures: string[] = []
   if (!auth.passed) failures.push('authentication')
   if (!modelListed) failures.push('model not listed')
   if (!toolCalling.passed) failures.push('tool calling')
   if (!context.passed) failures.push('context')
+  if (!embedding.passed) failures.push('embedding')
+  if (!reranker.passed) failures.push('reranker')
 
   const report = {
     gate: failures.length === 0 ? 'pass' : 'fail',
@@ -573,6 +913,8 @@ async function main(): Promise<number> {
     auth,
     toolCalling,
     context,
+    embedding,
+    reranker,
   }
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`)
   process.stderr.write(`gate: ${report.gate}${failures.length ? ` (${failures.join(', ')})` : ''}\n`)

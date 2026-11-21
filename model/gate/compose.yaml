@@ -1,4 +1,4 @@
-# Runs the gate test from any machine that can reach the model server.
+# Runs the gate test from any machine that can reach the model servers (chat, embedding and reranker).
 # It needs no GPU, so it normally runs on the machine the agents will run on:
 # that way it also proves the network path the agents will use.
 name: ai-on-aws-model-gate
@@ -13,4 +13,11 @@ services:
       MODEL_BASE_URL: ${MODEL_BASE_URL:?set MODEL_BASE_URL}
       MODEL_ID: ${MODEL_ID:?set MODEL_ID}
       MODEL_API_KEY: ${MODEL_API_KEY:?set MODEL_API_KEY}
+      MODEL_EMBED_BASE_URL: ${MODEL_EMBED_BASE_URL:?set MODEL_EMBED_BASE_URL}
+      EMBED_MODEL_ID: ${EMBED_MODEL_ID:?set EMBED_MODEL_ID}
+      EMBED_DIMENSIONS: ${EMBED_DIMENSIONS:?set EMBED_DIMENSIONS}
+      EMBED_MAX_MODEL_LEN: ${EMBED_MAX_MODEL_LEN:?set EMBED_MAX_MODEL_LEN}
+      MODEL_RERANK_BASE_URL: ${MODEL_RERANK_BASE_URL:?set MODEL_RERANK_BASE_URL}
+      RERANK_MODEL_ID: ${RERANK_MODEL_ID:?set RERANK_MODEL_ID}
+      RERANK_MAX_MODEL_LEN: ${RERANK_MAX_MODEL_LEN:?set RERANK_MAX_MODEL_LEN}
     command: ["node", "/gate/gate.ts", "/gate/gate.config.json"]

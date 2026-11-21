@@ -32,6 +32,8 @@ export function readEnv(text: string, required: readonly string[]): EnvReadResul
 export type EnvInput = {
   bindAddress: string
   port: number
+  embedPort: number
+  rerankPort: number
   cacheDir: string
   runUid: number
   runGid: number
@@ -44,11 +46,15 @@ export type RenderResult = { ok: true; text: string } | { ok: false; message: st
 export const ENV_NAMES = [
   'MODEL_BIND_ADDRESS',
   'MODEL_PORT',
+  'MODEL_EMBED_PORT',
+  'MODEL_RERANK_PORT',
   'MODEL_CACHE_DIR',
   'MODEL_RUN_UID',
   'MODEL_RUN_GID',
   'MODEL_API_KEY',
   'MODEL_BASE_URL',
+  'MODEL_EMBED_BASE_URL',
+  'MODEL_RERANK_BASE_URL',
 ] as const
 
 // Characters that an env file reader (Docker Compose's included) would treat specially.
@@ -63,11 +69,15 @@ export function renderEnv(input: EnvInput): RenderResult {
   const values: Record<(typeof ENV_NAMES)[number], string> = {
     MODEL_BIND_ADDRESS: input.bindAddress,
     MODEL_PORT: String(input.port),
+    MODEL_EMBED_PORT: String(input.embedPort),
+    MODEL_RERANK_PORT: String(input.rerankPort),
     MODEL_CACHE_DIR: input.cacheDir,
     MODEL_RUN_UID: String(input.runUid),
     MODEL_RUN_GID: String(input.runGid),
     MODEL_API_KEY: input.apiKey,
     MODEL_BASE_URL: `http://${input.bindAddress}:${input.port}/v1`,
+    MODEL_EMBED_BASE_URL: `http://${input.bindAddress}:${input.embedPort}/v1`,
+    MODEL_RERANK_BASE_URL: `http://${input.bindAddress}:${input.rerankPort}/v1`,
   }
   for (const name of ENV_NAMES) {
     const value = values[name]

@@ -41,6 +41,11 @@ export function readProfile(text: string): ProfileResult {
 // Where the Hugging Face cache keeps the pinned revision, relative to the cache directory
 // (the compose file sets HF_HOME to <cache>/hf).
 export function snapshotPath(profile: Profile): string {
-  const [org, name] = profile.modelRepo.split('/')
-  return `hf/hub/models--${org}--${name}/snapshots/${profile.modelRevision}`
+  return snapshotPathOf(profile.modelRepo, profile.modelRevision)
+}
+
+// The same for any model at a pinned revision: the embedding model and the reranker too.
+export function snapshotPathOf(repo: string, revision: string): string {
+  const [org, name] = repo.split('/')
+  return `hf/hub/models--${org}--${name}/snapshots/${revision}`
 }

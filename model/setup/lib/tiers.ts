@@ -5,8 +5,14 @@ export type Tier = { name: string; profile: string; measuredPeakMiB: number; dow
 export type Tiers = {
   requirements: { minDriverMajor: number; minComputeCapability: string }
   marginMiB: number
-  reservedForOtherModelsMiB: number
+  // Peak GPU memory of the embedding server and the reranker server, which run beside every tier
+  // (model/retrieval.env records how each was measured).
+  embeddingPeakMiB: number
+  rerankerPeakMiB: number
   imageDiskMiB: number
+  // Space the embedding model's and the reranker's weights take in the cache directory.
+  embeddingDownloadMiB: number
+  rerankerDownloadMiB: number
   tiers: Tier[]
 }
 
@@ -42,8 +48,11 @@ export function validateTiers(raw: unknown): TiersResult {
       errors.push('requirements.minComputeCapability must be a string of the form <major>.<minor>')
     }
   }
-  for (const key of ['marginMiB', 'reservedForOtherModelsMiB', 'imageDiskMiB'] as const) {
+  for (const key of ['marginMiB', 'imageDiskMiB'] as const) {
     if (!isNonNegativeInteger(top[key])) errors.push(`${key} must be a non-negative integer`)
+  }
+  for (const key of ['embeddingPeakMiB', 'rerankerPeakMiB', 'embeddingDownloadMiB', 'rerankerDownloadMiB'] as const) {
+    if (!isPositiveInteger(top[key])) errors.push(`${key} must be a positive integer`)
   }
 
   if (!Array.isArray(top.tiers) || top.tiers.length === 0) {
@@ -76,6 +85,8 @@ export function validateTiers(raw: unknown): TiersResult {
   return { ok: true, tiers: raw as Tiers }
 }
 
+// The free GPU memory a tier needs: its chat model's peak measured in the gate, plus the peaks of the
+// embedding and reranker servers that run beside it, plus the margin once.
 export function needMiB(tiers: Tiers, tier: Tier): number {
-  return tier.measuredPeakMiB + tiers.marginMiB + tiers.reservedForOtherModelsMiB
+  return tier.measuredPeakMiB + tiers.embeddingPeakMiB + tiers.rerankerPeakMiB + tiers.marginMiB
 }
