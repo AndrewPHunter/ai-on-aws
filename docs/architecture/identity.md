@@ -2,7 +2,7 @@
 
 The lab's OpenID Connect provider: Keycloak in development mode, one realm, imported from a file at every start. It stands in for the identity provider that AgentCore's JWT authorizer trusts. To use it, see [platform/identity/README.md](../../platform/identity/README.md).
 
-The client is its one consumer: its server signs desk staff in, keeps their tokens, and sends the access token on every call to an agent and to the case system. The agents and the case system accept a call with or without that token and check nothing.
+Two pieces consume its tokens. The client's server signs desk staff in, keeps their tokens, and sends the access token on every call to an agent and to the case system. The agents require a valid access token on `POST /invocations` and pass it on to the case system. The case system accepts a call with or without a token and checks nothing.
 
 ## Terms
 
@@ -173,6 +173,43 @@ No token is written to disk or to the store, and no token is in any response bod
 
 With less time left the client renews the access token with the refresh token first. If the provider refuses or cannot be reached, the request answers 401 `not_signed_in`, the session is removed, and nothing is sent. A review is forwarded with `reviewer` set to the session user's name, and only for a user holding `reviewer`.
 
+## The agents
+
+Both intake agents check the access token in `agents/src/contract/server.ts`, with `shared/access-token.ts`, before the request body is read, and pass the accepted token on.
+
+| Order | Check | Refused as |
+|---|---|---|
+| 1 | `Authorization: Bearer` present | `missing` |
+| 2 | A JWT, header algorithm RS256 | `malformed`; any other algorithm, `none` included, `bad_signature` |
+| 3 | Signature against the keys at `jwks_uri` | `bad_signature` |
+| 4 | Not past `exp`, on the agent's clock, no tolerance | `expired` |
+| 5 | `iss` = `http://localhost:8090/realms/lab` | `wrong_issuer` |
+| 6 | `aud` contains `lab-agents` | `wrong_audience` |
+| 7 | `client_id` in `desk` | `wrong_client` |
+| 8 | At least 150 s (the run's time limit) before `exp` | `expires_too_soon` |
+| 9 | `sub`, `preferred_username`, `name` present; `roles` a list if present | `malformed` |
+
+| Answer | When |
+|---|---|
+| 401, `WWW-Authenticate: Bearer error="invalid_token"`, `{"error":"unauthorized","reason","detail"}` | A refusal above. The handler is not called |
+| 503 `identity_unavailable` | Discovery or keys cannot be fetched, or discovery names another issuer. The handler is not called |
+| As before, the handler given the caller | An accepted token |
+
+The discovery document and keys are fetched on first need and kept; a failure is not kept. A token naming a key not yet seen makes the agent fetch the keys again, at most every 30 s, so new keys after a provider restart are picked up without restarting the agent. `GET /ping` needs no token.
+
+| Passed on | To | How |
+|---|---|---|
+| The caller's access token, as presented | The case system's MCP endpoint | `Authorization: Bearer` on every request (connect, tool list, every tool call), beside the four context headers |
+
+| AgentCore Runtime JWT authorizer setting | The agent's setting | Value in the lab |
+|---|---|---|
+| Discovery URL (ends `/.well-known/openid-configuration`) | `AUTH_DISCOVERY_URL` | `http://identity:8080/realms/lab/.well-known/openid-configuration` |
+| Issuer (from the discovery document) | `AUTH_ISSUER`, compared exactly | `http://localhost:8090/realms/lab` |
+| Allowed audiences | `AUTH_ALLOWED_AUDIENCE` | `lab-agents` |
+| Allowed clients (the `client_id` claim) | `AUTH_ALLOWED_CLIENTS` | `desk` |
+| Custom-claim rule (optional) | `AUTH_ROLES_CLAIM` names the claim; no rule is applied | `roles` |
+| — | Minimum remaining life | 150 s |
+
 ## Where secrets live
 
 | Secret | Written by | Held in | Read by |
@@ -198,7 +235,8 @@ The realm file holds a `${NAME}` placeholder where each secret goes, and no secr
 
 | What | Note |
 |---|---|
-| A check of the access token | The agents and the case system accept a call with or without one |
+| A check of the access token by the case system | It accepts a call with or without one; the agents send it |
+| Use of the caller's roles by the agents | The roles are read and given to the handler; nothing is decided on them |
 | Session expiry of the client's own | A session ends only at sign-out, a failed renewal or a restart |
 | `Secure` on the session cookie | The client is served over HTTP on this machine |
 | HTTPS | HTTP on loopback and the lab's network only |

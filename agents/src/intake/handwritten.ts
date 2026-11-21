@@ -24,6 +24,7 @@
 //     failed request is in the run's record.
 //   - The run has a turn limit and a time limit, and says which one stopped it.
 
+import type { Caller } from '../../../shared/access-token.ts';
 import type { InboundMessage, InvocationResponse } from '../../../shared/agent-contract.ts';
 import type { AgentIdentity } from '../contract/server.ts';
 import type { ChatMessage, ChatModel, ChatResult, ToolCall } from '../model/chat.ts';
@@ -51,7 +52,8 @@ import type { IntakeRun, Limits } from './run.ts';
 export type IntakeDeps = {
   identity: AgentIdentity;
   model: ChatModel;
-  connectTools: (message: InboundMessage, timeoutMs: number) => Promise<Connected>;
+  // Connects to the case system for one message, passing on the token of the caller it is for.
+  connectTools: (message: InboundMessage, callerToken: string, timeoutMs: number) => Promise<Connected>;
   now: () => Date;
   // Waits between two requests to the model. Given, so a test does not wait in real time.
   sleep: (ms: number) => Promise<void>;
@@ -163,10 +165,10 @@ async function askModel(
   }
 }
 
-export async function handleInquiry(deps: IntakeDeps, message: InboundMessage): Promise<InvocationResponse> {
+export async function handleInquiry(deps: IntakeDeps, message: InboundMessage, caller: Caller): Promise<InvocationResponse> {
   const run = startRun(deps.identity, deps.now, deps.limits);
 
-  const connected = await deps.connectTools(message, run.deadline.within(deps.limits.toolMs));
+  const connected = await deps.connectTools(message, caller.token, run.deadline.within(deps.limits.toolMs));
   if (!connected.ok) {
     recordError(run, connected.reason);
     return failed(run, connected.reason);

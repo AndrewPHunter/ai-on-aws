@@ -4,7 +4,7 @@ Code that tests use and nothing else runs. It stands in for a service a test can
 
 | File | What it is | Used by |
 |---|---|---|
-| [`issuer.ts`](issuer.ts) | A stand-in OpenID Connect issuer on loopback: discovery, keys, sign-in of a scripted user, the token endpoint with the client secret and PKCE enforced, refresh, revocation and end-session, all with real RS256 signatures. A test can make one part of an answer wrong at a time, and it records every request | The client's tests; later the agents' and the case system's |
+| [`issuer.ts`](issuer.ts) | A stand-in OpenID Connect issuer on loopback: discovery, keys, sign-in of a scripted user, the token endpoint with the client secret and PKCE enforced, refresh, revocation and end-session, all with real RS256 signatures. A test can make one part of an answer wrong at a time, and it records every request. It also mints access tokens with chosen claims and lifetime, signed with its key, another key, HS256 or nothing, and can replace its key | The tests of the client, the agents and `shared/access-token.ts`; later the case system's |
 
 Its own test is in `test/`, picked up by the repository's test command.
 

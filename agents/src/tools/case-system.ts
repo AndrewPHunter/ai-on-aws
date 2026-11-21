@@ -28,6 +28,12 @@ export function contextHeaders(message: InboundMessage, agentId: string): Record
   };
 }
 
+// Every header a request to the case system carries for one run: the four context headers, and the
+// access token of the caller the run is for, passed on as it was presented.
+export function caseSystemHeaders(message: InboundMessage, agentId: string, callerToken: string): Record<string, string> {
+  return { ...contextHeaders(message, agentId), authorization: `Bearer ${callerToken}` };
+}
+
 export const CASE_SYSTEM_UNREACHABLE = 'The case system could not be reached.';
 
 export function noAnswerWithin(timeoutMs: number): string {
@@ -54,11 +60,12 @@ export async function connectCaseTools(
   mcpUrl: string,
   message: InboundMessage,
   agentId: string,
+  callerToken: string,
   timeoutMs: number,
 ): Promise<Connected> {
   const client = new Client({ name: agentId, version: '1' });
   const transport = new StreamableHTTPClientTransport(new URL(mcpUrl), {
-    requestInit: { headers: contextHeaders(message, agentId) },
+    requestInit: { headers: caseSystemHeaders(message, agentId, callerToken) },
   });
 
   let definitions: ToolDefinition[];

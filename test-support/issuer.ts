@@ -19,7 +19,8 @@
 // One property of an otherwise valid answer can be made wrong at a time (misbehave), so a test that passes
 // against the valid answer and fails against one misbehaviour shows that check, and only that check, works.
 // It records every request it receives. mintAccessToken signs an access token with chosen claims and
-// lifetime, for the tests of the pieces that check access tokens.
+// lifetime (with its key, another key, HS256 or no signature at all), and rotateKey replaces its key, for
+// the tests of the pieces that check access tokens.
 //
 // Its key pair is generated when it starts; its clock (iat, exp) is passed in.
 
@@ -27,7 +28,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 
-import { SignJWT, exportJWK, generateKeyPair } from 'jose';
+import { SignJWT, UnsecuredJWT, exportJWK, generateKeyPair } from 'jose';
 import type { CryptoKey, JWK } from 'jose';
 
 export type ScriptedUser = {
@@ -85,7 +86,13 @@ export type RecordedRequest = {
 
 export type IssuedTokens = { access_token: string; refresh_token: string; id_token: string };
 
-export type MintOptions = { claims: Record<string, unknown>; lifetimeSeconds: number; signedBy?: 'own_key' | 'other_key' };
+export type MintOptions = {
+  claims: Record<string, unknown>;
+  lifetimeSeconds: number;
+  // own_key: its current published key (RS256). other_key: an RS256 key it never publishes.
+  // hs256: an HMAC with a secret of its own. none: an unsecured JWT, alg none, no signature.
+  signedBy?: 'own_key' | 'other_key' | 'hs256' | 'none';
+};
 
 export type StandInIssuer = {
   // Where it listens, and the issuer it names (the same unless options.issuer was given).
@@ -100,6 +107,9 @@ export type StandInIssuer = {
   // Every token it has handed out, so a test can look for them where they must not be.
   issued: IssuedTokens[];
   mintAccessToken: (options: MintOptions) => Promise<string>;
+  // Replaces its signing key with a new one under a new kid, as Keycloak does when it restarts. The old
+  // key is no longer published, and tokens it signed no longer verify.
+  rotateKey: () => Promise<void>;
   close: () => Promise<void>;
 };
 
@@ -155,10 +165,11 @@ function clientCredentials(form: Record<string, string>, authorization: string |
 }
 
 export async function startStandInIssuer(options: StandInIssuerOptions): Promise<StandInIssuer> {
-  const own = await generateKeyPair('RS256', { extractable: true });
+  let own = await generateKeyPair('RS256', { extractable: true });
   const other = await generateKeyPair('RS256', { extractable: true });
-  const kid = random();
-  const publicJwk: JWK = { ...(await exportJWK(own.publicKey)), kid, alg: 'RS256', use: 'sig' };
+  let kid = random();
+  let publicJwk: JWK = { ...(await exportJWK(own.publicKey)), kid, alg: 'RS256', use: 'sig' };
+  const hmacSecret = randomBytes(32);
 
   let user: ScriptedUser | undefined;
   let misbehaviour: Misbehaviour = 'none';
@@ -406,7 +417,19 @@ export async function startStandInIssuer(options: StandInIssuerOptions): Promise
     issued,
     mintAccessToken: async ({ claims, lifetimeSeconds, signedBy }) => {
       const now = seconds(options.now());
-      return sign({ iss: issuer, iat: now, exp: now + lifetimeSeconds, ...claims }, signedBy === 'other_key' ? other.privateKey : own.privateKey);
+      const body = { iss: issuer, iat: now, exp: now + lifetimeSeconds, ...claims };
+      if (signedBy === 'none') {
+        return new UnsecuredJWT(body).encode();
+      }
+      if (signedBy === 'hs256') {
+        return new SignJWT(body).setProtectedHeader({ alg: 'HS256', kid, typ: 'JWT' }).sign(hmacSecret);
+      }
+      return sign(body, signedBy === 'other_key' ? other.privateKey : own.privateKey);
+    },
+    rotateKey: async () => {
+      own = await generateKeyPair('RS256', { extractable: true });
+      kid = random();
+      publicJwk = { ...(await exportJWK(own.publicKey)), kid, alg: 'RS256', use: 'sig' };
     },
     close: async () => {
       server.closeAllConnections();

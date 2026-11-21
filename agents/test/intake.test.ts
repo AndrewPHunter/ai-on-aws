@@ -27,6 +27,7 @@ import {
   startCaseSystem,
   startDroppingProxy,
   startScriptedModel,
+  TEST_CALLER,
   text,
   toolCalls,
   toolSteps,
@@ -91,6 +92,28 @@ function behaviour(impl: Implementation): void {
     assert.equal(version.message_id, inbound.id);
     assert.equal(only.received_at, inbound.received_at);
     assert.equal(version.received_at, inbound.received_at);
+  });
+
+  test(`${impl.name}: A8. every request to the case system carries the caller's token and the four context headers`, async (t) => {
+    const r = await rig(t, [toolCalls(call('create_case', FULL_REPORT)), text('Case AE-000001 was recorded.')]);
+    const inbound = message('msg-1', REPORT_TEXT);
+    const caller = { ...TEST_CALLER, token: 'the-token-this-caller-presented' };
+
+    const response = await impl.run({ model: r.model.settings, mcpUrl: r.proxy.mcpUrl, caller }, inbound);
+
+    assert.equal(response.outcome, 'completed');
+    const methods = r.proxy.requests.map((request) => request.method);
+    for (const method of ['initialize', 'tools/list', 'tools/call']) {
+      assert.ok(methods.includes(method), `no ${method} request reached the case system`);
+    }
+    for (const request of r.proxy.requests) {
+      const what = request.method ?? 'a request without a JSON-RPC method';
+      assert.equal(request.headers.authorization, `Bearer ${caller.token}`, what);
+      assert.equal(request.headers['x-message-id'], inbound.id, what);
+      assert.equal(request.headers['x-received-at'], inbound.received_at, what);
+      assert.equal(request.headers['x-agent-id'], impl.identity.id, what);
+      assert.equal(request.headers['x-sender'], encodeURIComponent(inbound.sender), what);
+    }
   });
 
   test(`${impl.name}: a message with no event gets a reply and no case`, async (t) => {
