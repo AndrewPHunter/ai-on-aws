@@ -98,7 +98,7 @@ if [ -n "$client" ]; then
 fi
 unset logs
 if [ "$failures" = unreadable ]; then
-  say "the client's output could not be read; the revocation statement is reported as not checked."
+  say "the client's output could not be read; the revocation statement is reported as failed, since it was not checked."
 fi
 
 rc=0

@@ -102,7 +102,7 @@ export function agentSettingsFrom<Own>(env: Environment, limits: Limits, readOwn
   const baseUrl = required(env, 'MODEL_BASE_URL', 'the address of the model server, ending in /v1').replace(/\/+$/, '');
   const apiKey = required(env, 'MODEL_API_KEY', 'the key the model server expects');
   const own = readOwn(env);
-  const agentId = required(env, 'AGENT_ID', 'the name this agent records its changes under');
+  const agentId = required(env, 'AGENT_ID', 'the name this agent records its changes under, and its client id at the identity provider');
   const exchange: TokenExchangeSettings = {
     tokenEndpoint: required(env, 'EXCHANGE_TOKEN_ENDPOINT', "the identity provider's token endpoint, where the caller's token is exchanged"),
     clientId: agentId,

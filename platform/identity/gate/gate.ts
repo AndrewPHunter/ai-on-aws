@@ -1,8 +1,8 @@
 // Gate for the identity provider (platform/identity/README.md).
 //
 // Answers one question: does a running `identity` service, started from realm/lab-realm.json, decide who gets
-// which token the way the lab relies on? The statements, in the order they are checked (Gn names the statement
-// of the realm's contract each one makes):
+// which token the way the lab relies on? The statements, in the order they are checked (Gn is the
+// statement's name in this file and in the gate's output):
 //   G14  The realm's discovery document answers from inside the stack's network, names the browser-facing
 //        issuer, and points at a key set that answers with keys.
 //   G1   Each person signs in through the real Authorization Code flow with PKCE (S256), asking for openid and
