@@ -224,29 +224,31 @@ The wording overlap is that of the text the run sent: a reworded question's over
 
 ## Measured by the planner, 2026-11-22
 
-Two runs of the 250 sampled questions on a trial stack from this repository, with the real chat model (qwen3.5-9b), the real embedding model and reranker, and the 640-label index with vectors: `keyword`, then `fused_reranked`. Each: 250 sent, 250 responses, no call failure, about 13 and 17 minutes at 4 at once. Every command ran end to end on macOS; the judge (`codex`, `gpt-6-astra`, effort `high`) graded 158 and 160 answers with no failure, under the `completeness` rubric.
+Four runs of the 250 sampled questions on trial stacks from this repository, with the chat model qwen3.5-9b and the embedding model and reranker served on the GPU machine: `keyword` and `fused_reranked`, each on the original wording and on the reworded sample. 4 at once; the rewriter, checker and judge `gpt-6-astra` at effort `high` through the Codex command-line tool; no call to the agent, the rewriter, the checker or the judge failed. `reword.sh` reworded all 190 answerable questions (190 checked, 0 failed calls); the median wording overlap fell from 66.7% to 35.7%, and of the original wording's thirds (cut at 50.0% and 80.0%: 82, 53, 55 questions) the reworded questions fall 142, 38, 10. Every measure, by type and by third, is in [evaluation/README.md](../../evaluation/README.md#measured-by-the-planner-2026-11-22).
 
-| Measure | `keyword` | `fused_reranked` |
+| Measure | `keyword`, original | `fused_reranked`, original | `keyword`, reworded | `fused_reranked`, reworded |
+|---|---|---|---|---|
+| Stopped by the agent's checks | 18 | 16 | 22 | 17 |
+| Answerable questions answered | 158 of 190 [77.2%, 87.8%] | 160 of 190 [78.4%, 88.7%] | 154 of 190 [74.9%, 86.0%] | 162 of 190 [79.5%, 89.6%] |
+| Refusal questions declined | 57 of 60 [86.3%, 98.3%] | 56 of 60 [84.1%, 97.4%] | 56 of 60 [84.1%, 97.4%] | 55 of 60 [81.9%, 96.4%] |
+| A referenced section shown, first search | 125 of 190 [58.8%, 72.2%] | 140 of 190 [67.0%, 79.4%] | 98 of 190 [44.5%, 58.6%] | 126 of 190 [59.3%, 72.7%] |
+| A referenced section shown, any search | 134 of 190 [63.7%, 76.6%] | 143 of 190 [68.7%, 80.9%] | 121 of 190 [56.6%, 70.2%] | 131 of 190 [62.0%, 75.1%] |
+| Answers the question, uncontradicted | 129 of 155 [76.6%, 88.3%] | 139 of 157 [82.6%, 92.6%] | 123 of 152 [73.9%, 86.4%] | 137 of 159 [79.9%, 90.7%] |
+| Contradicts the reference | 6 of 155 [1.8%, 8.2%] | 3 of 157 [0.7%, 5.5%] | 3 of 152 [0.7%, 5.6%] | 3 of 159 [0.6%, 5.4%] |
+| Correct, partly correct, incorrect (`completeness`) | 96, 49, 10 of 155 | 97, 51, 9 of 157 | not judged | not judged |
+
+Paired, only `keyword` / only `fused_reranked`, sign test p:
+
+| Comparison | First search | Answers the question, uncontradicted |
 |---|---|---|
-| Completed; stopped | 231; 19 | 234; 16 |
-| Refusal questions declined | 57 of 60 [86.3%, 98.3%] | 56 of 60 [84.1%, 97.4%] |
-| Answerable questions answered | 158 of 190 [77.2%, 87.8%] | 160 of 190 [78.4%, 88.7%] |
-| Answered, every citation from the right label | 148 of 160 [87.3%, 95.7%] | 155 of 164 [89.9%, 97.1%] |
-| Cited sections that match a reference | 124 of 274 [39.5%, 51.2%] | 129 of 293 [38.5%, 49.8%] |
-| References cited | 115 of 189 [53.7%, 67.5%] | 123 of 190 [57.7%, 71.2%] |
-| A referenced section shown, first search | 125 of 190 [58.8%, 72.2%] | 140 of 190 [67.0%, 79.4%] |
-| A referenced section shown, any search | 134 of 190 [63.7%, 76.6%] | 143 of 190 [68.7%, 80.9%] |
-| Numeric answered, every reference number given | 18 of 21 [65.4%, 95.0%] | 19 of 20 [76.4%, 99.1%] |
-| Left out of judging: the reference answer holds no letter | 3 | 3 |
-| Judged correct, partly correct, incorrect | 96, 49, 10 of 155 | 97, 51, 9 of 157 |
+| Original wording, all | 5 / 20, 0.0041 | 5 / 8, 0.5811 |
+| Original wording, lowest / middle / highest third | 3 / 16, 0.0044; 2 / 3, 1.0000; 0 / 1, 1.0000 | 3 / 4; 1 / 4; 1 / 0 |
+| Reworded, all | 4 / 32, 0.0000 (as printed) | 6 / 13, 0.1671 |
+| Reworded, lowest / middle / highest third | 3 / 17, 0.0026; 1 / 13, 0.0018; 0 / 2, 0.5000 | 1 / 6; 2 / 4; 3 / 3 |
 
-Paired, both / only `keyword` / only `fused_reranked` / neither, sign test: first-search retrieval 120 / 5 / 20 / 45, p = 0.0041; any-search retrieval 129 / 5 / 14 / 42, p = 0.0636; declined rightly 200 / 15 / 16 / 19, p = 1; judged correct 84 / 8 / 7 / 45, p = 1. The full table, with every measure, is in [evaluation/README.md](../../evaluation/README.md#measured-by-the-planner-2026-11-22).
+Original against reworded, only original / only reworded, first search: `keyword` 36 / 9, p = 0.0001; `fused_reranked` 20 / 6, p = 0.0094.
 
-Readings, stated as readings: reranking put a referenced section in the first search more often (20 questions against 5); it changed neither whether the agent answers nor how often the judge calls the answer correct; 7% of runs with `keyword` and 6% with `fused_reranked` (18 and 16 of 250) ended with no reply because an answer did not pass the checks after 2 corrections.
-
-## Measured with the answers-question rubric and the reworded sample
-
-Not measured yet. The planner records here the runs judged under `answers-question`, the measures by thirds of wording overlap, and the runs on the reworded sample, each with the command and the hardware it was measured on.
+Readings, stated as readings (the figures behind each are in the README): on the original wording reranking helped first-search retrieval only in the lowest third of wording overlap, and changed neither declining nor the judged answers; rewording lowered first-search retrieval for both strategies, `keyword` by more; on the reworded questions the strategies' gap in first-search retrieval is larger and clear, while the gap in judged answers (13 against 6, p = 0.1671) points the same way and is not established; under `completeness` about a third of answers were partly correct, while under `answers-question` 129 of 155 and 139 of 157 answer the question uncontradicted; the agent's own checks ended 16 to 22 of 250 runs with no reply.
 
 ## Not present
 
@@ -257,6 +259,7 @@ Not measured yet. The planner records here the runs judged under `answers-questi
 - The benchmark's references name sections, so citation and retrieval scores are by section, not by passage. A cited passage from the right section counts even if another passage of that section held the answer.
 - Nothing here measures latency under load: calls are at most 4 at once, and the seconds reported are each call's own.
 - Only one agent is evaluated: the label expert.
-- The judge has not been checked against a person: the 40-item check file is written and not filled in.
-- One run of each strategy: run-to-run variation is not measured.
+- The judge has not been checked against a person under either rubric: no person has filled in a check file. A second judging of the same original answers by the planner's probe counted contradictions differently (10 and 9, against 6 and 3 here), so the contradiction share is approximate.
+- The measured rewrites are a model's, checked by a model; the 30-pair file `reword.sh --check 30` wrote for a person has not yet been read.
+- One run per strategy and variant: run-to-run variation is not measured.
 - The sample is 250 of the benchmark's 17,207 questions.
