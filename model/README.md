@@ -213,7 +213,7 @@ It prints a JSON report and exits 0 on a pass, 1 if a check failed, and 2 if it 
 
 ## Tests
 
-The decisions setup makes (flags, selection, disk space, the text of `model/.env`, the running-server guard, the capacity checks, exit codes) and the gate's verdicts on the embedding and reranker servers are pure functions with tests. They run in a container, with no GPU and no network:
+The tests assert the invariants in [docs/architecture/model-server.md](../docs/architecture/model-server.md), one test each, where a test can show one (1, 2, 4, 5, 8, 9, 11 to 15), and check that the shipped tiers, profiles and retrieval settings read, and that they and `model/.env.example` name every variable `compose.yaml` uses. They run in a container, with no GPU and no network:
 
 ```bash
 sh model/setup/run-tests.sh

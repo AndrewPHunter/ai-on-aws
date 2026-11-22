@@ -39,6 +39,20 @@ stops them and keeps the inquiries and cases. Add `-v` to delete them.
 - **The read-outs for citations, whether the label answered, label searches and hand-offs between agents have not been seen with real output,** because the intake agent produces none. Replies, case actions, model steps and tool steps have.
 - **Label search and evaluation have no screen.** They are listed on System as not built.
 
+## Always true
+
+1. A message gets its identifier and receipt time once; sending it again reuses both.
+2. Sending answers at once, and a run always ends as finished or failed, including after a restart.
+3. An agent's answer outside the contract is a failed run with the reason.
+4. Only a sign-in the provider vouched for creates a session, and only in the browser that started it.
+5. Every call to an agent or the case system carries the user's token with enough life left; it is renewed first, and a failed renewal ends the session.
+6. The reviewer of a case is whoever is signed in, never a name the browser sends.
+7. No token reaches the browser.
+8. Signing out removes the session and revokes the refresh token; a failed revocation does not stop it.
+9. A POST from another site is refused.
+
+The server's tests in `test/` are one per item, named by its number.
+
 ## How it is put together
 
 ```
@@ -97,5 +111,5 @@ Every setting is required; the server stops at start-up naming any that is missi
 - **The cookie is not marked `Secure`,** because the lab is served over plain HTTP on this machine.
 - **Inquiries and runs recorded before sign-in existed** show no author.
 - **A run that is in progress when the server stops is marked as failed** when it starts again. The agent may still have acted.
-- **The React app has no automated tests.** It is typechecked, linted and built by the repository check. The screens from before sign-in were looked at by hand; the sign-in screen, the signed-in rail and the reviewer-only decision have not been.
+- **The React app has one test, of its formatting helpers.** It is typechecked, linted and built by the repository check. The screens from before sign-in were looked at by hand; the sign-in screen, the signed-in rail and the reviewer-only decision have not been.
 - **Sign-in has been tested against a stand-in provider only** (`test-support/issuer.ts`), not yet through this server against the lab's Keycloak.

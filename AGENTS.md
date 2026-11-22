@@ -76,23 +76,36 @@ anything under a `secrets/` directory.
 
 ## Testing
 
-- A test asserts a contract: something a caller can rely on, stated where
-  the caller would read it. If the implementation changes and no contract
-  does, no test should need to change.
+- A piece's tests are its invariants: the "Always true" list in its
+  architecture document or README. One test per invariant, named by its
+  number. Nothing else gets a test.
+- A test asserts what a caller can observe. Not a helper function, a
+  sentence's wording, a setting read from the environment, a log line, a
+  library's behaviour, or a second input that shows the same thing.
+- Test at the lowest level that shows the invariant: a function given plain
+  values first. A file, a process or a server only when the invariant is about
+  one. Dependencies are passed in.
+- No test runs one piece against another, mints a token it does not need, or
+  imports another piece's test helpers. Whether pieces agree is the gates' job.
+- An invariant no test can show (configuration, the order of a script's steps,
+  something only hardware shows) has no test. The gate shows it.
 - Tests are deterministic. They need no network, no GPU and no model server,
-  and they pass in any order. Time, randomness and input/output are passed
-  in, not reached for.
-- Logic that sits behind a container, a device or a server is a pure
-  function with a unit test. The path itself is then checked for real, on
-  hardware, by the gate.
-- A pass against a mock that cannot fail is not a pass. Do not mock away the
-  failure a test exists to catch.
-- The test list for a piece of work is agreed before the code is written.
-  Each test names the change it alone would catch.
+  and they pass in any order. Time and randomness are passed in, not reached
+  for.
+- A new test needs a new invariant, written in the document first. The test
+  list for a piece of work is agreed before the code is written.
+- Before a change is reported, the planner measures test lines against code
+  lines for the whole tree. A change that raises the ratio is cut first.
 
 ## Recurring mistakes
 
 Entries here are errors caught more than once. Read them as rules. Add an
 entry when the same mistake comes back.
 
-None yet.
+- **Writing tests past the Testing rules and measuring afterwards.** The suite
+  grew to more test lines than code lines: a test per statement, per setting
+  and per failure sentence, most of them full runs through a signed token and
+  another piece's real server, so one identity change touched twenty test
+  files. Rebuilt to one test per invariant it came to a third of the code.
+  The test list is cut to the rules before it is approved, and the ratio is
+  measured before the report, not when the user counts.

@@ -21,3 +21,13 @@ What an answer from drug labels carries:
 `access-token.ts` is configured with the values AgentCore Runtime's JWT authorizer takes (a discovery URL, an allowed audience, allowed client IDs read from `client_id`), and is given its clock and settings rather than reading them.
 
 Three agents in [`agents/`](../agents/README.md) implement the agent contract: the intake agent, built once with a hand-written loop and once on Strands, and the label expert, on Strands. The label expert produces citations, `label_answer` and retrieval steps. Hand-off steps are defined here and no agent produces them.
+
+## Always true
+
+1. The token check returns a caller only for a token signed by the provider's published key, from the right issuer, for this audience, issued to an allowed client, with the required life left; each failure names which.
+2. A provider that cannot be reached is "unavailable", never a refusal, and it recovers.
+3. Keys are fetched once, and again only for an unknown key, at most once per wait.
+4. No refusal sentence contains the token.
+5. A request or a response outside the agent contract's schema is refused, and one inside it is returned unchanged.
+
+`shared/test/` has one test for each, named `shared` and its number. The first four use real signed tokens from the stand-in issuer in [`test-support/`](../test-support/README.md).

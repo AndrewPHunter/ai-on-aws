@@ -183,7 +183,7 @@ A request to the model changes nothing in the case system, so sending it twice i
 | What is recorded | Every failed request, as an error step | The record shows what the run went through, not only how it ended |
 | Does it use a turn | No. The requests of one turn count as one of the 6 | A failed request is not an answer from the model |
 
-The wait and the randomness are given to the loop (`sleep` and `random` in `IntakeDeps`), so tests read the waits exactly and none waits in real time.
+The wait and the randomness are given to the loop (`sleep` and `random` in `IntakeDeps`), so no test waits in real time.
 
 ## How a run ends
 
@@ -228,7 +228,7 @@ The case system checks the same token again, with its own audience: `lab-case-sy
 ## Always true
 
 1. A request that matches the contract, with an accepted token, gets 200 with an outcome and every step taken, whatever went wrong after it was accepted. The one exception is a response of the agent's own outside the contract, which is 500.
-2. The model makes no call. Every call to the case system goes through `runToolCall`, or is the one repeat that `runToolCall` makes itself.
+2. The model makes no call. A call the agent's rules refuse never reaches the case system, and the model is told it was refused. Every call that does reach it is one the model asked for, or the one repeat the agent's code makes itself.
 3. The message identifier, the receipt time, the sender and the agent's name reach the case system as headers set by code when the connection is opened, with the caller's access token beside them. None is in the tool descriptions, so the model cannot supply them.
 3a. No handler runs, and no body is read, for a request without an accepted access token. A token is accepted only if it has at least the run's 150 s left, so it cannot expire during the run it starts.
 3b. The case system checks the token the agent passes on, before it reads the request. A refusal when the agent connects fails the run with "The case system refused the caller's token."; a case system that cannot check tokens, with "The case system could not check the caller's token." The model is not asked in either case.
@@ -241,7 +241,7 @@ The case system checks the same token again, with its own audience: `lab-case-sy
 10. Case actions are built from the case system's answers, never from what the model wrote.
 11. A run has at most 6 turns with the model, makes at most 3 requests for each, and starts no turn after 150 seconds.
 12. The response contains no address and no key.
-13. The agent stores nothing. What it knows about a run is in the response; what it changed is in the case system.
+13. The agent stores nothing, and runs share no state. What it knows about a run is in the response; what it changed is in the case system.
 
 ## Where untrusted text goes
 

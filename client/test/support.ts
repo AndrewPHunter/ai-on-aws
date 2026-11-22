@@ -1,0 +1,194 @@
+// What the client's tests share. An agent and the case system are, to the client, HTTP servers that answer, so
+// each is a scripted server on loopback that records what it was sent. The client runs with an in-memory store, a
+// clock that moves only when a test moves it, and seeded randomness. Outside auth.test.ts the identity provider is
+// an IdentityProvider whose refresh is a function of the refresh token: no token is signed, nothing is fetched.
+
+import { createHash } from 'node:crypto';
+import { createServer } from 'node:http';
+import type { IncomingMessage, Server } from 'node:http';
+
+import type { InvocationResponse } from '../../shared/agent-contract.ts';
+import type { AgentConfig, Config } from '../src/config.ts';
+import { IdentityProvider, SignInRefused } from '../src/identity.ts';
+import type { SignedInUser, TokenSet } from '../src/identity.ts';
+import { SESSION_COOKIE, createClientServer } from '../src/server.ts';
+import { SessionStore } from '../src/sessions.ts';
+import { InquiryStore } from '../src/store.ts';
+
+export const APP_ORIGIN = 'http://localhost:3000';
+
+export async function listen(server: Server): Promise<string> {
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (address === null || typeof address === 'string') throw new Error('The server has no port');
+  return `http://127.0.0.1:${address.port}`;
+}
+
+// What a test registers teardown with: its TestContext, or node:test's file-level hooks.
+export type Hooks = { after: (fn: () => void) => void };
+
+export type Received = { method: string; path: string; authorization: string | undefined; body: unknown };
+// What a scripted server answers: a status and a body (JSON unless it is a string), or 'close' to drop the connection.
+export type Answer = { status: number; body: unknown } | 'close';
+
+export type Scripted = { url: string; received: Received[]; waitFor: (match: (r: Received) => boolean) => Promise<Received> };
+
+async function bodyOf(request: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) if (Buffer.isBuffer(chunk)) chunks.push(chunk);
+  const text = Buffer.concat(chunks).toString('utf8');
+  return text === '' ? undefined : JSON.parse(text);
+}
+
+export async function scripted(t: Hooks, answer: (r: Received) => Answer | Promise<Answer>): Promise<Scripted> {
+  const received: Received[] = [];
+  const waiting: { match: (r: Received) => boolean; resolve: (r: Received) => void }[] = [];
+  const server = createServer((request, response) => {
+    void (async () => {
+      const r: Received = { method: request.method ?? '', path: request.url ?? '', authorization: request.headers.authorization, body: await bodyOf(request) };
+      received.push(r);
+      for (const w of waiting.filter((candidate) => candidate.match(r))) w.resolve(r);
+      const a = await answer(r);
+      if (a === 'close') return response.destroy();
+      const text = typeof a.body === 'string' ? a.body : JSON.stringify(a.body);
+      response.writeHead(a.status, { 'content-type': 'application/json' }).end(text);
+    })();
+  });
+  const url = await listen(server);
+  t.after(() => {
+    server.close();
+    server.closeAllConnections();
+  });
+  const waitFor = (match: (r: Received) => boolean): Promise<Received> => {
+    const found = received.find(match);
+    return found !== undefined ? Promise.resolve(found) : new Promise((resolve) => waiting.push({ match, resolve }));
+  };
+  return { url, received, waitFor };
+}
+
+export const EXAMPLE_RESPONSE: InvocationResponse = {
+  agent: { id: 'stand-in', implementation: 'scripted' },
+  outcome: 'completed',
+  stop_reason: null,
+  reply: 'A synthetic reply.',
+  citations: [],
+  case_actions: [],
+  steps: [],
+};
+
+export type Clock = { now: () => Date; advance: (ms: number) => void };
+
+export function clock(start = '2026-03-01T09:00:00.000Z'): Clock {
+  let at = new Date(start).getTime();
+  return { now: () => new Date(at), advance: (ms) => (at += ms) };
+}
+
+export function seeded(seed: string): (size: number) => Uint8Array {
+  let n = 0;
+  return (size) => createHash('sha256').update(`${seed}:${n++}`).digest().subarray(0, size);
+}
+
+// Renews a refresh token r to the access token "renewed-r", with ten minutes to live; refuses the refresh token
+// "refuse" as the provider would. Records each refresh token it was given.
+export class ScriptedRenewal extends IdentityProvider {
+  readonly renewed: string[] = [];
+  private readonly clockNow: () => Date;
+
+  constructor(config: Config, now: () => Date) {
+    super(config.oidc, { claim: config.rolesClaim, reviewerRole: config.reviewerRole }, now);
+    this.clockNow = now;
+  }
+
+  override refresh(tokens: TokenSet): Promise<TokenSet> {
+    const refreshToken = tokens.refreshToken ?? '';
+    this.renewed.push(refreshToken);
+    if (refreshToken === 'refuse') return Promise.reject(new SignInRefused('The provider refused to renew.'));
+    return Promise.resolve({ ...tokens, accessToken: `renewed-${refreshToken}`, accessExpiresAt: this.clockNow().getTime() + 600_000 });
+  }
+}
+
+export function deskConfig(options: { agents: AgentConfig[]; caseReviewUrl: string; webRoot?: string; discoveryUrl?: string; issuer?: string; revocationEndpoint?: string }): Config {
+  const unused = 'http://127.0.0.1:1/not-used';
+  return {
+    dbPath: ':memory:',
+    caseReviewUrl: options.caseReviewUrl,
+    agents: options.agents,
+    webRoot: options.webRoot ?? '/nonexistent-web-root',
+    oidc: {
+      discoveryUrl: options.discoveryUrl ?? unused,
+      issuer: options.issuer ?? unused,
+      clientId: 'desk',
+      clientSecret: 'stand-in-desk-secret',
+      redirectUri: `${APP_ORIGIN}/auth/callback`,
+      postLogoutRedirectUri: `${APP_ORIGIN}/`,
+      revocationEndpoint: options.revocationEndpoint ?? null,
+    },
+    appOrigin: APP_ORIGIN,
+    rolesClaim: 'roles',
+    reviewerRole: 'reviewer',
+  };
+}
+
+export type Desk = { url: string; store: InquiryStore; sessions: SessionStore; clock: Clock };
+
+export async function startDesk(t: Hooks, config: Config, time: Clock, identity?: IdentityProvider): Promise<Desk> {
+  const store = new InquiryStore(':memory:', time.now);
+  const sessions = new SessionStore(time.now, seeded('desk'));
+  let n = 0;
+  const server = createClientServer({
+    config,
+    store,
+    now: time.now,
+    newId: () => `id-${++n}`,
+    agentTimeoutMs: 5_000,
+    identity: identity ?? new ScriptedRenewal(config, time.now),
+    sessions,
+  });
+  const url = await listen(server);
+  t.after(() => {
+    server.close();
+    server.closeAllConnections();
+    store.close();
+  });
+  return { url, store, sessions, clock: time };
+}
+
+export const RILEY: SignedInUser = { sub: 'sub-riley', name: 'Riley Reviewer', username: 'riley.reviewer', roles: ['reviewer'], isReviewer: true };
+export const DANA: SignedInUser = { sub: 'sub-dana', name: 'Dana Desk', username: 'dana.desk', roles: [], isReviewer: false };
+
+// A session made directly in the store, as a completed sign-in makes one. Returns the cookie a browser would send.
+export function signedIn(desk: Desk, user: SignedInUser, access: string, lifeMs: number, refresh: string): string {
+  const tokens = { accessToken: access, accessExpiresAt: desk.clock.now().getTime() + lifeMs, refreshToken: refresh, idToken: `id-${access}` };
+  return `${SESSION_COOKIE}=${desk.sessions.create(user, tokens).id}`;
+}
+
+export type Reply = { status: number; body: unknown };
+
+export async function call(url: string, options: { cookie?: string; method?: string; body?: unknown; origin?: string } = {}): Promise<Reply> {
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (options.cookie !== undefined) headers.cookie = options.cookie;
+  if (options.origin !== undefined) headers.origin = options.origin;
+  const response = await fetch(url, { method: options.method ?? 'GET', headers, body: options.body === undefined ? undefined : JSON.stringify(options.body) });
+  const text = await response.text();
+  return { status: response.status, body: text === '' ? undefined : (JSON.parse(text) as unknown) };
+}
+
+// Reads a path of fields from a JSON value the test does not otherwise type.
+export function at(value: unknown, ...path: (string | number)[]): unknown {
+  let current = value;
+  for (const key of path) {
+    if (typeof current !== 'object' || current === null) return undefined;
+    current = (current as Record<string | number, unknown>)[key];
+  }
+  return current;
+}
+
+// The inquiry once none of its runs is still running, read through the API a bounded number of times.
+export async function settled(desk: Desk, inquiryId: string, cookie: string): Promise<unknown> {
+  for (let attempt = 0; attempt < 1000; attempt++) {
+    const { body } = await call(`${desk.url}/api/inquiries/${inquiryId}`, { cookie });
+    const runs = at(body, 'inquiry', 'runs');
+    if (Array.isArray(runs) && runs.every((run) => at(run, 'state') !== 'running')) return at(body, 'inquiry');
+  }
+  throw new Error(`Inquiry ${inquiryId} still has a run in progress`);
+}

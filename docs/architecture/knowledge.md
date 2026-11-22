@@ -28,7 +28,7 @@ The corpus holds both prescription and over-the-counter labels. Nothing downstre
 | Manifest | `knowledge/corpus/manifest.json`: per label, set id, version, document id, effective time, published date, document type code, the SHA-256 of the zip and of the XML, the XML's size; and the labels not pinned, each with a reason code |
 | Data folder | `knowledge/data/`: the benchmark files, the label XML files, the parsed documents, the chunks, the vectors and the reports. Never tracked, never in an image |
 | Download record | `labels/<set id>/<version>.download.json` beside each XML: the SHA-256 of the zip it came from and of the XML |
-| Stand-in | The loopback server the tests use in place of DailyMed and the benchmark's host. It serves synthetic data and marks each response as a stand-in's |
+| Stand-in | What the tests use in place of DailyMed, the benchmark's host, the search engine and the model servers: a function or object in memory, given to the code as a value, answering with synthetic data |
 | Parsed document | `parsed/<set id>/<version>.json`: a label as identity, products and a tree of sections holding blocks (paragraphs, lists, tables, images) and Highlights blocks, with its warnings |
 | Problem | What the parser found wrong: a code, a severity (error or warning), the section id or table position, counts. Never label text |
 | Excluded | A label with an error: it has no parsed file |
@@ -253,7 +253,7 @@ The agent that calls these two tools is the label expert: [expert-agent.md](expe
 4. A file name on disk is built only from a manifest's set id, which must be a lowercase GUID, and its version, which must be a positive integer. No name from inside an archive is ever used as a path.
 5. Of each zip, only the one member whose name ends in `.xml` is read. None, or more than one, and the zip is refused.
 6. The XML's size is capped on the bytes the decompressor produces. The size the archive declares is used only to refuse earlier.
-7. The XML reader performs no input or output of its own. A DOCTYPE whose internal subset declares an entity is refused before the parser's non-fatal errors are judged, so the reason names the declaration; a fatal parse error is `xml-not-well-formed` at once.
+7. The XML reader performs no input or output of its own and expands no entity: a DOCTYPE whose internal subset declares an entity, internal or external, is refused as `xml-doctype-declares-entities`, even when the document uses the entity; a document that is not well-formed is `xml-not-well-formed`.
 8. A label is written to the data folder only if its XML's SHA-256 equals the manifest's. A file there that does not match, or whose download record is missing, unreadable or names another XML SHA-256, is removed and fetched again.
 9. The fetch report and the census describe what is in the data folder, not what one run did. A run on complete data sends no request and changes no file.
 10. Reasons written to any file are fixed codes, never a parser's message: those of one closed list (`knowledge/src/reasons.ts`) for refusals, and `missing`, `checksum-mismatch`, `no-parsed-file`, `check-failed` and `other` in the census, parse and chunk reports.
@@ -262,16 +262,16 @@ The agent that calls these two tools is the label expert: [expert-agent.md](expe
 13. A request that fails during pinning fails the run: every set id is still tried, each failure is named, and nothing is written to `knowledge/corpus/` or `knowledge/data/benchmark/`.
 14. The census runs with no network and writes counts and codes only.
 15. Every setting is a named flag of the tool, given by the script. The tool has no defaults and reads no environment variable, with one exception: the embed command reads the embedding server's address, the key and the model's identity from the environment it is given (`model/.env` and `model/retrieval.env`, passed by `--env-file`), so the key is never on a command line. Every other command is run with no variable.
-16. The parser is one pure function from XML bytes to a document and problems: no clock, no randomness, no input or output. The same input gives a byte-identical parsed file and report.
-17. No text of a parsed label is lost or doubled without an error: every label passes the check that no text was lost, or gets `text-not-conserved` and no parsed file. The check takes its own walk of the XML and shares nothing of the parser's traversal.
+16. The parsed document and its problems depend only on the XML bytes: no clock, no randomness, no input or output. The same input gives a byte-identical parsed file and report.
+17. No text of a parsed label is lost or doubled without an error: every label passes the check that no text was lost, or gets `text-not-conserved` and no parsed file. The check compares the parsed document with every text node of the XML's body, not with what the parser read.
 18. A label with any error has no parsed file in the data folder; one left by an earlier run is removed.
 19. Highlights text is only ever in a section's Highlights blocks, never in its own blocks.
 20. In a table's grid every position is covered by at most one cell, and empty positions are only ever at the end of a short row, where the label's own cells stop. Anything else excludes the label with `table-not-rectangular`. No cell is moved to fill a gap.
 21. The parse report holds identifiers, codes from the fixed lists, element names and numbers only.
 22. Text the parser does not understand is kept where it sits; its element is reported by name and count.
 23. For every table row the parsed document records whether it is wholly bold and how many of its cells have text. Which rows are column headings beyond the one inference rule is not decided here.
-24. The splitter is one pure function of a parsed document and two named settings, the text limit and the table limit. The same input gives byte-identical chunk files and report.
-25. Every word of a label's blocks and Highlights is in exactly one chunk's text outside its `repeated` lines, or the label gets no chunk file. The check takes its own walk of the parsed document.
+24. The chunks depend only on a parsed document and two named settings, the text limit and the table limit. The same input gives byte-identical chunk files and report.
+25. Every word of a label's blocks and Highlights is in exactly one chunk's text outside its `repeated` lines, or the label gets no chunk file. The check compares the chunks with every block and Highlights block of the parsed document, not with what the splitter wrote.
 26. A chunk id depends only on the set id, version, section, part and the chunk's position in the section and part.
 27. A table that is not splittable is one chunk, whatever its size, and so is a splittable table with fewer than two body rows. A split table's chunks each hold the caption, every header row and the group label in force: the first holds the caption and header rows in their place, and each later one repeats them and lists them in `repeated`. No chunk ends on a group label, unless it is the table's last row, or inside a row span. A chunk of one row may pass the table limit.
 28. A chunk of type `table` or `table-rows` holds one table and no other text. A table inside a list item is written, in plain form, into the list's `text` chunk.
@@ -285,7 +285,7 @@ The agent that calls these two tools is the label expert: [expert-agent.md](expe
 36. An engine answer is read as a result only when it is whole: one that says it timed out or that a shard failed, or holds a version that is not a whole number of 1 or more, is an error result.
 37. No parser's message about label data reaches the index command's or the gate's output: a line that is not JSON is named by its file and line number.
 38. No failure of the engine reads as an empty answer: each is an error result naming its kind. A set id with no documents is the error `label_not_found`.
-39. The retrieval service reaches the engine only with `fetch` and its REST API, and each request has a time limit.
+39. The retrieval service reaches the engine only with `fetch` and its REST API, and each request has a time limit: one that gets no answer ends as a timeout.
 40. A call from the gate to the retrieval service that gets no answer stops the gate (exit 2). A refusal counts only when it is the service's own `invalid_input` result.
 41. Every gate image and gate compose project is named for the checkout it was built from, so a gate run from one checkout never runs an image another checkout built.
 
@@ -304,7 +304,7 @@ The agent that calls these two tools is the label expert: [expert-agent.md](expe
 | `search` service | OpenSearch, no capabilities, no new privileges, not read-only (it writes its keystore at start) | The stack's network, no published port | None; a named volume for its data |
 | `knowledge` service | The `run` stage image, read-only, no capabilities | The stack's network; `127.0.0.1:8002` | None |
 | Gate | The same image, on the stack's network, through `knowledge/gate/compose.yaml` | The stack's network | `data/`, `corpus/` and `platform/identity/src/`, read-only |
-| Tests F1 to F13, P1 to P21, U1 to U18, S1 to S23 and S25 to S28, V01 to V18 and V20 (V19 is in `agents/test/expert.test.ts`) | `toolchain/check.sh` | None; the stand-ins listen on loopback | None |
+| Tests `knowledge 2.` to `knowledge 39.`, one per invariant above (none for 1, 31, 40 and 41), and one probe of the index command | `toolchain/check.sh` | None: the stand-ins are in memory, and the retrieval service listens on loopback | None |
 
 ## Parsing: problems and what follows
 

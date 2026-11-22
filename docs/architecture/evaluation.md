@@ -161,7 +161,7 @@ The wording overlap is that of the text the run sent: a reworded question's over
 | How a question is worded in the reworded sample | The rewriter (a model) | Code: the drug's name kept; the checker (a model): asks the same thing; a person's reading of the check file |
 | How the agent answers | The agent | Nothing here: the harness records what came back |
 | Whether a call failed | Code | The agent contract's schema, the status, the time limit |
-| What counts as right, for every measure but the judged ones | Code | The definitions above, and tests Q07 to Q09 and Q17 |
+| What counts as right, for every measure but the judged ones | Code | The definitions above |
 | Whether an answer answers the question, or is correct | The judge (a model), under a rubric | Its agreement with a person, measured on a check sample per rubric |
 
 ## Always true
