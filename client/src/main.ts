@@ -32,7 +32,7 @@ if (interrupted > 0) {
   console.log(`Marked ${interrupted} run(s) left running by a previous process as failed.`);
 }
 
-const identity = new IdentityProvider(config.oidc, { claim: config.rolesClaim, reviewerRole: config.reviewerRole }, now);
+const identity = new IdentityProvider(config.oidc, config.rolesClaim, now);
 const sessions = new SessionStore(now, randomBytes);
 
 const server = createClientServer({

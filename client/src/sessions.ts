@@ -1,12 +1,12 @@
-// Who is signed in, in the server's memory only. A session holds the user and their tokens; the browser
-// holds only the session's identifier, in a cookie. Nothing here is written to disk, so every session
-// ends when the process does.
+// Who is signed in, in the server's memory only. A session holds the user, the scopes granted at
+// sign-in, the refresh token and an access token per target scope; the browser holds only the session's
+// identifier, in a cookie. Nothing here is written to disk, so every session ends when the process does.
 //
 // Also the sign-ins under way: the state, nonce and PKCE verifier of each, until its callback arrives,
 // and the binding: a value also given to the browser that started the sign-in, in a cookie, so that only
 // that browser can complete it.
 
-import type { PendingSignIn, SignedInUser, TokenSet } from './identity.ts';
+import type { PendingSignIn, SignInResult, SignedInUser } from './identity.ts';
 
 // A sign-in must be completed in under this: a callback this late or later is refused.
 export const PENDING_LIFETIME_MS = 10 * 60 * 1000;
@@ -15,12 +15,21 @@ export const MAX_PENDING = 1000;
 // 256 bits, for session identifiers, state, nonce, the PKCE verifier and the binding.
 const SECRET_BYTES = 32;
 
+// An access token got for one target scope, and when it stops being valid (milliseconds since the epoch).
+export type KeptToken = { accessToken: string; expiresAt: number };
+
 export type Session = {
   id: string;
   user: SignedInUser;
-  tokens: TokenSet;
-  // A renewal under way, so requests that arrive meanwhile wait for it instead of starting another.
-  renewing: Promise<TokenSet> | null;
+  // The scopes the provider granted at sign-in: what this session may do.
+  granted: ReadonlySet<string>;
+  // The newest refresh token the provider returned.
+  refreshToken: string | null;
+  // By target scope.
+  tokens: Map<string, KeptToken>;
+  // The last refresh queued for this session. Each refresh waits for this one, so they run one at a
+  // time in the order asked. It never rejects.
+  refreshes: Promise<void>;
 };
 
 type Pending = PendingSignIn & { binding: string; startedAt: number };
@@ -81,8 +90,15 @@ export class SessionStore {
     this.pending.delete(state);
   }
 
-  create(user: SignedInUser, tokens: TokenSet): Session {
-    const session: Session = { id: this.secret(), user, tokens, renewing: null };
+  create(signIn: SignInResult): Session {
+    const session: Session = {
+      id: this.secret(),
+      user: signIn.user,
+      granted: new Set(signIn.granted),
+      refreshToken: signIn.refreshToken,
+      tokens: new Map(),
+      refreshes: Promise.resolve(),
+    };
     this.sessions.set(session.id, session);
     return session;
   }
@@ -93,10 +109,5 @@ export class SessionStore {
 
   remove(id: string): void {
     this.sessions.delete(id);
-  }
-
-  // How long the session's access token has left, by this store's clock.
-  remainingMs(session: Session): number {
-    return session.tokens.accessExpiresAt - this.now().getTime();
   }
 }

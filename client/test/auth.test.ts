@@ -30,7 +30,7 @@ const config = deskConfig({
   issuer: issuer.issuer,
   revocationEndpoint: issuer.revocationUrl,
 });
-const identity = new IdentityProvider(config.oidc, { claim: config.rolesClaim, reviewerRole: config.reviewerRole }, time.now);
+const identity = new IdentityProvider(config.oidc, config.rolesClaim, time.now);
 const desk = await startDesk({ after }, config, time, identity);
 
 const RILEY: ScriptedUser = { sub: 'sub-riley', preferred_username: 'riley.reviewer', name: 'Riley Reviewer', roles: ['reviewer'] };

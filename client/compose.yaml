@@ -15,20 +15,24 @@ services:
       WEB_ROOT: /repo/client/web/dist
       # The case system's review server, by its service name on the shared network.
       CASE_REVIEW_URL: http://case-system:8001
-      # The agents inquiries can be sent to: a JSON list of { id, name, description, url }.
+      # The agents inquiries can be sent to: a JSON list of { id, name, description, scope, url }. scope is
+      # what a token sent to the agent must hold, and what a person must be granted to run it.
       # An agent listed here that is not running shows as not reachable.
       AGENTS: >-
         [{"id": "intake-handwritten",
           "name": "Intake agent, hand-written loop",
           "description": "Records adverse events as cases. Its loop is written by hand. It does not answer clinical questions.",
+          "scope": "agents:intake",
           "url": "http://intake-handwritten:8080"},
          {"id": "intake-strands",
           "name": "Intake agent, on Strands",
           "description": "The same intake agent, with the same prompt and rules. Strands runs its loop. It does not answer clinical questions.",
+          "scope": "agents:intake",
           "url": "http://intake-strands:8080"},
          {"id": "expert",
           "name": "Label expert, on Strands",
           "description": "Answers a question about a medicine from its approved label, with the passages it relied on. It records nothing, and does not take adverse event reports.",
+          "scope": "agents:expert",
           "url": "http://expert:8080"}]
       # Signing desk staff in. The server fetches the provider's discovery document by its service name
       # on the shared network; the document, and every token, names the issuer the browser uses.
@@ -48,7 +52,6 @@ services:
       # session cookie and the check on a POST's Origin are all on localhost.
       APP_ORIGIN: http://localhost:3000
       ROLES_CLAIM: roles
-      REVIEWER_ROLE: reviewer
     ports:
       # Published on this machine only.
       - "127.0.0.1:3000:3000"

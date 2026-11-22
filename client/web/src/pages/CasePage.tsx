@@ -6,7 +6,7 @@ import type { CaseRecord, ElementName, ReviewDecision, VersionView } from '../..
 import { ApiFailure, failureText, useCase, useReview } from '../api.ts';
 import { Boxed, Loading, Problem, StatusBadge } from '../components.tsx';
 import { ELEMENT_LABEL, auditLabel, daysAfter, formatDate, formatDateTime, pretty } from '../format.ts';
-import { useSignedInUser } from '../session.tsx';
+import { useMay, useSignedInUser } from '../session.tsx';
 
 const FIELD_ORDER: readonly ElementName[] = ['patient', 'reporter', 'suspect_drug', 'event'];
 
@@ -19,6 +19,7 @@ function changedIn(version: VersionView, previous: VersionView | undefined): Ele
 
 function Decision({ record }: { record: CaseRecord }) {
   const user = useSignedInUser();
+  const may = useMay();
   const review = useReview(record.case.case_id);
   const [note, setNote] = useState('');
   const status = record.case.status;
@@ -42,11 +43,11 @@ function Decision({ record }: { record: CaseRecord }) {
     );
   }
 
-  if (!user.is_reviewer) {
+  if (!may.decide_cases) {
     return (
       <section className="settled">
         <h3>Decision</h3>
-        <p>Only a reviewer can decide a case.</p>
+        <p>Your account can read cases but not decide them.</p>
       </section>
     );
   }
