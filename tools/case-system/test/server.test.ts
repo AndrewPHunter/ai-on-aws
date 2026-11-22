@@ -1,5 +1,6 @@
-// Drives the real servers over loopback with the MCP SDK's own client. Every request but /ping carries
-// a valid access token from the stand-in issuer (tokens.ts).
+// The case system's invariant 8 ("Always true" in tools/case-system/README.md), and three probes of the wiring
+// the store's tests cannot show (P1 to P3), on the real servers over loopback. The access token check is a
+// function that names a caller, refuses, or is unavailable: these tests are not about verifying a token.
 
 import assert from 'node:assert/strict';
 import type { Server } from 'node:http';
@@ -9,344 +10,140 @@ import type { TestContext } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
-import { CONTEXT_HEADERS, RECEIPT_ALLOWANCE_MS, createAgentServer, createReviewServer } from '../src/http.ts';
-import { TOOL_NAMES } from '../src/mcp.ts';
+import type { AccessTokenCheck, Caller } from '../../../shared/access-token.ts';
+import { CONTEXT_HEADERS, createAgentServer, createReviewServer } from '../src/http.ts';
 import { CaseStore } from '../src/store.ts';
-import { REVIEWER_ROLE, bearer, startTokens } from './tokens.ts';
+import type { CallContext } from '../src/store.ts';
 
-type Running = { agentUrl: string; reviewUrl: string; token: string };
+const NOW = new Date('2026-01-01T09:00:00.000Z');
+const RIVERA = 'Dr A. Rivera, a.rivera@example.org';
+const KATO = 'Dr M. Kato, m.kato@example.org';
+const COMPLETE = { patient: 'JD, 54, male', reporter: RIVERA, suspect_drug: 'examplamab', event: 'muscle pain' };
 
-// fetch with the test's access token added to the headers.
-function fetchWith(token: string, url: string, init: RequestInit = {}): Promise<Response> {
-  return fetch(url, { ...init, headers: { ...(init.headers as Record<string, string> | undefined), ...bearer(token) } });
-}
+const person = (name: string, roles: string[]): Caller => ({
+  subject: `subject-${name}`,
+  username: name,
+  name,
+  clientId: 'desk',
+  roles,
+  expiresAt: new Date('2026-01-01T10:00:00.000Z'),
+  token: name,
+});
+const CALLERS: Record<string, Caller> = { 'Bearer dana': person('dana', []), 'Bearer riley': person('riley', ['reviewer']) };
 
-// What the agent server's clock reads throughout these tests.
-const SERVER_TIME = new Date('2026-01-01T00:00:00Z');
+const checkToken: AccessTokenCheck = (authorization) => {
+  if (authorization === 'Bearer down') return Promise.resolve({ kind: 'unavailable', detail: 'The provider is down.' });
+  const caller = authorization === undefined ? undefined : CALLERS[authorization];
+  return Promise.resolve(caller ? { kind: 'caller', caller } : { kind: 'refused', reason: 'bad_signature', detail: 'Refused.' });
+};
 
 async function listen(server: Server): Promise<string> {
-  await new Promise<void>((resolve) => {
-    server.listen(0, '127.0.0.1', resolve);
-  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
-  if (address === null || typeof address === 'string') {
-    throw new Error('The server has no port');
-  }
+  assert.ok(address !== null && typeof address === 'object');
   return `http://127.0.0.1:${address.port}`;
 }
 
-async function start(t: TestContext): Promise<Running> {
-  let seconds = 0;
-  const store = new CaseStore(':memory:', () => new Date(Date.UTC(2026, 0, 1, 0, 0, seconds++)));
-  const tokens = await startTokens(t, () => SERVER_TIME);
-  const agent = createAgentServer(store, () => SERVER_TIME, tokens.check);
-  const review = createReviewServer(store, tokens.check, REVIEWER_ROLE);
+async function start(t: TestContext): Promise<{ store: CaseStore; agent: string; review: string }> {
+  const store = new CaseStore(':memory:', () => NOW);
+  const servers = [createAgentServer(store, () => NOW, checkToken), createReviewServer(store, checkToken, 'reviewer')];
   t.after(() => {
-    agent.close();
-    review.close();
-    agent.closeAllConnections();
-    review.closeAllConnections();
+    for (const server of servers) {
+      server.closeAllConnections();
+      server.close();
+    }
     store.close();
   });
-  return { agentUrl: await listen(agent), reviewUrl: await listen(review), token: await tokens.mint() };
+  const [agent, review] = await Promise.all(servers.map(listen));
+  assert.ok(agent !== undefined && review !== undefined);
+  return { store, agent, review };
 }
 
-const RIVERA = 'Dr A. Rivera, a.rivera@example.org';
-const KATO = 'Dr M. Kato, m.kato@example.org';
+const headersFor = (messageId: string, sender: string): Record<string, string> => ({
+  [CONTEXT_HEADERS.messageId]: messageId,
+  [CONTEXT_HEADERS.receivedAt]: '2026-01-01T08:00:00.000Z',
+  [CONTEXT_HEADERS.agentId]: 'intake-agent',
+  [CONTEXT_HEADERS.sender]: encodeURIComponent(sender),
+});
 
-function contextHeaders(messageId: string, sender = RIVERA): Record<string, string> {
-  return {
-    [CONTEXT_HEADERS.messageId]: messageId,
-    [CONTEXT_HEADERS.receivedAt]: '2025-12-31T23:00:00Z',
-    [CONTEXT_HEADERS.agentId]: 'intake-agent',
-    [CONTEXT_HEADERS.sender]: encodeURIComponent(sender),
-  };
-}
-
-async function connect(t: TestContext, agentUrl: string, token: string, headers: Record<string, string>): Promise<Client> {
-  const client = new Client({ name: 'test', version: '1' });
-  const transport = new StreamableHTTPClientTransport(new URL(`${agentUrl}/mcp`), {
-    requestInit: { headers: { ...headers, ...bearer(token) } },
-  });
-  await client.connect(transport);
+async function connect(t: TestContext, agent: string, headers: Record<string, string>): Promise<Client> {
+  const client = new Client({ name: 'probe', version: '1' });
+  await client.connect(new StreamableHTTPClientTransport(new URL(`${agent}/mcp`), { requestInit: { headers: { ...headers, authorization: 'Bearer dana' } } }));
   t.after(() => client.close());
   return client;
 }
 
-type ToolReply = { isError: boolean; payload: Record<string, unknown> };
-
-async function call(client: Client, name: string, args: Record<string, unknown>): Promise<ToolReply> {
+async function call(client: Client, name: string, args: Record<string, unknown>): Promise<{ isError: boolean; payload: Record<string, unknown> }> {
   const result = await client.callTool({ name, arguments: args });
-  const content: unknown = result.content;
-  assert.ok(Array.isArray(content));
-  const first: unknown = content[0];
-  assert.ok(typeof first === 'object' && first !== null && 'text' in first);
-  assert.ok(typeof first.text === 'string');
-  const payload: unknown = JSON.parse(first.text);
-  assert.ok(typeof payload === 'object' && payload !== null);
-  return { isError: result.isError === true, payload: { ...payload } };
+  const [first] = result.content as { text: string }[];
+  assert.ok(first !== undefined);
+  return { isError: result.isError === true, payload: JSON.parse(first.text) as Record<string, unknown> };
 }
 
-function caseIn(reply: ToolReply): Record<string, unknown> {
-  const found = reply.payload['case'];
-  assert.ok(typeof found === 'object' && found !== null);
-  return { ...found };
-}
-
-const COMPLETE = {
-  patient: 'JD, 54, male',
-  reporter: 'Dr A. Rivera, a.rivera@example.org',
-  suspect_drug: 'atorvastatin',
-  event: 'severe muscle pain',
-};
-
-test('the model is offered exactly three tools, and none of them reviews a case', async (t) => {
-  const { agentUrl, token } = await start(t);
-  const client = await connect(t, agentUrl, token, {});
-  const { tools } = await client.listTools();
-
-  assert.deepEqual(tools.map((tool) => tool.name).sort(), [...TOOL_NAMES].sort());
-  const createCase = tools.find((tool) => tool.name === 'create_case');
-  assert.deepEqual(Object.keys(createCase?.inputSchema.properties ?? {}).sort(), [
-    'event',
-    'patient',
-    'reporter',
-    'suspect_drug',
-  ]);
+const context = (messageId: string, sender: string): CallContext => ({
+  messageId,
+  receivedAt: '2026-01-01T08:00:00.000Z',
+  agentId: 'intake-agent',
+  actingFor: { name: 'dana', subject: 'subject-dana' },
+  sender,
 });
 
-test('creating a case twice for one message gives one case, the second time as a replay', async (t) => {
-  const { agentUrl, reviewUrl, token } = await start(t);
-  const client = await connect(t, agentUrl, token, contextHeaders('m1'));
-
-  const first = await call(client, 'create_case', COMPLETE);
-  const second = await call(client, 'create_case', COMPLETE);
-
-  assert.equal(first.isError, false);
-  assert.equal(first.payload['outcome'], 'created');
-  assert.equal(second.payload['outcome'], 'replayed');
-  assert.equal(caseIn(second)['case_id'], caseIn(first)['case_id']);
-
-  const listed: unknown = await (await fetchWith(token, `${reviewUrl}/cases`)).json();
-  assert.ok(typeof listed === 'object' && listed !== null && 'cases' in listed && Array.isArray(listed.cases));
-  assert.equal(listed.cases.length, 1);
+test('case-system 8. no call is accepted without knowing who is calling, and the token is judged before the headers or the body', async (t) => {
+  const { store, agent, review } = await start(t);
+  const id = store.createCase(context('m1', RIVERA), COMPLETE).case.case_id;
+  const broken = { [CONTEXT_HEADERS.messageId]: 'm2', 'content-type': 'application/json' };
+  const rows: { url: string; method: string; authorization?: string; body?: string; status: number }[] = [
+    { url: `${agent}/mcp`, method: 'POST', body: 'not json', status: 401 },
+    { url: `${agent}/mcp`, method: 'POST', authorization: 'Bearer forged', body: 'not json', status: 401 },
+    { url: `${agent}/mcp`, method: 'POST', authorization: 'Bearer down', body: 'not json', status: 503 },
+    { url: `${review}/cases/${id}`, method: 'GET', status: 401 },
+    { url: `${review}/cases/${id}/review`, method: 'POST', authorization: 'Bearer forged', body: 'not json', status: 401 },
+    { url: `${review}/cases/${id}/review`, method: 'POST', authorization: 'Bearer down', body: '{"decision":"approve"}', status: 503 },
+  ];
+  for (const row of rows) {
+    const headers = row.authorization === undefined ? broken : { ...broken, authorization: row.authorization };
+    const response = await fetch(row.url, { method: row.method, headers, body: row.body ?? null });
+    await response.body?.cancel();
+    assert.equal(response.status, row.status, `${row.method} ${row.url} with ${row.authorization ?? 'no token'}`);
+  }
+  assert.deepEqual([store.find({}).cases.length, store.getCase(id)?.status, store.auditTrail(id).length], [1, 'awaiting_review', 1]);
 });
 
-test('a second create for the same message with different content is refused and names the case', async (t) => {
-  const { agentUrl, token } = await start(t);
-  const client = await connect(t, agentUrl, token, contextHeaders('m1'));
-
-  await call(client, 'create_case', COMPLETE);
-  const second = await call(client, 'create_case', { ...COMPLETE, event: 'reworded by the model' });
-
-  assert.equal(second.isError, true);
-  assert.equal(second.payload['error'], 'case_already_opened_for_this_message');
-  assert.equal(caseIn(second)['case_id'], 'AE-000001');
+test("case-system P1. over MCP the agent is offered exactly the three tools, and a create is recorded against the headers and the token's caller", async (t) => {
+  const { store, agent } = await start(t);
+  const client = await connect(t, agent, headersFor('m1', RIVERA));
+  assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name).sort(), ['add_follow_up', 'create_case', 'find_case']);
+  assert.equal((await call(client, 'create_case', COMPLETE)).payload['outcome'], 'created');
+  const [entry] = store.auditTrail('AE-000001');
+  assert.deepEqual([entry?.actor, entry?.acting_for, entry?.detail], ['intake-agent', { name: 'dana', subject: 'subject-dana' }, { message_id: 'm1', missing: [] }]);
+  assert.equal(store.versions('AE-000001')[0]?.sender, RIVERA);
 });
 
-test('find_case from this message answers "did my create go through?"', async (t) => {
-  const { agentUrl, token } = await start(t);
-  const first = await connect(t, agentUrl, token, contextHeaders('m1'));
-  const other = await connect(t, agentUrl, token, contextHeaders('m2'));
-
-  await call(first, 'create_case', COMPLETE);
-  const mine = await call(first, 'find_case', { from_this_message: true });
-  const theirs = await call(other, 'find_case', { from_this_message: true });
-  const none = await call(first, 'find_case', {});
-
-  assert.ok(Array.isArray(mine.payload['cases']));
-  assert.equal(mine.payload['cases'].length, 1);
-  assert.deepEqual(theirs.payload['cases'], []);
-  assert.equal(none.isError, true);
-  assert.equal(none.payload['error'], 'filter_required');
+test("case-system P2. a decision through the review route is recorded under the token's caller; a named reviewer or a caller without the role is refused", async (t) => {
+  const { store, review } = await start(t);
+  const id = store.createCase(context('m1', RIVERA), COMPLETE).case.case_id;
+  const decide = async (authorization: string, body: unknown): Promise<number> => {
+    const response = await fetch(`${review}/cases/${id}/review`, { method: 'POST', headers: { authorization, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    await response.body?.cancel();
+    return response.status;
+  };
+  assert.equal(await decide('Bearer dana', { decision: 'approve' }), 403);
+  assert.equal(await decide('Bearer riley', { decision: 'approve', reviewer: 'Someone Else' }), 400);
+  assert.equal(store.getCase(id)?.status, 'awaiting_review');
+  assert.equal(await decide('Bearer riley', { decision: 'approve' }), 200);
+  const last = store.auditTrail(id).at(-1);
+  assert.deepEqual([store.getCase(id)?.status, last?.actor, last?.actor_subject], ['approved', 'riley', 'subject-riley']);
 });
 
-test('a follow-up from a later message completes an incomplete case', async (t) => {
-  const { agentUrl, token } = await start(t);
-  const first = await connect(t, agentUrl, token, contextHeaders('m1'));
-  const later = await connect(t, agentUrl, token, contextHeaders('m2'));
-
-  const created = await call(first, 'create_case', { suspect_drug: 'atorvastatin', event: 'rash' });
-  assert.equal(caseIn(created)['status'], 'incomplete');
-
-  const followed = await call(later, 'add_follow_up', {
-    case_id: 'AE-000001',
-    patient: 'JD, 54',
-    reporter: 'Dr Rivera',
-  });
-  assert.equal(followed.payload['outcome'], 'recorded');
-  assert.equal(caseIn(followed)['status'], 'awaiting_review');
-  assert.equal(caseIn(followed)['version'], 2);
-});
-
-test('without the context headers a write is refused and nothing is recorded', async (t) => {
-  const { agentUrl, reviewUrl, token } = await start(t);
-  const client = await connect(t, agentUrl, token, {});
-
-  const created = await call(client, 'create_case', COMPLETE);
-  assert.equal(created.isError, true);
-  assert.equal(created.payload['error'], 'call_context_missing');
-
-  const listed: unknown = await (await fetchWith(token, `${reviewUrl}/cases`)).json();
-  assert.deepEqual(listed, { cases: [], truncated: false });
-});
-
-test('context headers that are incomplete or not a time are refused with 400', async (t) => {
-  const { agentUrl, token } = await start(t);
-  const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
-  const base = { 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
-
-  const partial = await fetchWith(token, `${agentUrl}/mcp`, {
-    method: 'POST',
-    headers: { ...base, [CONTEXT_HEADERS.messageId]: 'm1' },
-    body,
-  });
-  assert.equal(partial.status, 400);
-
-  const badTime = await fetchWith(token, `${agentUrl}/mcp`, {
-    method: 'POST',
-    headers: { ...base, ...contextHeaders('m1'), [CONTEXT_HEADERS.receivedAt]: 'yesterday-ish' },
-    body,
-  });
-  assert.equal(badTime.status, 400);
-});
-
-test('a request carrying the session headers AgentCore Runtime forwards is not rejected', async (t) => {
-  const { agentUrl, token } = await start(t);
-  const response = await fetchWith(token, `${agentUrl}/mcp`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      accept: 'application/json, text/event-stream',
-      'mcp-session-id': '3f1c2a9e-0000-4000-8000-000000000000',
-      'x-amzn-bedrock-agentcore-runtime-session-id': 'a-session-identifier-of-thirty-three-chars',
-    },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
-  });
-  assert.equal(response.status, 200);
-});
-
-test('a receipt time in the future is refused, apart from a small allowance for clocks that disagree', async (t) => {
-  const { agentUrl, reviewUrl, token } = await start(t);
-  const sendAt = (offsetMs: number): Promise<Response> =>
-    fetchWith(token, `${agentUrl}/mcp`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        accept: 'application/json, text/event-stream',
-        ...contextHeaders('m1'),
-        [CONTEXT_HEADERS.receivedAt]: new Date(SERVER_TIME.getTime() + offsetMs).toISOString(),
-      },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'tools/call',
-        params: { name: 'create_case', arguments: COMPLETE },
-      }),
-    });
-
-  const tooLate = await sendAt(RECEIPT_ALLOWANCE_MS + 1000);
-  assert.equal(tooLate.status, 400);
-  const nothing: unknown = await (await fetchWith(token, `${reviewUrl}/cases`)).json();
-  assert.deepEqual(nothing, { cases: [], truncated: false });
-
-  const withinAllowance = await sendAt(RECEIPT_ALLOWANCE_MS - 1000);
-  assert.equal(withinAllowance.status, 200);
-});
-
-test('a sender finds only their own cases and cannot add to another sender\'s case', async (t) => {
-  const { agentUrl, reviewUrl, token } = await start(t);
-  const rivera = await connect(t, agentUrl, token, contextHeaders('m1'));
-  const kato = await connect(t, agentUrl, token, contextHeaders('m2', KATO));
+test("case-system P3. over MCP, another sender's case is answered as one that does not exist", async (t) => {
+  const { store, agent } = await start(t);
+  const rivera = await connect(t, agent, headersFor('m1', RIVERA));
   await call(rivera, 'create_case', COMPLETE);
-
-  const own = await call(rivera, 'find_case', { suspect_drug: 'atorvastatin' });
-  const others = await call(kato, 'find_case', { suspect_drug: 'atorvastatin' });
-  const byId = await call(kato, 'find_case', { case_id: 'AE-000001' });
-  assert.ok(Array.isArray(own.payload['cases']));
-  assert.equal(own.payload['cases'].length, 1);
-  assert.deepEqual(others.payload['cases'], []);
-  assert.deepEqual(byId.payload['cases'], []);
-
-  const added = await call(kato, 'add_follow_up', { case_id: 'AE-000001', event: 'something else' });
-  const missing = await call(kato, 'add_follow_up', { case_id: 'AE-000099', event: 'something else' });
-  assert.equal(added.isError, true);
-  assert.equal(added.payload['error'], 'case_not_found');
-  assert.equal(missing.payload['error'], 'case_not_found');
-
-  const detail: unknown = await (await fetchWith(token, `${reviewUrl}/cases/AE-000001`)).json();
-  assert.ok(typeof detail === 'object' && detail !== null && 'versions' in detail && Array.isArray(detail.versions));
-  assert.equal(detail.versions.length, 1);
-});
-
-test('a lookup without the context headers is refused, because it is always on behalf of a sender', async (t) => {
-  const { agentUrl, token } = await start(t);
-  const withContext = await connect(t, agentUrl, token, contextHeaders('m1'));
-  const without = await connect(t, agentUrl, token, {});
-  await call(withContext, 'create_case', COMPLETE);
-
-  const found = await call(without, 'find_case', { suspect_drug: 'atorvastatin' });
-  assert.equal(found.isError, true);
-  assert.equal(found.payload['error'], 'call_context_missing');
-});
-
-test('a sender header that is not percent-encoded text is refused with 400', async (t) => {
-  const { agentUrl, token } = await start(t);
-  const response = await fetchWith(token, `${agentUrl}/mcp`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      accept: 'application/json, text/event-stream',
-      ...contextHeaders('m1'),
-      [CONTEXT_HEADERS.sender]: '%E0%A4%A',
-    },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
-  });
-  assert.equal(response.status, 400);
-});
-
-test('the agent server answers the health check and has no review route', async (t) => {
-  const { agentUrl, token } = await start(t);
-
-  const ping = await fetch(`${agentUrl}/ping`);
-  assert.equal(ping.status, 200);
-  assert.deepEqual(await ping.json(), { status: 'Healthy' });
-
-  const review = await fetchWith(token, `${agentUrl}/cases/AE-000001/review`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ reviewer: 'r.okafor', decision: 'approve' }),
-  });
-  assert.equal(review.status, 404);
-});
-
-test('a reviewer approves through the review server under the token\'s name, and the decision is in the audit trail', async (t) => {
-  const { agentUrl, reviewUrl, token } = await start(t);
-  const client = await connect(t, agentUrl, token, contextHeaders('m1'));
-  await call(client, 'create_case', COMPLETE);
-
-  const post = (payload: unknown): Promise<Response> =>
-    fetchWith(token, `${reviewUrl}/cases/AE-000001/review`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-
-  assert.equal((await post({ reviewer: 'r.okafor', decision: 'approve' })).status, 400);
-  assert.equal((await post({ decision: 'close' })).status, 400);
-
-  const approved = await post({ decision: 'approve' });
-  assert.equal(approved.status, 200);
-  assert.equal((await post({ decision: 'approve' })).status, 409);
-
-  const detail: unknown = await (await fetchWith(token, `${reviewUrl}/cases/AE-000001`)).json();
-  assert.ok(typeof detail === 'object' && detail !== null && 'audit' in detail && Array.isArray(detail.audit));
-  const actions: unknown[] = detail.audit.map((entry: unknown) =>
-    typeof entry === 'object' && entry !== null && 'action' in entry ? entry.action : undefined,
-  );
-  assert.deepEqual(actions, ['case_created', 'review_approve']);
-  const actors: unknown[] = detail.audit.map((entry: unknown) =>
-    typeof entry === 'object' && entry !== null && 'actor' in entry ? entry.actor : undefined,
-  );
-  assert.deepEqual(actors, ['intake-agent', 'Riley Reviewer']);
+  assert.equal(((await call(rivera, 'find_case', { case_id: 'AE-000001' })).payload['cases'] as unknown[]).length, 1, 'the owner finds it');
+  const kato = await connect(t, agent, headersFor('m2', KATO));
+  assert.deepEqual((await call(kato, 'find_case', { case_id: 'AE-000001' })).payload['cases'], []);
+  const theirs = await call(kato, 'add_follow_up', { case_id: 'AE-000001', event: 'fever' });
+  const none = await call(kato, 'add_follow_up', { case_id: 'AE-999999', event: 'fever' });
+  assert.deepEqual([theirs.isError, theirs.payload['error']], [none.isError, none.payload['error']]);
+  assert.equal(store.versions('AE-000001').length, 1);
 });
