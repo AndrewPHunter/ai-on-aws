@@ -35,6 +35,27 @@ export async function call(client: ToolCaller, name: string, args: Record<string
   return { isError: result.isError === true, payload };
 }
 
+// The error code of a reply that is an error, as the gate reports it; a payload with no code is "unreadable".
+export function errorCode(reply: Reply): string {
+  const code = reply.payload.error;
+  return typeof code === 'string' && /^[a-z_]{1,64}$/.test(code) ? code : 'unreadable';
+}
+
+// What failed among counted calls: each error code with its count and the first call it happened on, by position
+// (from 1), never by the question's text. Empty when nothing failed.
+export function errorSummary(errors: readonly { position: number; code: string }[]): string {
+  const byCode = new Map<string, { count: number; first: number }>();
+  for (const { position, code } of errors) {
+    const known = byCode.get(code);
+    if (known === undefined) byCode.set(code, { count: 1, first: position });
+    else known.count++;
+  }
+  return [...byCode]
+    .sort(([a, x], [b, y]) => x.first - y.first || (a < b ? -1 : 1))
+    .map(([code, { count, first }]) => `${code}: ${count} (first at search ${first})`)
+    .join('; ');
+}
+
 // Whether a reply is the service's own refusal of the input.
 export function refusedByService(reply: Reply): boolean {
   return reply.isError && reply.payload.error === 'invalid_input';

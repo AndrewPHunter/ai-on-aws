@@ -18,7 +18,7 @@ import { SET_ID } from './support/retrieval.ts';
 import { startSearchStandIn } from './support/search-standin.ts';
 
 const indexArgs = (dataDir: string, url: string): string[] => [
-  'index', '--data', dataDir, '--search-url', url, '--alias', 'labels', '--batch-size', '2', '--timeout-ms', '5000',
+  'index', '--data', dataDir, '--search-url', url, '--alias', 'labels', '--batch-bytes', '1500', '--timeout-ms', '5000',
 ];
 
 async function rig(t: TestContext) {

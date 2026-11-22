@@ -20,7 +20,7 @@ import { SET_ID, testEngine } from './support/retrieval.ts';
 import { startSearchStandIn } from './support/search-standin.ts';
 
 const indexArgs = (dataDir: string, url: string): string[] => [
-  'index', '--data', dataDir, '--search-url', url, '--alias', 'labels', '--batch-size', '2', '--timeout-ms', '5000',
+  'index', '--data', dataDir, '--search-url', url, '--alias', 'labels', '--batch-bytes', '1500', '--timeout-ms', '5000',
 ];
 
 test('S15. the chunk command records the sha256 of each chunk file it writes', async (t) => {
@@ -44,7 +44,7 @@ test('S15. new text with the same counts is a new index, built and moved to; not
   const fake = fakeEngine();
   standIn.answer(fake.handle);
   const { engine } = testEngine(standIn.url);
-  const run = () => indexChunks({ engine, dataDir: where.dataDir, alias: 'labels', batchSize: 2, log: () => {} });
+  const run = () => indexChunks({ engine, dataDir: where.dataDir, alias: 'labels', batchBytes: 1500, log: () => {} });
 
   await writeChunks(where.dataDir, 3);
   const first = await run();

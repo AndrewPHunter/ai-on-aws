@@ -78,7 +78,6 @@ export type ExpertDeps = {
 
 type ListedTool = Awaited<ReturnType<McpClient['listTools']>>[number];
 
-export const RETRIEVAL_STRATEGY = 'keyword, within one label';
 
 export function answerNotPassed(corrections: number): string {
   return `The answer did not pass the checks after ${corrections} corrections, and was not returned.`;
@@ -427,7 +426,8 @@ class SearchLabelTool extends ExpertTool {
       started_at: startedAt.toISOString(),
       duration_ms: durationMs,
       query,
-      strategy: RETRIEVAL_STRATEGY,
+      // What the service reports it ran: its strategy is the service's setting, not this agent's.
+      strategy: reading.value.strategy,
       hits: reading.value.passages.map((passage) => {
         const handle = run.handles.get(passage.chunk_id) ?? '';
         const seen = run.seen.get(handle);

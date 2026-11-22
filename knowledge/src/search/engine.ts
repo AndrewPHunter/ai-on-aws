@@ -16,7 +16,8 @@ export type EngineAnswer =
   | { kind: 'unreachable' };
 
 export type Engine = {
-  send(method: 'GET' | 'HEAD' | 'POST' | 'PUT' | 'DELETE', path: string, body?: unknown, contentType?: string): Promise<EngineAnswer>;
+  // limit: an extra signal that ends the request early (what is left of a whole search).
+  send(method: 'GET' | 'HEAD' | 'POST' | 'PUT' | 'DELETE', path: string, body?: unknown, contentType?: string, limit?: AbortSignal): Promise<EngineAnswer>;
 };
 
 const isAbort = (error: unknown): boolean =>
@@ -24,8 +25,10 @@ const isAbort = (error: unknown): boolean =>
 
 export function createEngine(options: EngineOptions): Engine {
   return {
-    async send(method, path, body, contentType = 'application/json') {
-      const init: RequestInit = { method, signal: options.deadline(), headers: { accept: 'application/json' } };
+    async send(method, path, body, contentType = 'application/json', limit) {
+      // The request's own deadline, and the caller's (what is left of a whole search) when it gives one.
+      const own = options.deadline();
+      const init: RequestInit = { method, signal: limit === undefined ? own : AbortSignal.any([own, limit]), headers: { accept: 'application/json' } };
       if (body !== undefined) {
         init.headers = { accept: 'application/json', 'content-type': contentType };
         init.body = typeof body === 'string' ? body : JSON.stringify(body);

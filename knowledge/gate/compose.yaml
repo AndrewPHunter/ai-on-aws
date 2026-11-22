@@ -6,6 +6,10 @@ services:
   gate:
     # The knowledge piece's image, built by knowledge/gate.sh from the run stage of toolchain/Dockerfile.
     image: ${KNOWLEDGE_IMAGE:?run knowledge/gate.sh}
+    # The embedding model's identity (committed; no secret), compared with what the index records when the service
+    # answers with a strategy that uses vectors.
+    env_file:
+      - ../../model/retrieval.env
     environment:
       # The gate signs in as dana.desk through the desk client, as the identity gate does.
       IDENTITY_DESK_CLIENT_SECRET: ${IDENTITY_DESK_CLIENT_SECRET:?run platform/identity/setup.sh}

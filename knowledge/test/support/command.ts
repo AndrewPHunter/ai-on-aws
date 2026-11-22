@@ -41,14 +41,22 @@ export const fetchArgs = (where: Folders, standIn: StandIn, dailymedConcurrency 
   ...clientFlags(standIn, dailymedConcurrency),
 ]
 
-export async function command(argv: string[]): Promise<{ code: number; out: string[]; err: string[] }> {
+// `env` is what the embed command reads its model settings from; no other command reads it.
+export async function command(
+  argv: string[],
+  env: Readonly<Record<string, string | undefined>> = {},
+  sleeps: number[] = [],
+): Promise<{ code: number; out: string[]; err: string[] }> {
   const out: string[] = []
   const err: string[] = []
   const code = await runCommand(argv, {
     fetch: globalThis.fetch,
-    sleep: async () => {},
+    sleep: async (ms) => {
+      sleeps.push(ms)
+    },
     log: (line) => out.push(line),
     warn: (line) => err.push(line),
+    env,
   })
   return { code, out, err }
 }

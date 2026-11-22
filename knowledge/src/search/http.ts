@@ -9,6 +9,8 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { AccessTokenCheck } from '../../../shared/access-token.ts';
 import type { Engine } from './engine.ts';
 import { buildMcpServer } from './mcp.ts';
+import { KEYWORD } from './tools.ts';
+import type { Retriever } from './tools.ts';
 
 const MAX_BODY_BYTES = 100_000;
 
@@ -36,7 +38,7 @@ function sendJson(response: ServerResponse, status: number, payload: unknown): v
   response.end(JSON.stringify(payload));
 }
 
-export function createRetrievalServer(engine: Engine, index: string, checkToken: AccessTokenCheck): Server {
+export function createRetrievalServer(engine: Engine, index: string, checkToken: AccessTokenCheck, retriever: Retriever = KEYWORD): Server {
   return createServer((request: IncomingMessage, response: ServerResponse): void => {
     handle(request, response).catch((error: unknown) => {
       if (response.headersSent) {
@@ -97,7 +99,7 @@ export function createRetrievalServer(engine: Engine, index: string, checkToken:
     }
 
     const body = await readJson(request);
-    const mcp = buildMcpServer(engine, index);
+    const mcp = buildMcpServer(engine, index, retriever);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     response.on('close', () => {
       void transport.close();

@@ -8,6 +8,7 @@ import { retrievalSettingsFrom } from '../src/search/settings.ts';
 const ENV = {
   SEARCH_URL: 'http://search:9200',
   SEARCH_INDEX: 'labels',
+  SEARCH_STRATEGY: 'keyword',
   AUTH_DISCOVERY_URL: 'http://identity:8080/realms/lab/.well-known/openid-configuration',
   AUTH_ISSUER: 'http://localhost:8090/realms/lab',
   AUTH_ALLOWED_AUDIENCE: 'lab-knowledge',
@@ -19,6 +20,8 @@ test('S1. complete settings are read', () => {
   assert.deepEqual(retrievalSettingsFrom(ENV), {
     searchUrl: 'http://search:9200',
     searchIndex: 'labels',
+    strategy: 'keyword',
+    models: null,
     auth: {
       discoveryUrl: ENV.AUTH_DISCOVERY_URL,
       issuer: ENV.AUTH_ISSUER,
