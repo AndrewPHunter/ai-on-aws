@@ -91,7 +91,7 @@ The rules both apply, from [`src/intake/run.ts`](src/intake/run.ts) and, for the
 
 The Strands agent uses Strands the way it comes: its own loop, its own MCP client, and its OpenAI model on that model's default API (the Responses API). The hand-written agent speaks chat completions with `fetch`.
 
-One table of 33 behaviours in [`test/intake.test.ts`](test/intake.test.ts) runs against both agents. 22 rows are asserted identically for both. The other 11 each name one of these nine differences:
+The rules are shared code, tested once on the hand-written agent in [`test/intake.test.ts`](test/intake.test.ts); five tests in [`test/intake-strands.test.ts`](test/intake-strands.test.ts) show the Strands agent is wired to them. These nine differences are read from the code and from Strands' source; no test asserts them:
 
 | Situation | Hand-written loop | Strands 1.25.0 |
 |---|---|---|
@@ -157,7 +157,7 @@ Against the local model (Qwen3.5-9B on vLLM), through the client, on the seven p
 - **The token check runs in tests against a stand-in issuer.** Against the lab's identity provider, it has run in the label expert's container in the measured evaluation runs ([evaluation.md](../docs/architecture/evaluation.md)), which send real access tokens.
 - **The message text is put between `<message>` tags.** A message that contains the closing tag has not been tried.
 - **A follow-up can replace detailed values with vaguer ones.** In one run the patient "JD, a 54-year-old man" became "JD", the dose was dropped, and the original description of the event was replaced by the new information alone. The earlier version keeps the originals.
-- **The retry without thinking has run only in tests,** against a scripted stand-in for the model. In the runs made after it was added, the model answered without it.
-- **Sending a failed model request again has run in tests, and once for each agent against an address where nothing listens.** It has not run against a model server that fails some of the time. The hand-written loop does not read a `Retry-After` header.
+- **The retry without thinking has not run.** No test covers it, and in the runs made after it was added, the model answered without it.
+- **Sending a failed model request again has run in the hand-written agent's tests, and once for each agent against an address where nothing listens.** It has not run against a model server that fails some of the time. The hand-written loop does not read a `Retry-After` header.
 - **All three agents run from one image,** so the hand-written agent's image also holds Strands, the OpenAI client, the AWS SDK's Bedrock client and the AgentCore SDK with Fastify, which it does not use.
 - **Not run on AgentCore Runtime.**

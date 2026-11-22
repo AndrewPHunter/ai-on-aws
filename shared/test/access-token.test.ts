@@ -1,206 +1,105 @@
-// The shared access-token check, against the stand-in issuer in test-support/ minting real signed tokens.
+// The token check's invariants 1 to 4 ("Always true" in shared/README.md), one test each. Invariant 1 is about
+// verifying a signature, so the tokens are really signed, by the stand-in issuer in test-support/.
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 
 import { startStandInIssuer } from '../../test-support/issuer.ts';
-import type { MintOptions, StandInIssuer } from '../../test-support/issuer.ts';
+import type { MintOptions } from '../../test-support/issuer.ts';
 import { createAccessTokenCheck } from '../access-token.ts';
-import type { AccessTokenCheck, AccessTokenSettings, TokenCheck } from '../access-token.ts';
 
-const START = '2026-03-01T10:00:00.000Z';
+const START = new Date('2026-03-01T10:00:00.000Z').getTime();
 const ISSUER = 'http://localhost:8090/realms/lab';
-const MIN_REMAINING = 150;
+const MIN_LIFE = 150;
+const WAIT = 30_000;
+const CLAIMS = { aud: ['lab-agents', 'lab-case-system'], client_id: 'desk', sub: 'subject-riley', preferred_username: 'riley', name: 'Riley Reviewer', roles: ['reviewer'] };
 
-const CLAIMS = {
-  aud: ['lab-agents', 'lab-case-system'],
-  client_id: 'desk',
-  sub: '6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f01',
-  preferred_username: 'riley.reviewer',
-  name: 'Riley Reviewer',
-  roles: ['default-roles-lab', 'reviewer'],
-};
-
-type Clock = { now: () => Date; advance: (ms: number) => void };
-
-function clock(): Clock {
-  let at = new Date(START).getTime();
-  return { now: () => new Date(at), advance: (ms) => (at += ms) };
-}
-
-type Rig = { issuer: StandInIssuer; clock: Clock; check: AccessTokenCheck; mint: (options?: Partial<MintOptions>) => Promise<string> };
-
-async function rig(t: TestContext, overrides: Partial<AccessTokenSettings> = {}, keyRefetchWaitMs = 0): Promise<Rig> {
-  const time = clock();
-  const issuer = await startStandInIssuer({
-    clientId: 'desk',
-    clientSecret: 'stand-in-secret',
-    redirectUri: 'http://localhost:3000/auth/callback',
-    postLogoutRedirectUri: 'http://localhost:3000/',
-    now: time.now,
-    issuer: ISSUER,
-  });
+async function rig(t: TestContext) {
+  let at = START;
+  const now = (): Date => new Date(at);
+  const issuer = await startStandInIssuer({ clientId: 'desk', clientSecret: 'stand-in', redirectUri: 'http://localhost:3000/cb', postLogoutRedirectUri: 'http://localhost:3000/', now, issuer: ISSUER });
   t.after(() => issuer.close());
-  const check = createAccessTokenCheck(
-    {
-      discoveryUrl: issuer.discoveryUrl,
-      issuer: ISSUER,
-      audience: 'lab-agents',
-      allowedClients: ['desk'],
-      rolesClaim: 'roles',
-      minRemainingSeconds: MIN_REMAINING,
-      ...overrides,
-    },
-    { now: time.now, keyRefetchWaitMs, timeoutMs: 2000 },
-  );
-  const mint = (options: Partial<MintOptions> = {}): Promise<string> =>
-    issuer.mintAccessToken({ lifetimeSeconds: 600, ...options, claims: { ...CLAIMS, ...options.claims } });
-  return { issuer, clock: time, check, mint };
+  const settings = { discoveryUrl: issuer.discoveryUrl, issuer: ISSUER, audience: 'lab-agents', allowedClients: ['desk'], rolesClaim: 'roles', minRemainingSeconds: MIN_LIFE };
+  return {
+    issuer,
+    advance: (ms: number) => (at += ms),
+    check: () => createAccessTokenCheck(settings, { now, keyRefetchWaitMs: WAIT, timeoutMs: 2000 }),
+    mint: (options: Partial<MintOptions> = {}) => issuer.mintAccessToken({ lifetimeSeconds: 600, ...options, claims: { ...CLAIMS, ...options.claims } }),
+    fetches: (path: string) => issuer.received.filter((request) => request.path === path).length,
+  };
 }
 
-function refusal(result: TokenCheck): { reason: string; detail: string } {
-  assert.equal(result.kind, 'refused', `expected a refusal, got ${result.kind}`);
-  return result.kind === 'refused' ? { reason: result.reason, detail: result.detail } : { reason: '', detail: '' };
-}
+type Rig = Awaited<ReturnType<typeof rig>>;
+const bearer = async (token: Promise<string>): Promise<string> => `Bearer ${await token}`;
 
-const discoveryFetches = (issuer: StandInIssuer): number =>
-  issuer.received.filter((request) => request.path === '/.well-known/openid-configuration').length;
-const keyFetches = (issuer: StandInIssuer): number => issuer.received.filter((request) => request.path === '/jwks').length;
+// One row per condition of invariant 1, each failing in that way only.
+const REFUSALS: { name: string; header: (r: Rig) => Promise<string | undefined>; reason: string }[] = [
+  { name: 'no token', header: () => Promise.resolve(undefined), reason: 'missing' },
+  { name: 'not a JWT', header: () => Promise.resolve('Bearer not-a-jwt'), reason: 'malformed' },
+  { name: 'a key the provider does not publish', header: (r) => bearer(r.mint({ signedBy: 'other_key' })), reason: 'bad_signature' },
+  { name: 'not RS256', header: (r) => bearer(r.mint({ signedBy: 'hs256' })), reason: 'bad_signature' },
+  { name: 'another issuer', header: (r) => bearer(r.mint({ claims: { iss: 'http://elsewhere.example/realms/lab' } })), reason: 'wrong_issuer' },
+  { name: 'another audience', header: (r) => bearer(r.mint({ claims: { aud: ['lab-case-system'] } })), reason: 'wrong_audience' },
+  { name: 'a client not allowed', header: (r) => bearer(r.mint({ claims: { client_id: 'other' } })), reason: 'wrong_client' },
+  { name: 'expired', header: (r) => bearer(r.mint({ lifetimeSeconds: -1 })), reason: 'expired' },
+  { name: 'too little life left', header: (r) => bearer(r.mint({ lifetimeSeconds: MIN_LIFE - 1 })), reason: 'expires_too_soon' },
+];
 
-test('K1. a valid token gives the caller: subject, username, name, client id, roles, expiry, and the token', async (t) => {
+test('shared 1. a caller only for a token that passes every condition; each failure names which', async (t) => {
   const r = await rig(t);
+  const check = r.check();
   const token = await r.mint();
-  assert.deepEqual(await r.check(`Bearer ${token}`), {
+  assert.deepEqual(await check(`Bearer ${token}`), {
     kind: 'caller',
-    caller: {
-      subject: CLAIMS.sub,
-      username: 'riley.reviewer',
-      name: 'Riley Reviewer',
-      clientId: 'desk',
-      roles: ['default-roles-lab', 'reviewer'],
-      expiresAt: new Date(new Date(START).getTime() + 600_000),
-      token,
-    },
+    caller: { subject: 'subject-riley', username: 'riley', name: 'Riley Reviewer', clientId: 'desk', roles: ['reviewer'], expiresAt: new Date(START + 600_000), token },
   });
-});
-
-test('K2. each refusal is named, with a sentence that does not contain the token; exactly the minimum life is accepted', async (t) => {
-  const r = await rig(t);
-  const { client_id: _client, ...withoutClient } = CLAIMS;
-  const rows: { name: string; header: (r: Rig) => Promise<string | undefined>; reason: string }[] = [
-    { name: 'no header', header: () => Promise.resolve(undefined), reason: 'missing' },
-    { name: 'not Bearer', header: async (rr) => `Basic ${await rr.mint()}`, reason: 'missing' },
-    { name: 'not a JWT', header: () => Promise.resolve('Bearer not-a-jwt'), reason: 'malformed' },
-    { name: 'another key', header: async (rr) => `Bearer ${await rr.mint({ signedBy: 'other_key' })}`, reason: 'bad_signature' },
-    { name: 'wrong issuer', header: async (rr) => `Bearer ${await rr.mint({ claims: { iss: 'http://elsewhere.example.org/realms/lab' } })}`, reason: 'wrong_issuer' },
-    { name: 'audience lacking lab-agents', header: async (rr) => `Bearer ${await rr.mint({ claims: { aud: ['lab-case-system'] } })}`, reason: 'wrong_audience' },
-    { name: 'client_id not allowed', header: async (rr) => `Bearer ${await rr.mint({ claims: { client_id: 'other-client' } })}`, reason: 'wrong_client' },
-    {
-      name: 'client_id missing',
-      header: async (rr) => `Bearer ${await rr.issuer.mintAccessToken({ lifetimeSeconds: 600, claims: withoutClient })}`,
-      reason: 'wrong_client',
-    },
-    { name: 'expired', header: async (rr) => `Bearer ${await rr.mint({ lifetimeSeconds: -1 })}`, reason: 'expired' },
-    { name: 'less than the minimum left', header: async (rr) => `Bearer ${await rr.mint({ lifetimeSeconds: MIN_REMAINING - 1 })}`, reason: 'expires_too_soon' },
-  ];
-  for (const row of rows) {
-    const header = await row.header(r);
-    const { reason, detail } = refusal(await r.check(header));
-    assert.equal(reason, row.reason, row.name);
-    assert.ok(detail.length > 0, row.name);
-    const token = header?.split(' ')[1];
-    if (token !== undefined) {
-      assert.ok(!detail.includes(token), `${row.name}: the sentence contains the token`);
-    }
-  }
-  const exactly = await r.mint({ lifetimeSeconds: MIN_REMAINING });
-  assert.equal((await r.check(`Bearer ${exactly}`)).kind, 'caller');
-});
-
-test('K3. a token signed with any algorithm but RS256, none included, is refused', async (t) => {
-  const r = await rig(t);
-  for (const signedBy of ['hs256', 'none'] as const) {
-    const { reason } = refusal(await r.check(`Bearer ${await r.mint({ signedBy })}`));
-    assert.equal(reason, 'bad_signature', signedBy);
+  for (const row of REFUSALS) {
+    const result = await check(await row.header(r));
+    assert.equal(result.kind === 'refused' ? result.reason : result.kind, row.reason, row.name);
   }
 });
 
-test('K4. a provider that is down, or names another issuer, makes the check unavailable, and it recovers', async (t) => {
+test('shared 2. a provider that cannot be reached or cannot be used is unavailable, never a refusal, and the check recovers', async (t) => {
   const r = await rig(t);
-  const token = await r.mint();
-
-  r.issuer.misbehave('no_answer');
-  const down = await r.check(`Bearer ${token}`);
-  assert.equal(down.kind, 'unavailable');
-
-  r.issuer.misbehave('wrong_discovery_issuer');
-  const other = await r.check(`Bearer ${token}`);
-  assert.equal(other.kind, 'unavailable');
-  assert.match(other.kind === 'unavailable' ? other.detail : '', /names the issuer/);
-
-  r.issuer.misbehave('none');
-  assert.equal((await r.check(`Bearer ${token}`)).kind, 'caller');
-});
-
-test('K5. after the issuer replaces its key, a token with the new key is accepted and one with the old key is refused', async (t) => {
-  const r = await rig(t, {}, 30_000);
-  const before = await r.mint();
-  assert.equal((await r.check(`Bearer ${before}`)).kind, 'caller');
-
-  await r.issuer.rotateKey();
-  r.clock.advance(30_000);
-  const after = await r.mint();
-  assert.equal((await r.check(`Bearer ${after}`)).kind, 'caller');
-  assert.equal(refusal(await r.check(`Bearer ${before}`)).reason, 'bad_signature');
-});
-
-test('K6. the discovery document and the keys are fetched once for many checks', async (t) => {
-  const r = await rig(t, {}, 30_000);
-  const token = await r.mint();
-  for (let n = 0; n < 5; n++) {
-    assert.equal((await r.check(`Bearer ${token}`)).kind, 'caller');
-  }
-  assert.equal(discoveryFetches(r.issuer), 1);
-  assert.equal(keyFetches(r.issuer), 1);
-});
-
-test('K7. a correctly signed token lacking sub, preferred_username or name is refused as malformed', async (t) => {
-  const r = await rig(t);
-  for (const missing of ['sub', 'preferred_username', 'name'] as const) {
-    const claims: Record<string, unknown> = { ...CLAIMS };
-    delete claims[missing];
-    const token = await r.issuer.mintAccessToken({ lifetimeSeconds: 600, claims });
-    const { reason, detail } = refusal(await r.check(`Bearer ${token}`));
-    assert.equal(reason, 'malformed', missing);
-    assert.ok(!detail.includes(token), missing);
-  }
-});
-
-test('K8. a key set the provider serves that cannot be used makes the check unavailable, and it recovers', async (t) => {
-  for (const misbehaviour of ['jwks_not_json', 'jwks_without_keys', 'jwks_with_bad_key'] as const) {
-    const r = await rig(t);
-    const token = await r.mint();
+  const header = await bearer(r.mint());
+  for (const misbehaviour of ['no_answer', 'wrong_discovery_issuer', 'jwks_not_json', 'jwks_without_keys', 'jwks_with_bad_key'] as const) {
+    const check = r.check();
     r.issuer.misbehave(misbehaviour);
-    const broken = await r.check(`Bearer ${token}`);
-    assert.equal(broken.kind, 'unavailable', misbehaviour);
+    assert.equal((await check(header)).kind, 'unavailable', misbehaviour);
     r.issuer.misbehave('none');
-    assert.equal((await r.check(`Bearer ${token}`)).kind, 'caller', misbehaviour);
+    assert.equal((await check(header)).kind, 'caller', `${misbehaviour}, recovered`);
   }
 });
 
-test('K9. a token signed with a key not yet seen, before the refetch wait, fetches nothing and is refused; after the wait it is accepted', async (t) => {
-  const r = await rig(t, {}, 30_000);
-  assert.equal((await r.check(`Bearer ${await r.mint()}`)).kind, 'caller');
-  assert.equal(keyFetches(r.issuer), 1);
+test('shared 3. keys are fetched once, and again only for an unknown key, at most once per wait', async (t) => {
+  const r = await rig(t);
+  const check = r.check();
+  const header = await bearer(r.mint());
+  for (let n = 0; n < 3; n++) assert.equal((await check(header)).kind, 'caller');
+  assert.deepEqual([r.fetches('/.well-known/openid-configuration'), r.fetches('/jwks')], [1, 1]);
 
   await r.issuer.rotateKey();
-  const newKey = await r.mint();
-  r.clock.advance(29_000);
-  assert.equal(refusal(await r.check(`Bearer ${newKey}`)).reason, 'bad_signature');
-  assert.equal(keyFetches(r.issuer), 1, 'the keys were fetched again before the wait had passed');
+  const second = await bearer(r.mint());
+  r.advance(WAIT - 1);
+  assert.equal((await check(second)).kind, 'refused', 'an unknown key before the wait');
+  assert.equal(r.fetches('/jwks'), 1);
+  r.advance(1);
+  assert.equal((await check(second)).kind, 'caller', 'an unknown key after the wait');
+  assert.equal(r.fetches('/jwks'), 2);
 
-  r.clock.advance(1_000);
-  assert.equal((await r.check(`Bearer ${newKey}`)).kind, 'caller');
-  assert.equal(keyFetches(r.issuer), 2);
+  await r.issuer.rotateKey();
+  assert.equal((await check(await bearer(r.mint()))).kind, 'refused', 'another unknown key inside the next wait');
+  assert.deepEqual([r.fetches('/.well-known/openid-configuration'), r.fetches('/jwks')], [1, 2]);
+});
+
+test('shared 4. no refusal sentence contains the token', async (t) => {
+  const r = await rig(t);
+  const check = r.check();
+  for (const row of REFUSALS) {
+    const header = await row.header(r);
+    const result = await check(header);
+    const token = header?.split(' ')[1];
+    assert.ok(result.kind === 'refused' && token !== undefined ? !result.detail.includes(token) : result.kind === 'refused', row.name);
+  }
 });

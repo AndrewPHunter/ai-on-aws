@@ -1,42 +1,34 @@
 #!/bin/sh
-# STAND-IN for the judge adapter, for tests only. NOT a judge. It is run as `stand-in-adapter.sh <schema-file>`, as the
-# real adapter is, and answers each request by a word in it, in the shape of the rubric whose schema file it was given.
-#   Either rubric: "FAIL" exits 3; "ODD" answers outside the schema; "WRONGSHAPE" answers in the completeness shape
-#   whatever the rubric.
-#   completeness (verdict.schema.json): "GOOD" correct, "HALF" partly correct, anything else incorrect.
-#   answers-question (answers-question.schema.json): "GOOD" yes, uncontradicted, all covered; "HALF" partly, some;
-#   "CONTRA" yes but contradicted, some; anything else no, none.
-# Each call adds a line to the file named by STAND_IN_CALLS, so a test can see what was asked again.
+# STAND-IN for the model adapters (evaluation/judge/codex.sh, evaluation/reword/codex.sh), for tests only. NOT a model.
+# Run as `stand-in-adapter.sh <schema-file>`, as the real ones are. It appends each request it is given, as one line,
+# to the file named by STAND_IN_LOG, and answers by the schema file's name and a word in the request:
+#   answers-question: "FAIL" exits 3, "ODD" answers outside the schema, "GOOD" yes, uncontradicted; else no.
+#   verdict (completeness): "GOOD" correct; else incorrect.
+#   rewrite: "RWFAIL" exits 3, "RWODD" answers outside the schema, "NONAME" a rewrite without the drug's name, "DIFF"
+#     a rewrite the checker judges different; else a rewrite with the name.
+#   same (the checker): "CKFAIL" exits 4, "DIFF" not the same; else the same.
 if [ "${1:-}" = --describe ]; then
-  printf '{"judge":"stand-in","model":"none","effort":"none"}\n'
+  printf '{"judge":"stand-in","rewriter":"stand-in","model":"none","effort":"none"}\n'
   exit 0
 fi
 [ -f "${1:-}" ] || exit 2
 request=$(cat)
-printf 'x\n' >>"${STAND_IN_CALLS:?set STAND_IN_CALLS}"
-case "$request" in
-  *FAIL*) exit 3 ;;
-  *WRONGSHAPE*)
-    printf '{"verdict":"correct","reason":"Invented reason."}\n'
-    exit 0
-    ;;
-esac
-case "$1" in
-  *answers-question.schema.json)
-    case "$request" in
-      *ODD*) printf '{"answers":"maybe","contradicts":false,"coverage":"all","reason":"Invented reason."}\n' ;;
-      *GOOD*) printf '{"answers":"yes","contradicts":false,"coverage":"all","reason":"Invented reason."}\n' ;;
-      *HALF*) printf '{"answers":"partly","contradicts":false,"coverage":"some","reason":"Invented reason."}\n' ;;
-      *CONTRA*) printf '{"answers":"yes","contradicts":true,"coverage":"some","reason":"Invented reason."}\n' ;;
-      *) printf '{"answers":"no","contradicts":false,"coverage":"none","reason":"Invented reason."}\n' ;;
-    esac
-    ;;
-  *)
-    case "$request" in
-      *ODD*) printf '{"verdict":"maybe"}\n' ;;
-      *GOOD*) printf '{"verdict":"correct","reason":"Invented reason."}\n' ;;
-      *HALF*) printf '{"verdict":"partly_correct","reason":"Invented reason."}\n' ;;
-      *) printf '{"verdict":"incorrect","reason":"Invented reason."}\n' ;;
-    esac
-    ;;
+printf '%s\n' "$request" >>"${STAND_IN_LOG:?set STAND_IN_LOG}"
+reason='"reason":"Invented reason."'
+case "$1:$request" in
+  *answers-question.schema.json:*FAIL*) exit 3 ;;
+  *answers-question.schema.json:*ODD*) printf '{"answers":"maybe"}\n' ;;
+  *answers-question.schema.json:*GOOD*) printf '{"answers":"yes","contradicts":false,"coverage":"all",%s}\n' "$reason" ;;
+  *answers-question.schema.json:*) printf '{"answers":"no","contradicts":false,"coverage":"none",%s}\n' "$reason" ;;
+  *verdict.schema.json:*GOOD*) printf '{"verdict":"correct",%s}\n' "$reason" ;;
+  *verdict.schema.json:*) printf '{"verdict":"incorrect",%s}\n' "$reason" ;;
+  *rewrite.schema.json:*RWFAIL*) exit 3 ;;
+  *rewrite.schema.json:*RWODD*) printf '{"text":"Rephrased."}\n' ;;
+  *rewrite.schema.json:*NONAME*) printf '{"question":"Rephrased, with no name?"}\n' ;;
+  *rewrite.schema.json:*DIFF*) printf '{"question":"Rephrased Examplamab question, DIFF?"}\n' ;;
+  *rewrite.schema.json:*) printf '{"question":"Rephrased Examplamab question?"}\n' ;;
+  *same.schema.json:*CKFAIL*) exit 4 ;;
+  *same.schema.json:*DIFF*) printf '{"same":false,%s}\n' "$reason" ;;
+  *same.schema.json:*) printf '{"same":true,%s}\n' "$reason" ;;
+  *) exit 2 ;;
 esac
