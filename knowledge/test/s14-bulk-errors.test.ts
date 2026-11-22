@@ -18,7 +18,7 @@ test('S14. a refused bulk item fails the run, though the count matches', async (
   standIn.answer(fake.handle);
   const { engine } = testEngine(standIn.url);
   const lines: string[] = [];
-  const run = () => indexChunks({ engine, dataDir: where.dataDir, alias: 'labels', batchSize: 2, log: (line) => lines.push(line) });
+  const run = () => indexChunks({ engine, dataDir: where.dataDir, alias: 'labels', batchBytes: 1500, log: (line) => lines.push(line) });
 
   // A complete index first, so there is an alias to leave alone.
   await writeChunks(where.dataDir, 3);

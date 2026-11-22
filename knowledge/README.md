@@ -155,24 +155,43 @@ Two services in `knowledge/compose.yaml`, started with the rest of the lab by th
 |---|---|
 | `search` | OpenSearch 3.9.0, released 2026-09-29: the newest stable 3.x release published at least 14 days before it was pinned. Pinned by the digest of its multi-architecture index (linux/amd64, linux/arm64). One node, a 1 GB heap, its data in the named volume `search-data`. It publishes no port: only containers on the stack's network reach it. Healthy once the cluster answers and is not red |
 | `knowledge` | The retrieval service, built from `knowledge/src/` with the `run` stage of `toolchain/Dockerfile`. MCP at `POST /mcp` and `GET /ping` on port 8000, published at `127.0.0.1:8002` |
-| `knowledge/index.sh <compose-project>` | Loads the chunks into the stack's search engine, from a container on its network |
+| `knowledge/embed.sh <compose-project>` | Asks the embedding server for a vector of every chunk, from a container on the stack's network |
+| `knowledge/index.sh <compose-project>` | Loads the chunks, and their vectors when there is an embed report, into the stack's search engine, from a container on its network |
 | `knowledge/gate.sh <compose-project>` | Checks the retrieval path of a running stack whose index is built |
 
-Start-up, from the repository root: `knowledge/fetch.sh`, `knowledge/parse.sh` and `knowledge/chunk.sh`; then `docker compose up -d --build --wait`; then `knowledge/index.sh ai-on-aws`.
+Start-up, from the repository root: `knowledge/fetch.sh`, `knowledge/parse.sh` and `knowledge/chunk.sh`; then `docker compose up -d --build --wait`; then, for vectors, `knowledge/embed.sh ai-on-aws` (it needs `model/.env` from `model/setup.sh`); then `knowledge/index.sh ai-on-aws`.
+
+### The embedding stage
+
+`knowledge/embed.sh` reads every chunk of the last chunk run (each chunk file checked against the chunk report's hash), in chunk-id order, and asks the embedding server for a vector of each chunk's document text: its context line, a newline and its text, or the text alone when it has no context (recipe `context-newline-text/1`). Documents get no instruction. A query is embedded as `Instruct: Given a question about a medicine, retrieve passages of its label that answer the question\nQuery:<query>`; the instruction is one constant, used by the stage's report, the index and the service.
+
+- Requests carry 32 passages. A batch the server refuses as longer than the model takes is sent again one passage at a time; a passage refused alone gets no vector and is listed by chunk id. The refusal is recognised in one place (`isOverLength` in `knowledge/src/vectors/model-client.ts`): status 400 with a message naming the model's "maximum context length". Any other 400 fails the run at once.
+- A request answered 408, 429 or 5xx, or not answered, is tried again twice, after 5 and 30 seconds. One request may take 120 seconds.
+- Every vector's length is checked against `EMBED_DIMENSIONS`.
+- It writes `knowledge/data/vectors/<set id>/<version>.jsonl` (one line per chunk with a vector: its id, and the vector as base64 of little-endian float32, as the server returns it for `encoding_format: base64`) and `knowledge/data/embed-report.json`: the model's repository and revision (from `model/retrieval.env`) and the name it is served under, the dimensions, the recipe, the instruction, the SHA-256 of the chunk report the chunks came from, counts (chunks, vectors, without a vector), the chunk ids without a vector, total tokens, the vector files in order, and a SHA-256 over their bytes in that order.
+- Before it starts it checks that the server lists the configured model name and that the chunk report exists.
+- It takes the server's address and the key from `model/.env`, and the model's identity from `model/retrieval.env`, both passed to the container by `--env-file`; the script reads neither. These six settings (`MODEL_EMBED_BASE_URL`, `MODEL_API_KEY`, `EMBED_MODEL_ID`, `EMBED_MODEL_REPO`, `EMBED_MODEL_REVISION`, `EMBED_DIMENSIONS`) are the one place the tool reads its environment: the key must never be on a command line. It prints counts and chunk ids, never text, a vector or the key.
+
+| Exit code | `embed.sh` |
+|---|---|
+| 0 | Every chunk has a vector, or is listed as without one because the server refused it as too long |
+| 1 | A request failed after its tries, or a vector had the wrong length. No report was written, and an old one was removed, so a report never describes vector files it did not write |
+| 2 | Could not run: no such stack, `model/.env` missing, a model setting missing, no chunk report or chunk files that do not match it, or a server that cannot be asked or does not list the model |
 
 ### Indexing
 
-- The index is named `labels-` and 16 hex characters of a SHA-256 of the chunk report's bytes and of the index definition below. The chunk report records the SHA-256 of each label's chunk file, and the index command checks each file against it before sending anything, so a change to any chunk's bytes, or to the mapping, is a different index. A report written before it recorded the hashes is refused: run `knowledge/chunk.sh` again.
+- The index is named `labels-` and 16 hex characters of a SHA-256 of the chunk report's bytes, the embed report's bytes when there is one, and the index definition below. The chunk report records the SHA-256 of each label's chunk file, and the embed report the SHA-256 of the vector files; the index command checks every file against its hash before sending anything, so a change to any chunk's or vector's bytes, or to the mapping, is a different index. A chunk report written before it recorded the hashes is refused: run `knowledge/chunk.sh` again.
+- With an embed report, the report must name the chunk report being loaded (by its SHA-256); otherwise it exits 1 with the reason, and nothing is built. Each document is loaded with `embedding` (its vector) and `hasVector` (true or false), and the index's `_meta` records the embedding identity: repository, revision, dimensions, recipe, instruction, and the vector files' SHA-256. Without an embed report the index is built without vectors and `_meta` records `null`. (Adding `_meta` changed the definition, so an index built before it has another name.)
 - It reads `knowledge/data/` through a read-only mount.
-- It creates the index with the explicit definition and loads every chunk once, in bulk requests of 500, using each chunk's id as the document id. If the engine reports an error for any item of a bulk request, the run fails whatever the count, and the output gives the number of items refused and the first one's error type. Otherwise it checks that the engine's count of documents equals the number of chunks read. Only then does it point the alias `labels` at the new index. On a refused item or a count that differs, it leaves the alias where it was, removes the index it made, and exits 1. On any other failure once the index may exist (the create, a bulk request refused as a whole or not answered, the refresh, the count, the alias move), it also removes the index and leaves the alias, and exits 2. If the removal fails, it says so and names the index left behind. An index the alias points at is never removed: after an alias move whose answer was lost, the alias is read again first.
+- It creates the index with the explicit definition and loads every chunk once, in bulk requests of at most 8 MiB of body (about 380 documents with their vectors), using each chunk's id as the document id. With vectors, after the count check below, the number of documents with `hasVector: true` must equal the embed report's vector count; if not, it removes the index, leaves the alias and exits 1. If the engine reports an error for any item of a bulk request, the run fails whatever the count, and the output gives the number of items refused and the first one's error type. Otherwise it checks that the engine's count of documents equals the number of chunks read. Only then does it point the alias `labels` at the new index. On a refused item or a count that differs, it leaves the alias where it was, removes the index it made, and exits 1. On any other failure once the index may exist (the create, a bulk request refused as a whole or not answered, the refresh, the count, the alias move), it also removes the index and leaves the alias, and exits 2. If the removal fails, it says so and names the index left behind. An index the alias points at is never removed: after an alias move whose answer was lost, the alias is read again first.
 - If the index for this hash already exists with the right count and the alias points at it, it changes nothing and says so. With the right count and the alias elsewhere, it only moves the alias.
 - Older indexes are left in place and listed in the output.
 
 | Exit code | `index.sh` |
 |---|---|
 | 0 | The alias points at a complete index, built now or already |
-| 1 | Items refused: the engine refused an item of a bulk request. Or the count differed from the chunks read. The new index was removed and the alias left as it was |
-| 2 | Could not run: no such stack; no chunk report; a chunk report that is not JSON or has no chunk file hashes; a chunk file that is missing, does not match its hash, or holds a line that is not JSON (the file and line are named, the line is not quoted); the chunk files disagree with the report's count; or the engine could not be asked or answered in a way that stops the run. Any index the run made was removed, or named if it could not be |
+| 1 | The embed report was made from other chunks: nothing was built. Or items refused: the engine refused an item of a bulk request. Or the count differed from the chunks read, or the count of documents with a vector from the embed report. The new index was removed and the alias left as it was |
+| 2 | Could not run: no such stack; no chunk report; a chunk report that is not JSON or has no chunk file hashes; a chunk file that is missing, does not match its hash, or holds a line that is not JSON (the file and line are named, the line is not quoted); the chunk files disagree with the report's count; an embed report that is not one, vector files that do not match its hash or hold a vector of the wrong length; or the engine could not be asked or answered in a way that stops the run. Any index the run made was removed, or named if it could not be |
 
 The mapping is strict: a chunk with a field not named here is refused.
 
@@ -185,6 +204,8 @@ The mapping is strict: a chunk with a field not named here is refused.
 | `repeated` | Text, stored, not indexed | No |
 | `words` | Integer, stored, not indexed | No |
 | `position` | Object, stored, not indexed | No |
+| `embedding` (with vectors) | `knn_vector` of the embed report's dimensions, left out of `_source` so no search returns it; `index.knn` is left off, so it is searched only exactly | By `search_label`'s vector strategies, with a `script_score` cosine search |
+| `hasVector` (with vectors) | Boolean | As a filter |
 
 The index has one shard and no replica.
 
@@ -194,14 +215,27 @@ Settings, each required and read by name: `SEARCH_URL` (`http://search:9200`), `
 
 It talks to the engine with `fetch` and its REST API, with no client library. Each request may take 5 seconds.
 
+`SEARCH_STRATEGY`, required, says how `search_label` ranks; `knowledge/compose.yaml` sets `keyword`. An unknown value stops the service at start. The model never chooses it: no tool argument names it, and an argument called `strategy` is dropped by the MCP layer. For any strategy but `keyword` these are required at start, each named when missing: `MODEL_EMBED_BASE_URL`, `EMBED_MODEL_ID`, `MODEL_API_KEY`, `EMBED_MODEL_REPO`, `EMBED_MODEL_REVISION`, `EMBED_DIMENSIONS`; and for `fused_reranked`, `MODEL_RERANK_BASE_URL` and `RERANK_MODEL_ID`. The compose file names `model/.env` and `model/retrieval.env` as optional env files; with `keyword` the service reads none of their values and starts without them. The key is sent to the two model servers only and is never logged or returned.
+
+| Strategy | How `search_label` ranks | `score` is |
+|---|---|---|
+| `keyword` | BM25 over the chunk's text and context line, on the alias, as before | The BM25 score |
+| `vector` | The query's vector from the embedding server; an exact `script_score` search (`lang: knn`, `source: knn_score`, `space_type: cosinesimil`) over the documents with `hasVector: true`; the best `max_results` | The cosine similarity (the engine's score is (1 + cosine) / 2) |
+| `fused` | The best 50 by keyword and the best 50 by vector, combined by reciprocal rank fusion: a passage's fused score is the sum, over the lists it is in, of 1 / (60 + its rank in that list, from 1). Ties by chunk id. The best `max_results` | The fused score |
+| `fused_reranked` | The best 20 fused, sent with the query to the reranker with `max_tokens_per_doc` 7000, each as the same text the embedding stage embeds (the context line, a newline, the text; the text alone when there is no context), since the keyword side searches both and the vectors are made from both; ordered by its relevance score, ties by fused rank; the best `max_results` | The reranker's score |
+
+Every strategy searches under the same filters: the set id, and the part when given. A strategy that uses vectors first reads which index the alias points at and the embedding identity that index records, and compares it with its own configuration and constants (repository, revision, dimensions, recipe, instruction); both legs then search that one index, so a move of the alias between them cannot mix two indexes. The verdict is kept per index name. The two legs of `fused` run at once; a failure of either is the answer, never the other leg alone. Fusion is done in this service's code, not with OpenSearch's `hybrid` query: in 3.9 a `hybrid` query sent without a search pipeline returns unnormalised results with no error, and no response field gives each sub-query's rank.
+
+The result carries `strategy` (what was run). Each passage carries `ranks` (`keyword`, `vector`, `fused`, `reranked`: its rank from 1 in each list that was computed and that it is in, otherwise null) and `scores` (the BM25 score, the cosine, the fused score, the reranker's score: null where not computed).
+
 | Tool | Input | Returns |
 |---|---|---|
 | `find_labels` | `drug`: a name as a person would write it | The labels whose product, generic or active-ingredient name is that name, compared without case or surrounding white space; if none, the labels whose names hold every word given. At most 10, newest effective date first, and `more_matched` says whether more matched. For each: set id, version, effective date, kind, format, the names, and the label's page at DailyMed. No match is an empty list |
-| `search_label` | `set_id`; `query`; `part` (`body` or `highlights`, or both when left out); `max_results` (1 to 10, default 5) | Passages from that one label only, best first, ranked by BM25 over the chunk's text and context line. For each: chunk id, text, score, part, type, the section's number, title and path, the position, and the label's set id, version, effective date, kind and page at DailyMed |
+| `search_label` | `set_id`; `query`; `part` (`body` or `highlights`, or both when left out); `max_results` (1 to 10, default 5) | Passages from that one label only, best first, ranked by the service's strategy (below), and the strategy run. For each: chunk id, text, score, its ranks and scores in each list computed, part, type, the section's number, title and path, the position, and the label's set id, version, effective date, kind and page at DailyMed |
 
 How the input is held:
 
-- The query goes only into a full-text match. The engine never reads it as a query language, so operator characters, field names and other set ids in it have no effect.
+- The query goes only into a full-text match, and to the embedding server and the reranker as text. The engine never reads it as a query language, so operator characters, field names and other set ids in it have no effect.
 - The set id (and the part) are exact filters, set by code from the tool's arguments.
 - Input outside the limits is refused before anything is sent, with `invalid_input`: an empty query or one over 1,000 characters, an empty drug name or one over 200 characters (counted after surrounding white space is removed), `max_results` that is not a whole number from 1 to 10, an unknown `part`, or a set id that is not a lowercase GUID. The tools' input schemas give only types for `part` and `max_results`, so a value outside these limits reaches the service's own check and is answered in the same `{error, detail}` shape as every other failure. An argument of the wrong type (a number for `drug`, say) is still refused by the MCP layer in its own words.
 
@@ -212,12 +246,46 @@ Every failure is an error result that says which; none is ever an empty list.
 | `invalid_input` | The input is outside the limits |
 | `label_not_found` | No document has that set id. The error names it, so "no such label" cannot be read as "the label says nothing" |
 | `index_not_built` | The alias does not exist: run `knowledge/index.sh` |
-| `search_timed_out` | The engine did not answer in time, or answered that its search timed out (`timed_out: true`) |
+| `search_timed_out` | The engine did not answer in time, or answered that its search timed out (`timed_out: true`); or the search as a whole used its 8 seconds, and the detail names the step it was on |
 | `search_unreachable` | The engine could not be reached, or closed the connection part way through its answer |
 | `search_error` | The engine answered with an error status, or answered that a shard failed |
-| `search_unexpected_answer` | The engine answered in a form the service does not expect: a missing field, a version that is not a whole number of 1 or more, a passage from another label |
+| `search_unexpected_answer` | The engine answered in a form the service does not expect: a missing field, a version that is not a whole number of 1 or more, a passage from another label, an alias that does not point at exactly one index |
+| `vectors_not_built` | The strategy uses vectors and the index the alias points at was built without them |
+| `vectors_do_not_match` | The index's vectors were made with another repository, revision, dimensions, recipe or instruction than this service makes a query's vector with |
+| `embedding_unreachable`, `embedding_timed_out`, `embedding_error` | The embedding server could not be reached; did not answer within 3 seconds; answered with an error status, a vector of the wrong length, or an answer it cannot read |
+| `rerank_unreachable`, `rerank_timed_out`, `rerank_error` | The reranker could not be reached; did not answer within 5 seconds; answered with an error status, or an answer that does not score every passage once |
 
-Each applies to the count a search with no passages makes as well: a failed count is its own error, never an empty list.
+Each applies to the count a search with no passages makes as well: a failed count is its own error, never an empty list. No failure is retried, and none falls back to another strategy: the caller is told.
+
+The numbers, and where each is set:
+
+| Number | Value | Set in |
+|---|---|---|
+| Passages per embedding request; tries; waits; one request's time | 32; 3; 5 s and 30 s; 120 s | `knowledge/embed.sh` |
+| Bulk request body | at most 8 MiB | `knowledge/index.sh` |
+| Passages fused from each list; passages reranked; reranker tokens per passage | 50; 20; 7,000 | `FUSION_DEPTH`, `RERANK_DEPTH`, `RERANK_MAX_TOKENS_PER_DOC` in `knowledge/src/search/tools.ts` |
+| Fusion constant | 60 | `RRF_CONSTANT` in `knowledge/src/search/fusion.ts` |
+| One whole search (`search_label` or `find_labels`), from the moment it starts | 8 s | `SEARCH_LIMIT_MS` in `knowledge/src/search/limits.ts` |
+| One engine request; embedding request; reranker request | 5 s; 3 s; 5 s, each cut to what is left of the search | `knowledge/src/search/limits.ts` |
+| Model, revision, served name, dimensions | from `model/retrieval.env` | `model/retrieval.env` |
+
+Every request a search makes (the mapping read, each engine request, the embedding request, the reranker request, the count) gets the smaller of its own limit and what is left of the search's 8 seconds, and none is sent when nothing is left. So a search answers inside an agent's 10 s tool limit, whatever its strategy.
+
+Measured by the planner on 2026-11-22, with the real embedding server and reranker on the GPU machine and OpenSearch 3.9.0:
+
+- `knowledge/embed.sh`: exit 0 in 154 s. 31,827 chunks; 31,826 vectors; 1 without a vector (the over-length table: the server's refusal matched `isOverLength`); 7,281,847 tokens; 170 MB of vector files.
+- `knowledge/index.sh` with vectors: exit 0 in 18 s. The definition was accepted, both count checks passed, the alias moved, and both older indexes were left and listed. `_meta` holds the embedding identity, and a fetched document has no `embedding` in its source.
+- The index's store on disk: 654 MB before a flush and about 1,000 MB after, against 30 MB without vectors, in up to 19 segments, about 18 KB a document. Most of that is probably the engine's own copy of the original documents, kept for recovery when the source is filtered, which later merges may drop; that is inferred, not established.
+- The gate under each strategy, with the service restarted on that setting (a passage of a referenced section among the first 5, of 200 questions whose label is known):
+
+| Strategy | Right section in the first 5 | Gate |
+|---|---|---|
+| `keyword` | 159 | passes, 20 statements |
+| `vector` | 167 | passes, 22 statements |
+| `fused` | 170 | passes, 22 statements |
+| `fused_reranked` | 171 on a first run, with one search answering an error (statement 8 failed; the gate did not then say which error); 172 on a second, with none. `search_label` median 176 ms, 95th percentile 251 ms over 207 calls | passes on the second run, 22 statements |
+
+With 200 questions the margin is about 6 points either way, so these figures do not separate the strategies.
 
 ### The gate
 
@@ -230,7 +298,11 @@ Each applies to the count a search with no passages makes as well: a failed coun
 5. A query made only of query-language characters, and one naming another field and another set id, each return only passages from the one label, or none, and no error.
 6. A GUID not in the index returns `label_not_found`.
 7. `max_results` 1 returns one passage, 10 at most ten, and 11 is refused by the service's own check, as `invalid_input`.
-8. 200 benchmark searches, each restricted to the question's own label, answer without an error.
+8. 200 benchmark searches, each restricted to the question's own label, answer without an error. When one does not, the statement lists each error code with its count and the first search it happened on, by its position among the 200, never by its text.
+
+Statement 4 also states that the service names its strategy, and the report gives that strategy, beside the measure below. When the strategy uses vectors:
+
+9. Every passage returned in step 4 and the benchmark searches carries the ranks its strategy computes. The embedding identity the index records equals the model, revision and dimensions in `model/retrieval.env` (passed to the gate) and this code's recipe and instruction. The gate cannot see the service's settings: this states that the index matches the committed configuration, and the service itself refuses a search when the index does not match its own.
 
 A call to the service that gets no answer (the service stopped, the token refused, the network) stops the gate with exit 2: it is never read as a refusal or as an empty answer. A data file that is missing or not JSON stops it too, naming the file and the line without quoting it.
 
@@ -263,9 +335,13 @@ knowledge/
                                 untitled sections by code; unknown elements; one entry per label
     ├── chunks/<set id>/
     │   └── <version>.jsonl     one chunk per line, in document order; only for a label that passes the check
-    └── chunk-report.json       labels chunked and not; chunks by type and part; size distributions; tables by
-                                outcome and by the condition that makes them not splittable; splits; the ten
-                                largest chunks by id; one entry per label
+    ├── chunk-report.json       labels chunked and not; chunks by type and part; size distributions; tables by
+    │                           outcome and by the condition that makes them not splittable; splits; the ten
+    │                           largest chunks by id; one entry per label, with its chunk file's SHA-256
+    ├── vectors/<set id>/
+    │   └── <version>.jsonl     one line per chunk with a vector, in chunk-id order: the id and the vector
+    └── embed-report.json       the embedding identity, the chunk report it came from, counts, chunks without a
+                                vector, tokens, the vector files and their SHA-256
 ```
 
 A manifest entry holds: set id, version, document id, effective time, published date, document type code, the SHA-256 of the zip as downloaded and of the XML inside it, and the XML's size in bytes. Entries are sorted by set id, so the same inputs give a byte-identical file.
@@ -292,12 +368,20 @@ The libraries: [yauzl](https://github.com/thejoshwolfe/yauzl) 3.4.0 reads the zi
 
 ## Tests
 
-`knowledge/test/` holds tests F1 to F13 for pinning, fetching and the census, P1 to P21 for parsing, U1 to U18 for chunking, and S1 to S28 for indexing, retrieval and the gate's reading and calls, run by `toolchain/check.sh` with everything else. The first use a labelled stand-in for DailyMed and for the benchmark's host, on loopback, serving synthetic labels and zips built in the tests; the parser's and the splitter's tests use synthetic labels in `knowledge/test/support/labels.ts` and `knowledge/test/support/chunking.ts`. The retrieval tests use a labelled stand-in for the search engine that records requests and answers as told: it shows the wiring and the handling of each failure, not ranking. Their tokens are real signed ones from `test-support/issuer.ts`. No real label text is in them.
+`knowledge/test/` holds tests F1 to F13 for pinning, fetching and the census, P1 to P21 for parsing, U1 to U18 for chunking, S1 to S28 for indexing, retrieval and the gate's reading and calls, and V01 to V20 (V19 is in `agents/test/expert.test.ts`) for the embedding stage, the index with vectors, the strategies and the gate's strategy statements, run by `toolchain/check.sh` with everything else. The vector tests use a labelled stand-in for the embedding server and the reranker (`knowledge/test/support/model-standin.ts`): deterministic vectors made from a text's words, and scores made from word overlap. It shows the wiring, the order of operations and each failure, not retrieval quality. The first use a labelled stand-in for DailyMed and for the benchmark's host, on loopback, serving synthetic labels and zips built in the tests; the parser's and the splitter's tests use synthetic labels in `knowledge/test/support/labels.ts` and `knowledge/test/support/chunking.ts`. The retrieval tests use a labelled stand-in for the search engine that records requests and answers as told: it shows the wiring and the handling of each failure, not ranking. Their tokens are real signed ones from `test-support/issuer.ts`. No real label text is in them.
 
 ## Not present
 
 - **The search engine's security plugin is off.** It has no TLS, no sign-in and no access control: any container on the stack's network can read, change or delete every index. It publishes no port, so nothing outside that network reaches it. The retrieval service is the only path an agent is given, and it holds the token check. Do not publish the engine's port.
-- No embeddings, vector search, hybrid search or reranking: retrieval is keyword (BM25) only. No Bedrock data source.
+- No Bedrock data source.
+- No record of which passages the reranker read only in part: a passage over 7,000 tokens is cut by the reranker, and nothing says which.
+- One passage of the corpus is over the embedding model's 8,192 tokens (measured by the planner on 4,000 passages, the 1,500 largest among them): it has no vector, and is found by keyword only.
+- Vectors are not bit-for-bit repeatable across runs of the stage on a GPU. That is why the index is named from the vectors it holds (the embed report's hash), not from the chunks alone.
+- No strategy is shown better than another: on 200 questions the planner's figures differ by less than their margin of about 6 points. Measuring that is step 7.
+- The code of the one error seen under `fused_reranked` in the planner's first gate run was not captured. The model servers' logs show no refused request during those runs. The gate now lists each error code with its count and the first search it happened on.
+- The index's size on disk after the engine's merges is not known.
+- No approximate (HNSW) vector search: each search is exact, over the documents of one label.
+- Fusion is done in this service's code, not with OpenSearch's `hybrid` query: in 3.9 a `hybrid` query sent without a search pipeline returns unnormalised results with no error, and no response field gives each sub-query's rank.
 - No removal of old indexes; `index.sh` lists them.
 - No backup of the index: it is rebuilt from the chunks with `index.sh`.
 - No limit on the size of a table that is not splittable: such a table is one chunk, however long.

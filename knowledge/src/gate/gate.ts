@@ -18,7 +18,8 @@ import { signInFormAction } from '../../../platform/identity/src/login-form.ts';
 import { codeChallengeS256, codeVerifier } from '../../../platform/identity/src/pkce.ts';
 import { CouldNotRun, readData, readQuestions } from './data.ts';
 import type { Question } from './data.ts';
-import { call as callTool, refusedByService } from './service.ts';
+import { call as callTool, errorCode, errorSummary, refusedByService } from './service.ts';
+import { configuredIdentity, everyPassageCarriesRanks, recordedEmbedding, recordedIdentityDifferences, strategyOf, usesVectors } from './strategy.ts';
 import type { Reply } from './service.ts';
 
 const KNOWLEDGE = 'http://knowledge:8000';
@@ -283,6 +284,9 @@ async function main(): Promise<number> {
   statement(passages.every((passage) => passage.label.set_id === setId), `4. every passage carries the set id ${setId}`);
   statement(passages.every(hasEveryField), '4. every passage carries every field the contract lists');
   statement(scores.every((score, i) => i === 0 || score <= (scores[i - 1] ?? Number.NaN)), '4. the scores do not increase down the list');
+  // The strategy is the service's setting; the gate reports the one it answered with, and judges by it.
+  const strategy = strategyOf(searched.payload);
+  statement(strategy !== null, '4. the service names the strategy it ranked by', `strategy ${String(searched.payload.strategy)}`);
 
   // 5. Query-language characters, and a query that names another field and another set id.
   const operators = await call(client, 'search_label', { set_id: setId, query: '+ - = && || > < ! ( ) { } [ ] ^ " ~ * ? : \\ / AND OR NOT' });
@@ -315,14 +319,18 @@ async function main(): Promise<number> {
     (q): q is Question => q !== undefined,
   );
   let hits = 0;
-  let errors = 0;
-  for (const q of chosen) {
+  // Each benchmark search that answered an error: its position among the chosen questions (from 1) and its code.
+  const errors: { position: number; code: string }[] = [];
+  // Every passage returned in step 4 and the benchmark searches, for the ranks statement.
+  const returned = [...passages];
+  for (const [at, q] of chosen.entries()) {
     const query = q.question.length > 1000 ? q.question.slice(0, 1000) : q.question;
     const reply = await call(client, 'search_label', { set_id: q.set_id, query, max_results: TOP });
     if (reply.isError) {
-      errors++;
+      errors.push({ position: at + 1, code: errorCode(reply) });
       continue;
     }
+    returned.push(...passagesOf(reply));
     const references = (q.references as string[]).map(normalise);
     const numbers = references.map((r) => /^(\d+(?:\.\d+)*)\b/.exec(r)?.[1]).filter((n): n is string => n !== undefined);
     const hit = passagesOf(reply).some((passage) => {
@@ -332,15 +340,40 @@ async function main(): Promise<number> {
     });
     if (hit) hits++;
   }
-  statement(errors === 0, `8. every one of the ${chosen.length} benchmark searches answered without an error`, `${errors} errors`);
+  statement(
+    errors.length === 0,
+    `8. every one of the ${chosen.length} benchmark searches answered without an error`,
+    `${errors.length} errors: ${errorSummary(errors)}`,
+  );
   await client.close();
+
+  // 9. A strategy that uses vectors: every passage carries the ranks its strategy computes, and the embedding
+  // identity the index records equals the one configured (model/retrieval.env, passed to the gate) with this code's
+  // recipe and instruction. The service refuses a search on a mismatch itself; this states it for the index.
+  if (strategy !== null && usesVectors(strategy)) {
+    statement(
+      everyPassageCarriesRanks(returned as { ranks?: unknown }[], strategy),
+      `9. every one of the ${returned.length} passages returned carries the ranks the ${strategy} strategy computes`,
+    );
+    const mapping = await request(`${SEARCH}/${ALIAS}/_mapping`);
+    const mappingBody: unknown = await mapping.json().catch(() => ({}));
+    const configured = configuredIdentity(process.env);
+    const differences = configured === null ? ['configuration'] : recordedIdentityDifferences(recordedEmbedding(mappingBody), configured);
+    statement(
+      differences.length === 0,
+      '9. the embedding identity the index records equals the configured model, revision and dimensions, and this code\'s recipe and instruction',
+      `differs in ${differences.join(', ')}`,
+    );
+  }
 
   const report = {
     passed: failed.length === 0,
     held,
     failed,
+    strategy,
     measures: {
       referencedSectionInTop5: {
+        strategy,
         questions: chosen.length,
         eligible: questions.length,
         hits,

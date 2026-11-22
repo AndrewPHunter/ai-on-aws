@@ -27,7 +27,7 @@ async function rig(t: TestContext) {
   const { engine } = testEngine(standIn.url);
   const ids = await writeChunks(where.dataDir, 3);
   const index = indexName(await readFile(join(where.dataDir, 'chunk-report.json')));
-  const run = () => indexChunks({ engine, dataDir: where.dataDir, alias: 'labels', batchSize: 2, log: () => {} });
+  const run = () => indexChunks({ engine, dataDir: where.dataDir, alias: 'labels', batchBytes: 1500, log: () => {} });
   return { standIn, fake, ids, index, run };
 }
 

@@ -1,7 +1,10 @@
 // The command line of the corpus commands, run through knowledge/src/main.ts by knowledge/pin.sh, fetch.sh,
-// census.sh, parse.sh, chunk.sh and index.sh in the pinned Node image. Every setting is a named flag, and every flag a command takes is
-// required: nothing has a default. Input and output (the transport, waiting, the two output streams) are passed
-// in, so the whole command line runs in tests against the stand-in.
+// census.sh, parse.sh, chunk.sh, embed.sh and index.sh in the pinned Node image. Every setting is a named flag, and every flag a command takes is
+// required: nothing has a default. The one exception is the embed command's model settings, read from the
+// environment object it is given (embed.sh passes model/.env and model/retrieval.env with --env-file), because the
+// key must never be on a command line: MODEL_EMBED_BASE_URL, MODEL_API_KEY, EMBED_MODEL_ID, EMBED_MODEL_REPO,
+// EMBED_MODEL_REVISION and EMBED_DIMENSIONS. Input and output (the transport, waiting, the environment, the two output
+// streams) are passed in, so the whole command line runs in tests against the stand-ins.
 //
 //   node knowledge/src/main.ts pin    --corpus <dir> --data <dir> --repository <url> --revision <sha> --licence <id>
 //                                     --labels-path <path> --qa-path <path> --benchmark-max-bytes <n> <client flags>
@@ -9,7 +12,8 @@
 //   node knowledge/src/main.ts census --corpus <dir> --data <dir>
 //   node knowledge/src/main.ts parse  --corpus <dir> --data <dir>
 //   node knowledge/src/main.ts chunk  --corpus <dir> --data <dir> --text-limit <words> --table-limit <words>
-//   node knowledge/src/main.ts index  --data <dir> --search-url <url> --alias <name> --batch-size <n> --timeout-ms <n>
+//   node knowledge/src/main.ts embed  --data <dir> --batch-size <n> --attempts <n> --waits-ms <n,n,...> --timeout-ms <n>
+//   node knowledge/src/main.ts index  --data <dir> --search-url <url> --alias <name> --batch-bytes <n> --timeout-ms <n>
 //
 //   client flags: --raw-base <url> --dailymed-base <url> --user-agent <text> --dailymed-concurrency <n>
 //                 --github-concurrency <n> --workers <n> --attempts <n> --waits-ms <n,n,...> --timeout-ms <n>
@@ -19,7 +23,8 @@
 //             refused (fetch, census), a request that failed (pin), or items the engine refused or a count that
 //             differed (index); 2 could not run (flags, tracked files that do not pass the schema; for index, a chunk
 //             report or chunk file that is missing, not JSON or not matching its hash, or a search engine that could
-//             not be asked or stopped the run).
+//             not be asked or stopped the run). For embed: 0 every chunk has a vector or is counted as without one;
+//             1 a request failed and no report was written; 2 could not run.
 
 import { runCensus } from './census.ts'
 import { runChunk } from './chunk/run.ts'
@@ -28,6 +33,8 @@ import { IndexingError, indexChunks } from './search/indexing.ts'
 import { runParse } from './parse/run.ts'
 import { InputError, fetchCorpus } from './fetch.ts'
 import { PoliteClient } from './http.ts'
+import { EmbedError, runEmbed } from './vectors/embed.ts'
+import { createModelClient } from './vectors/model-client.ts'
 import { pin } from './pin.ts'
 
 // DailyMed states no rate limit. This is the most requests this tool will ever have in flight to it.
@@ -53,7 +60,8 @@ const FLAGS = {
   census: ['corpus', 'data'],
   parse: ['corpus', 'data'],
   chunk: ['corpus', 'data', 'text-limit', 'table-limit'],
-  index: ['data', 'search-url', 'alias', 'batch-size', 'timeout-ms'],
+  embed: ['data', 'batch-size', 'attempts', 'waits-ms', 'timeout-ms'],
+  index: ['data', 'search-url', 'alias', 'batch-bytes', 'timeout-ms'],
 } as const
 
 type Command = keyof typeof FLAGS
@@ -94,6 +102,8 @@ export type CommandIo = {
   // Standard output and standard error, one line at a time.
   log: (line: string) => void
   warn: (line: string) => void
+  // Read by the embed command only, for its model settings.
+  env: Readonly<Record<string, string | undefined>>
 }
 
 function clients(
@@ -119,6 +129,50 @@ function clients(
   }
 }
 
+// A model setting read from the environment, named when missing. Its value is never written anywhere.
+function fromEnv(env: CommandIo['env'], name: string): string {
+  const value = env[name]?.trim()
+  if (value === undefined || value === '') throw new UsageError(`${name} is not set: pass model/.env and model/retrieval.env (knowledge/embed.sh does)`)
+  return value
+}
+
+// The embed command. It catches everything itself: what it prints is its own sentences (counts, chunk ids, statuses,
+// the model's name), never an error's own message, which could carry an address or text.
+async function embedCommand(flags: Map<string, string>, dataDir: string, io: CommandIo): Promise<number> {
+  const timeoutMs = count(flags, 'timeout-ms')
+  const batchSize = count(flags, 'batch-size')
+  const attempts = count(flags, 'attempts')
+  if (timeoutMs < 1 || batchSize < 1 || attempts < 1) throw new UsageError('--timeout-ms, --batch-size and --attempts must be at least 1')
+  const waitsMs = text(flags, 'waits-ms').split(',').map((part) => {
+    if (!/^\d+$/.test(part)) throw new UsageError('--waits-ms must be whole numbers separated by commas')
+    return Number(part)
+  })
+  const baseUrl = fromEnv(io.env, 'MODEL_EMBED_BASE_URL').replace(/\/+$/, '')
+  if (!/^https?:\/\/\S+$/.test(baseUrl)) throw new UsageError('MODEL_EMBED_BASE_URL must be an http or https address ending in /v1')
+  const apiKey = fromEnv(io.env, 'MODEL_API_KEY')
+  const dimensionsText = fromEnv(io.env, 'EMBED_DIMENSIONS')
+  if (!/^[1-9]\d*$/.test(dimensionsText)) throw new UsageError('EMBED_DIMENSIONS must be a whole number')
+  const settings = {
+    modelId: fromEnv(io.env, 'EMBED_MODEL_ID'),
+    repository: fromEnv(io.env, 'EMBED_MODEL_REPO'),
+    revision: fromEnv(io.env, 'EMBED_MODEL_REVISION'),
+    dimensions: Number(dimensionsText),
+    batchSize,
+    attempts,
+    waitsMs,
+  }
+  const client = createModelClient({ baseUrl, apiKey, fetch: io.fetch, deadline: () => AbortSignal.timeout(timeoutMs) })
+  const started = process.hrtime.bigint()
+  try {
+    const outcome = await runEmbed({ dataDir, client, settings, sleep: io.sleep, log: io.log })
+    io.log(`time: ${Number((process.hrtime.bigint() - started) / 1_000_000n) / 1000} s`)
+    return outcome.exitCode
+  } catch (error) {
+    io.warn(error instanceof EmbedError ? error.message : `the embed command stopped with an unexpected ${error instanceof Error ? error.name : 'error'}`)
+    return 2
+  }
+}
+
 // Runs one command and returns its exit code. Every flag is read and checked before any request is made.
 export async function runCommand(argv: readonly string[], io: CommandIo): Promise<number> {
   try {
@@ -132,20 +186,30 @@ export async function runCommand(argv: readonly string[], io: CommandIo): Promis
 async function run(argv: readonly string[], io: CommandIo): Promise<number> {
   const { log, warn } = io
   const [command, ...rest] = argv
-  if (command !== 'pin' && command !== 'fetch' && command !== 'census' && command !== 'parse' && command !== 'chunk' && command !== 'index') {
-    throw new UsageError('the first argument must be pin, fetch, census, parse, chunk or index')
+  if (
+    command !== 'pin' &&
+    command !== 'fetch' &&
+    command !== 'census' &&
+    command !== 'parse' &&
+    command !== 'chunk' &&
+    command !== 'embed' &&
+    command !== 'index'
+  ) {
+    throw new UsageError('the first argument must be pin, fetch, census, parse, chunk, embed or index')
   }
   const flags = parseFlags(command, rest)
   const dataDir = text(flags, 'data')
 
+  if (command === 'embed') return embedCommand(flags, dataDir, io)
+
   if (command === 'index') {
     const timeoutMs = count(flags, 'timeout-ms')
-    const batchSize = count(flags, 'batch-size')
-    if (timeoutMs < 1 || batchSize < 1) throw new UsageError('--timeout-ms and --batch-size must be at least 1')
+    const batchBytes = count(flags, 'batch-bytes')
+    if (timeoutMs < 1 || batchBytes < 1) throw new UsageError('--timeout-ms and --batch-bytes must be at least 1')
     const engine = createEngine({ baseUrl: text(flags, 'search-url'), fetch: io.fetch, deadline: () => AbortSignal.timeout(timeoutMs) })
     const started = process.hrtime.bigint()
     try {
-      const outcome = await indexChunks({ engine, dataDir, alias: text(flags, 'alias'), batchSize, log })
+      const outcome = await indexChunks({ engine, dataDir, alias: text(flags, 'alias'), batchBytes, log })
       for (const older of outcome.olderIndexes) log(`older index left in place: ${older}`)
       log(`time: ${Number((process.hrtime.bigint() - started) / 1_000_000n) / 1000} s`)
       return outcome.exitCode

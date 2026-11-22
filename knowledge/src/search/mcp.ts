@@ -6,8 +6,8 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 
 import type { Engine } from './engine.ts';
-import { DEFAULT_RESULTS, MAX_RESULTS, findLabels, searchLabel } from './tools.ts';
-import type { Outcome } from './tools.ts';
+import { DEFAULT_RESULTS, KEYWORD, MAX_RESULTS, findLabels, searchLabel } from './tools.ts';
+import type { Outcome, Retriever } from './tools.ts';
 
 export const TOOL_NAMES = ['find_labels', 'search_label'] as const;
 
@@ -16,7 +16,9 @@ function reply<T>(outcome: Outcome<T>): CallToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(payload) }], isError: !outcome.ok };
 }
 
-export function buildMcpServer(engine: Engine, index: string): McpServer {
+// The strategy is the service's (retriever): no argument of either tool names one, and an argument the schema does
+// not name is dropped before the tool sees it.
+export function buildMcpServer(engine: Engine, index: string, retriever: Retriever = KEYWORD): McpServer {
   const server = new McpServer({ name: 'knowledge', version: '1' });
 
   server.registerTool(
@@ -29,7 +31,7 @@ export function buildMcpServer(engine: Engine, index: string): McpServer {
         'whether more matched. An empty list means no label in the index has that name.',
       inputSchema: { drug: z.string().describe("The drug's name.") },
     },
-    async (args) => reply(await findLabels(engine, index, { drug: args.drug })),
+    async (args) => reply(await findLabels(engine, index, { drug: args.drug }, retriever.limit)),
   );
 
   server.registerTool(
@@ -50,7 +52,7 @@ export function buildMcpServer(engine: Engine, index: string): McpServer {
         max_results: z.number().optional().describe(`How many passages, a whole number from 1 to ${MAX_RESULTS}. Default ${DEFAULT_RESULTS}.`),
       },
     },
-    async (args) => reply(await searchLabel(engine, index, args)),
+    async (args) => reply(await searchLabel(engine, index, args, retriever)),
   );
 
   return server;

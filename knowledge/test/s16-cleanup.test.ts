@@ -32,7 +32,7 @@ async function rig(t: Parameters<typeof folders>[0]) {
   standIn.answer(fake.handle);
   const { engine, expire } = testEngine(standIn.url);
   standIn.onHold(expire);
-  const run = () => indexChunks({ engine, dataDir: where.dataDir, alias: 'labels', batchSize: 2, log: () => {} });
+  const run = () => indexChunks({ engine, dataDir: where.dataDir, alias: 'labels', batchBytes: 1500, log: () => {} });
   await writeChunks(where.dataDir, 3);
   const first = await run();
   assert.equal(first.changed, 'built');

@@ -26,5 +26,5 @@ test('S10. no passages but the label is there: an empty list, which is an answer
   standIn.answer((request) => (request.path.endsWith('/_count') ? { status: 200, body: { count: 12 } } : hits([])));
   const { engine } = testEngine(standIn.url);
   const outcome = await searchLabel(engine, 'labels', { set_id: SET_ID, query: 'nothing about this' });
-  assert.deepEqual(outcome, { ok: true, value: { set_id: SET_ID, passages: [] } });
+  assert.deepEqual(outcome, { ok: true, value: { set_id: SET_ID, strategy: 'keyword', passages: [] } });
 });

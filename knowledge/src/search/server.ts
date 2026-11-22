@@ -4,6 +4,8 @@
 import { createAccessTokenCheck } from '../../../shared/access-token.ts';
 import { createEngine } from './engine.ts';
 import { createRetrievalServer } from './http.ts';
+import { ENGINE_REQUEST_MS } from './limits.ts';
+import { retrieverFrom } from './retriever.ts';
 import { retrievalSettingsFrom } from './settings.ts';
 import type { RetrievalSettings } from './settings.ts';
 
@@ -12,8 +14,6 @@ const HOST = '0.0.0.0';
 // After a token names a key not yet seen, the provider's keys are fetched again at most this often.
 const KEY_REFETCH_WAIT_MS = 30_000;
 const IDENTITY_TIMEOUT_MS = 5_000;
-// How long one request to the search engine may take.
-const SEARCH_TIMEOUT_MS = 5_000;
 
 let settings: RetrievalSettings;
 try {
@@ -25,11 +25,12 @@ try {
 
 const now = (): Date => new Date();
 const checkToken = createAccessTokenCheck(settings.auth, { now, keyRefetchWaitMs: KEY_REFETCH_WAIT_MS, timeoutMs: IDENTITY_TIMEOUT_MS });
-const engine = createEngine({ baseUrl: settings.searchUrl, fetch: globalThis.fetch, deadline: () => AbortSignal.timeout(SEARCH_TIMEOUT_MS) });
-const server = createRetrievalServer(engine, settings.searchIndex, checkToken);
+const engine = createEngine({ baseUrl: settings.searchUrl, fetch: globalThis.fetch, deadline: () => AbortSignal.timeout(ENGINE_REQUEST_MS) });
+const server = createRetrievalServer(engine, settings.searchIndex, checkToken, retrieverFrom(settings, globalThis.fetch));
 
 server.listen(PORT, HOST, () => {
-  console.log(`Retrieval service (MCP at /mcp) listening on ${HOST}:${PORT}`);
+  // The strategy, never an address or the key.
+  console.log(`Retrieval service (MCP at /mcp, strategy ${settings.strategy}) listening on ${HOST}:${PORT}`);
 });
 
 function stop(): void {

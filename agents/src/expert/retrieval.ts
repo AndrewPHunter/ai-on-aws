@@ -81,7 +81,8 @@ const passageSchema = z.object({
   }),
 });
 
-export const searchLabelSchema = z.object({ set_id: z.string(), passages: z.array(passageSchema) });
+// strategy: how the service ranked the passages (keyword, vector, fused or fused_reranked), as it reports it.
+export const searchLabelSchema = z.object({ set_id: z.string(), strategy: z.string().min(1), passages: z.array(passageSchema) });
 
 export type LabelFound = z.infer<typeof labelFoundSchema>;
 export type FoundLabels = z.infer<typeof findLabelsSchema>;
