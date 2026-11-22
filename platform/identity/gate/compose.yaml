@@ -52,8 +52,17 @@ services:
   stack-gate:
     <<: *gate
     environment:
-      IDENTITY_RILEY_PASSWORD: ${IDENTITY_RILEY_PASSWORD:?run platform/identity/setup.sh}
+      # The four people sign in through the client and, for the tokens the gate presents itself, through the
+      # desk client directly; the agents' and machines' secrets get the tokens it exchanges or asks for.
       IDENTITY_DANA_PASSWORD: ${IDENTITY_DANA_PASSWORD:?run platform/identity/setup.sh}
+      IDENTITY_MORGAN_PASSWORD: ${IDENTITY_MORGAN_PASSWORD:?run platform/identity/setup.sh}
+      IDENTITY_RILEY_PASSWORD: ${IDENTITY_RILEY_PASSWORD:?run platform/identity/setup.sh}
+      IDENTITY_AVERY_PASSWORD: ${IDENTITY_AVERY_PASSWORD:?run platform/identity/setup.sh}
+      IDENTITY_DESK_CLIENT_SECRET: ${IDENTITY_DESK_CLIENT_SECRET:?run platform/identity/setup.sh}
+      IDENTITY_INTAKE_HANDWRITTEN_CLIENT_SECRET: ${IDENTITY_INTAKE_HANDWRITTEN_CLIENT_SECRET:?run platform/identity/setup.sh}
+      IDENTITY_EXPERT_CLIENT_SECRET: ${IDENTITY_EXPERT_CLIENT_SECRET:?run platform/identity/setup.sh}
+      IDENTITY_EVALUATION_CLIENT_SECRET: ${IDENTITY_EVALUATION_CLIENT_SECRET:?run platform/identity/setup.sh}
+      IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET: ${IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET:?run platform/identity/setup.sh}
       # Set by stack-gate.sh for the merge step only: what it found in the client's output.
       REVOCATION_FAILURES: ${REVOCATION_FAILURES:-}
     command: ["node", "/repo/platform/identity/gate/stack-gate.ts"]

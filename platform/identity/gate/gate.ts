@@ -32,8 +32,9 @@
 //        authorization endpoint.
 //
 // Whether a token or an answer meets a statement is decided by the pure functions of ../src/judge.ts; this file
-// fetches, verifies signatures (jose) and reports. What stays here is transport: the cookie jar, the rewrite of
-// front-channel URLs (toTransport), and the requests. The gate stops at the first statement that does not hold.
+// fetches, verifies signatures (jose) and reports. The requests themselves, and the cookie jar, are in
+// ../src/provider.ts, which the stack gate shares; what stays here of transport is the rewrite of front-channel
+// URLs (toTransport) and the order of the requests. The gate stops at the first statement that does not hold.
 //
 // The gate stands in for the browser while running inside the network. The browser reaches the provider at
 // the issuer's origin (http://localhost:8090), which inside a container is the container itself, so every
@@ -73,6 +74,21 @@ import {
   type Violation,
 } from '../src/judge.ts'
 import { codeChallengeS256, codeVerifier } from '../src/pkce.ts'
+import {
+  authorizationUrl,
+  clientCredentials,
+  CookieJar,
+  exchange,
+  exchangeCode,
+  json,
+  openSignInPage,
+  postSignInForm,
+  refresh,
+  request,
+  tokenRequest,
+  type Answer,
+  type Http,
+} from '../src/provider.ts'
 
 // ---------- configuration ----------
 
@@ -210,51 +226,6 @@ function toTransport(url: string, browserOrigin: string, transportOrigin: string
   return `${transportOrigin}${parsed.pathname}${parsed.search}`
 }
 
-/** Holds cookies by name. Keycloak's sign-in cookies are all on the realm's path, so path and domain are not tracked. */
-class CookieJar {
-  private readonly cookies = new Map<string, string>()
-
-  take(response: Response): void {
-    for (const line of response.headers.getSetCookie()) {
-      const pair = line.split(';', 1)[0] ?? ''
-      const at = pair.indexOf('=')
-      if (at <= 0) continue
-      const name = pair.slice(0, at).trim()
-      const value = pair.slice(at + 1).trim()
-      if (value === '' || /;\s*max-age=0\b/i.test(line)) this.cookies.delete(name)
-      else this.cookies.set(name, value)
-    }
-  }
-
-  header(): string {
-    return [...this.cookies].map(([name, value]) => `${name}=${value}`).join('; ')
-  }
-}
-
-type Http = { timeoutMs: number }
-
-async function request(http: Http, url: string, init: RequestInit = {}): Promise<Response> {
-  return fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(http.timeoutMs), ...init })
-}
-
-async function json(response: Response): Promise<Record<string, unknown>> {
-  const value: unknown = await response.json()
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('response is not a JSON object')
-  return value as Record<string, unknown>
-}
-
-type Answer = { status: number; body: Body }
-
-/** A form posted to the token endpoint, and its answer. */
-async function tokenRequest(http: Http, discovery: Discovery, form: Record<string, string>): Promise<Answer> {
-  const response = await request(http, discovery.token_endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams(form).toString(),
-  })
-  return { status: response.status, body: await json(response) }
-}
-
 /** The answer's error code and description, for the report and for a failure's detail. */
 const refusal = (answer: Answer): { status: number } & ReturnType<typeof errorOf> => ({ status: answer.status, ...errorOf(answer.body) })
 
@@ -329,43 +300,21 @@ async function signIn(http: Http, transport: string, config: GateConfig, discove
   const verifier = codeVerifier(randomBytes(32))
   const state = randomBytes(16).toString('base64url')
 
-  const authorize = new URL(toTransport(discovery.authorization_endpoint, browserOrigin, transport))
-  authorize.search = new URLSearchParams({
-    response_type: 'code',
-    client_id: config.clientId,
-    redirect_uri: config.redirectUri,
-    scope,
-    state,
-    code_challenge: codeChallengeS256(verifier),
-    code_challenge_method: 'S256',
-  }).toString()
-  const page = await request(http, authorize.toString())
-  jar.take(page)
-  const shown = checkSignInPage(page.status, await page.text())
+  const authorize = authorizationUrl(toTransport(discovery.authorization_endpoint, browserOrigin, transport), config, scope, state, codeChallengeS256(verifier))
+  const page = await openSignInPage(http, authorize, jar)
+  const shown = checkSignInPage(page.status, page.html)
   judged(`G1 ${who}: the authorization endpoint answers with the sign-in page`, shown.violations)
   if (shown.action === null) throw new Error('checkSignInPage held without an action')
   const action = shown.action
 
   const password = secrets.passwords.get(who)
   if (password === undefined) throw new UsageError(`no password for ${who}`)
-  const posted = await request(http, toTransport(action, browserOrigin, transport), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: jar.header() },
-    body: new URLSearchParams({ username: who, password, credentialId: '' }).toString(),
-  })
-  await posted.arrayBuffer()
-  const redirect = checkSignInRedirect({ status: posted.status, location: posted.headers.get('location') }, action, config.redirectUri, state)
+  const posted = await postSignInForm(http, toTransport(action, browserOrigin, transport), jar, who, password)
+  const redirect = checkSignInRedirect(posted, action, config.redirectUri, state)
   judged(`G1 ${who}: the sign-in form redirects to ${config.redirectUri} with a code and the state`, redirect.violations)
   if (redirect.code === null) throw new Error('checkSignInRedirect held without a code')
 
-  const exchanged = await tokenRequest(http, discovery, {
-    grant_type: 'authorization_code',
-    code: redirect.code,
-    redirect_uri: config.redirectUri,
-    code_verifier: verifier,
-    client_id: config.clientId,
-    client_secret: secrets.deskSecret,
-  })
+  const exchanged = await exchangeCode(http, discovery, config, secrets, redirect.code, verifier)
   const accessToken = await verifiedAnswer(exchanged, keys, `G1 ${who}: the token endpoint exchanges the code for an access token, an ID token and a refresh token`, [
     'access_token',
     'id_token',
@@ -395,38 +344,6 @@ const customScopes = (config: GateConfig): string[] => [...config.scopes.keys()]
 const audiencesOf = (config: GateConfig, scopes: readonly string[]): string[] => [...new Set(scopes.flatMap((scope) => config.scopes.get(scope) ?? []))]
 
 // ---------- refreshes, exchanges and client credentials ----------
-
-function refresh(http: Http, config: GateConfig, discovery: Discovery, secrets: Secrets, refreshToken: string, scope: string): Promise<Answer> {
-  return tokenRequest(http, discovery, {
-    grant_type: 'refresh_token',
-    refresh_token: refreshToken,
-    scope,
-    client_id: config.clientId,
-    client_secret: secrets.deskSecret,
-  })
-}
-
-/** RFC 8693, as the agents send it. A client with no secret (`secret` undefined) sends none. */
-function exchange(http: Http, discovery: Discovery, clientId: string, secret: string | undefined, subjectToken: string, audience: string, scopes: readonly string[]): Promise<Answer> {
-  return tokenRequest(http, discovery, {
-    grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
-    subject_token: subjectToken,
-    subject_token_type: 'urn:ietf:params:oauth:token-type:access_token',
-    audience,
-    scope: scopes.join(' '),
-    client_id: clientId,
-    ...(secret === undefined ? {} : { client_secret: secret }),
-  })
-}
-
-function clientCredentials(http: Http, discovery: Discovery, clientId: string, secret: string | undefined, scope: string | undefined): Promise<Answer> {
-  return tokenRequest(http, discovery, {
-    grant_type: 'client_credentials',
-    client_id: clientId,
-    ...(secret === undefined ? {} : { client_secret: secret }),
-    ...(scope === undefined ? {} : { scope }),
-  })
-}
 
 function clientSecret(secrets: Secrets, clientId: string): string {
   const secret = secrets.clientSecrets.get(clientId)
