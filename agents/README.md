@@ -134,6 +134,7 @@ Set in [`compose.yaml`](compose.yaml), for each agent. The intake agents' limits
 | `AUTH_ISSUER` | The issuer it and every token must name, exactly: `http://localhost:8090/realms/lab` |
 | `AUTH_ALLOWED_AUDIENCE` | A value the token's `aud` must contain: the agent's own `AGENT_ID` |
 | `AUTH_ALLOWED_CLIENTS` | The `client_id` values accepted, separated by commas: `desk` for the intake agents, `desk,evaluation` for the label expert |
+| `AUTH_REQUIRED_SCOPES` | The scopes a token must hold at least one of, separated by commas: `agents:intake` for the intake agents, `agents:expert` for the label expert |
 | `AUTH_ROLES_CLAIM` | The claim holding the caller's roles: `roles` |
 | `EXCHANGE_TOKEN_ENDPOINT` | Where the agent exchanges the caller's token: `http://identity:8080/realms/lab/protocol/openid-connect/token` |
 | `EXCHANGE_CLIENT_SECRET` | The agent's client secret for the exchange. Read from `platform/identity/.env`, written by `platform/identity/setup.sh`; never logged |
@@ -154,7 +155,7 @@ Against the local model (Qwen3.5-9B on vLLM), through the client, on the seven p
 
 ## Known limits
 
-- **The case system checks the token the intake agent sends.** If it refuses the token when the agent connects, the run fails with "The case system refused the caller's token."; if it cannot check tokens, with "The case system could not check the caller's token." A refusal on a later tool call in the same run is not told apart: it is handled as a call that got no answer.
+- **The case system checks the token the intake agent sends.** If it refuses the token when the agent connects, the run fails with "The case system refused the agent's token."; if it cannot check tokens, with "The case system could not check the agent's token." A refusal on a later tool call in the same run is not told apart: it is handled as a call that got no answer.
 - **The agent trusts the case system's address,** and holds its own client secret for the exchange. On AWS, AgentCore Identity makes the exchange and the agent holds no secret.
 - **The caller's roles are read but not used:** any accepted token may submit a message.
 - **The token check runs in tests against a stand-in issuer.** Against the lab's identity provider, it has run in the label expert's container in the measured evaluation runs ([evaluation.md](../docs/architecture/evaluation.md)), which send real access tokens.

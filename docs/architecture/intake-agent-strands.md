@@ -73,7 +73,7 @@ flowchart LR
 
 `intake/strands.ts` is the only file of the intake agent that imports Strands. The label expert's `expert/strands.ts` is the only other.
 
-Before anything is connected, `handleInquiry` exchanges the caller's token for the case-system token, within the tool limit, 10 s, or what the run has left. A refused exchange, or one that cannot be made, ends the run `failed` with the exchange's reason, as in the hand-written agent: no MCP client is made and the model is not asked. Connecting to the case system and listing its tools then share one time limit of their own: the tool limit, or what the run has left. A connection that fails or runs out of time ends the run `failed`, with the same three reasons as the hand-written agent: not reached, the token refused, or the token not checkable. A case system that offers fewer than the three tools ends it `failed`, naming the missing ones.
+Before anything is connected, `handleInquiry` exchanges the caller's token for the case-system token, within the tool limit, 10 s, or what the run has left. A refused exchange, or one that cannot be made, ends the run `failed` with the same reasons as the hand-written agent: no MCP client is made and the model is not asked. Connecting to the case system and listing its tools then share one time limit of their own: the tool limit, or what the run has left. A connection that fails or runs out of time ends the run `failed`, with the same three reasons as the hand-written agent: not reached, the token refused, or the token not checkable. A case system that offers fewer than the three tools ends it `failed`, naming the missing ones.
 
 ## One request, end to end
 

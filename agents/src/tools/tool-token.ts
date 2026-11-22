@@ -22,14 +22,22 @@ export const KNOWLEDGE: ToolServer = { name: 'the retrieval service', audience: 
 
 export type ToolToken = { ok: true; token: string } | { ok: false; reason: string };
 
-// Exchanges the caller's token for one meant for the tool server, within the time given. A refused or
-// unavailable exchange becomes the run's reason, with the exchange's detail, which holds no token or secret.
+// Exchanges the caller's token for one meant for the tool server, within the time given. A refused exchange
+// becomes the run's reason with the exchange's detail: the provider's words, which hold no token or secret.
+// An unavailable exchange becomes a fixed sentence of the agent's own, because its detail can name the
+// provider's host and port, and a run's response carries no address.
 export async function toolToken(exchange: TokenExchange, server: ToolServer, callerToken: string, timeoutMs: number): Promise<ToolToken> {
   const got = await exchange({ subjectToken: callerToken, audience: server.audience, scopes: server.scopes, timeoutMs });
   if (got.kind === 'token') {
     return { ok: true, token: got.token };
   }
-  return { ok: false, reason: `The agent could not get a token for ${server.name}: ${got.detail}` };
+  if (got.kind === 'refused') {
+    return { ok: false, reason: `The agent could not get a token for ${server.name}: ${got.detail}` };
+  }
+  return {
+    ok: false,
+    reason: `The agent could not get a token for ${server.name}: the identity provider could not be reached or did not answer in time.`,
+  };
 }
 
 export type ConnectTools = (message: InboundMessage, token: string, timeoutMs: number) => Promise<Connected>;

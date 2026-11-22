@@ -1,6 +1,6 @@
 // The front doors' invariants ("Always true" in docs/architecture/agent-runtime.md), the one probe of the
-// hand-written agent's model client, and the token an agent sends its tool server (runtime 6, the list's fifth
-// invariant). The token check and the token exchange are plain functions that answer as each row says: no token
+// hand-written agent's model client (runtime P1, a probe that matches no invariant), and the token an agent
+// sends its tool server (runtime 5). The token check and the token exchange are plain functions that answer as each row says: no token
 // is signed. The SDK app cannot be closed, so it runs in a child process (sdk-child.ts),
 // behind the edge, on loopback ports picked here; a port taken in the moment between being picked and the child
 // listening makes the child exit and the test fail.
@@ -149,7 +149,7 @@ test('runtime 4. on the SDK server SIGTERM and SIGINT end the process with exit 
   }
 });
 
-test('runtime 5. the hand-written agent\'s model client reaches a model server and reads back a text answer and a tool call', async (t) => {
+test('runtime P1. the hand-written agent\'s model client reaches a model server and reads back a text answer and a tool call', async (t) => {
   const model = await startModel(t, (_request, nth) => (nth === 0 ? say('Hello.') : ask(['find_case', { patient: 'JD' }])));
   const client = createChatModel(model.settings);
   const asked = (): ReturnType<typeof client.complete> => client.complete([{ role: 'user', content: 'Hi' }], [], { timeoutMs: 30_000, thinking: true });
@@ -163,13 +163,13 @@ test('runtime 5. the hand-written agent\'s model client reaches a model server a
   );
 });
 
-test('runtime 6. an agent connects to its tool server only with a token it got for that server by one exchange of the caller\'s, and a refused or unavailable exchange connects nothing', async () => {
+test('runtime 5. an agent connects to its tool server only with a token it got for that server by one exchange of the caller\'s, and a refused or unavailable exchange connects nothing', async () => {
   const callerToken = 'token-the-agent-was-called-with';
   const inbound = message('msg-runtime-6', 'Patient JD had a rash after Examplamab.');
   const rows: Array<{ name: string; answer: TokenExchangeResult; connected: string[] }> = [
     { name: 'granted', answer: { kind: 'token', token: 'token-for-the-case-system', expiresAt: new Date('2026-03-01T10:05:00.000Z'), scopes: ['cases:write', 'cases:lookup'] }, connected: ['token-for-the-case-system'] },
     { name: 'refused', answer: { kind: 'refused', reason: 'provider_refused', detail: 'Detail-of-the-refused-exchange.' }, connected: [] },
-    { name: 'unavailable', answer: { kind: 'unavailable', detail: 'Detail-of-the-unavailable-exchange.' }, connected: [] },
+    { name: 'unavailable', answer: { kind: 'unavailable', detail: 'the token exchange could not reach the identity provider: fetch failed (getaddrinfo ENOTFOUND identity.example:8080).' }, connected: [] },
   ];
   for (const row of rows) {
     const asked: TokenExchangeRequest[] = [];
@@ -192,6 +192,7 @@ test('runtime 6. an agent connects to its tool server only with a token it got f
       `${row.name}: the exchange was not asked once, for the case system`,
     );
     assert.deepEqual(connected, row.connected, `${row.name}: what was connected with`);
-    if (row.answer.kind !== 'token') assert.ok(!result.ok && result.reason.includes(row.answer.detail), `${row.name}: the reason does not carry the detail`);
+    if (row.answer.kind === 'refused') assert.ok(!result.ok && result.reason.includes(row.answer.detail), `${row.name}: the reason does not carry the detail`);
+    if (row.answer.kind === 'unavailable') assert.ok(!result.ok && !result.reason.includes(row.answer.detail) && !result.reason.includes('identity.example'), `${row.name}: the reason carries the detail or its address`);
   }
 });
