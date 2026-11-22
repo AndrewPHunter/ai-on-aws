@@ -1,7 +1,8 @@
 // The client's server. Under /auth it signs desk staff in and out through the identity provider. Under
 // /api, for a signed-in user only, it receives inquiries, sends them to agents, keeps every inquiry and
-// run, forwards case review to the case system and reports the state of each piece; every call to an
-// agent or the case system carries the user's access token. /ping and the built web app need no session.
+// run, forwards case review to the case system and reports the state of each piece. What a session may
+// do comes from the scopes granted at sign-in, and every call to an agent or the case system carries a
+// token got for that target alone. /ping and the built web app need no session.
 //
 // Tokens stay here: the browser holds only a session cookie.
 
@@ -14,11 +15,13 @@ import type { InvocationRequest } from '../../shared/agent-contract.ts';
 import type {
   AgentList,
   ApiError,
+  Inquiry,
   InquiryResponse,
   PieceStatus,
   Run,
   RunResponse,
   SampleList,
+  SessionMay,
   SessionView,
   SignOutResponse,
   SystemStatus,
@@ -29,15 +32,17 @@ import { getCase, listCases, postReview } from './cases.ts';
 import type { Forwarded } from './cases.ts';
 import type { AgentConfig, Config } from './config.ts';
 import { IdentityUnreachable, SignInRefused } from './identity.ts';
-import type { IdentityProvider, TokenSet } from './identity.ts';
+import type { IdentityProvider } from './identity.ts';
 import { SAMPLES } from './samples.ts';
 import type { Session, SessionStore } from './sessions.ts';
 import type { Actor, InquiryStore } from './store.ts';
+import { tokenFor } from './tokens.ts';
 
 export type ClientDeps = {
   config: Config;
   store: InquiryStore;
-  // The clock records are stamped with. Sessions and the identity provider have their own.
+  // The clock records are stamped with and tokens' remaining life is read by. Sessions and the identity
+  // provider have their own.
   now: () => Date;
   newId: () => string;
   agentTimeoutMs: number;
@@ -49,6 +54,10 @@ export type ClientDeps = {
 // agent, so the token outlives the run; and a margin over the case system's 10-second timeout.
 export const AGENT_TOKEN_MIN_LIFE_MS = 180_000;
 export const CASE_TOKEN_MIN_LIFE_MS = 30_000;
+
+// The case system's review server's two scopes: reading cases, and deciding one.
+export const CASES_READ = 'cases:read';
+export const CASES_REVIEW = 'cases:review';
 export const SESSION_COOKIE = 'desk_session';
 
 export const MAX_TEXT_LENGTH = 10_000;
@@ -111,6 +120,15 @@ function badRequest(detail: string): ApiFailure {
 
 function notSignedIn(detail: string): ApiFailure {
   return new ApiFailure(401, 'not_signed_in', detail);
+}
+
+function notAllowed(detail: string): ApiFailure {
+  return new ApiFailure(403, 'not_allowed', detail);
+}
+
+// Another person's inquiry is answered exactly as one that does not exist.
+function inquiryNotFound(): ApiFailure {
+  return new ApiFailure(404, 'inquiry_not_found', 'There is no inquiry with that id.');
 }
 
 const ESCAPES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
@@ -256,6 +274,10 @@ function segment(raw: string): string | undefined {
 export function createClientServer(deps: ClientDeps): Server {
   const { config, store, now, newId, agentTimeoutMs, identity, sessions } = deps;
 
+  // Asked for at sign-in: each distinct agent scope configured and the case system's two. The provider
+  // leaves out any the person's role does not grant.
+  const signInScopes = [...new Set(config.agents.map((agent) => agent.scope)), CASES_READ, CASES_REVIEW];
+
   function sessionOf(request: IncomingMessage): Session | undefined {
     const id = cookieValue(request, SESSION_COOKIE);
     return id === undefined ? undefined : sessions.get(id);
@@ -265,42 +287,54 @@ export function createClientServer(deps: ClientDeps): Server {
     return { sub: session.user.sub, name: session.user.name };
   }
 
-  // The session's access token, renewed first if it has less than minLifeMs left. If it cannot be
-  // renewed, the session is ended and the request answers 401: nothing is sent with a token that would
-  // expire on the way.
-  async function accessToken(session: Session, minLifeMs: number): Promise<string> {
-    if (sessions.remainingMs(session) >= minLifeMs) {
-      return session.tokens.accessToken;
+  // Answers 403 unless the session was granted the scope at sign-in. Called before the identity provider
+  // or the target is asked anything.
+  function requireGranted(session: Session, scope: string): void {
+    if (!session.granted.has(scope)) {
+      throw notAllowed(`Your account was not granted ${scope}.`);
     }
-    session.renewing ??= identity.refresh(session.tokens).finally(() => {
-      session.renewing = null;
-    });
-    let renewed: TokenSet;
-    try {
-      renewed = await session.renewing;
-    } catch (error) {
-      sessions.remove(session.id);
-      if (error instanceof IdentityUnreachable || error instanceof SignInRefused) {
-        throw notSignedIn(`Your sign-in could not be renewed: ${error.message} Sign in again.`);
-      }
-      throw error;
-    }
-    session.tokens = renewed;
-    if (sessions.remainingMs(session) < minLifeMs) {
-      sessions.remove(session.id);
-      throw notSignedIn(
-        `The identity provider issued an access token that lives less than the ${minLifeMs / 1000} seconds this request needs. Sign in again.`,
-      );
-    }
-    return renewed.accessToken;
   }
 
-  function agentNamed(id: string): AgentConfig {
+  // The access token for one target scope (tokens.ts). A refresh that fails ends the session and answers
+  // 401; one whose token lacks the scope answers 403. Nothing is sent with a token that would expire on
+  // the way.
+  async function accessToken(session: Session, scope: string, minLifeMs: number): Promise<string> {
+    const got = await tokenFor(session, scope, minLifeMs, {
+      refresh: (refreshToken, asked) => identity.refresh(refreshToken, asked),
+      now,
+      isLive: (candidate) => sessions.get(candidate.id) === candidate,
+      end: (candidate) => sessions.remove(candidate.id),
+    });
+    if (got.outcome === 'ended') throw notSignedIn(got.reason);
+    if (got.outcome === 'not_granted') throw notAllowed(got.reason);
+    return got.accessToken;
+  }
+
+  // An agent the session may run. An unknown id is 400; an agent whose scope was not granted is 403.
+  function runnableAgent(session: Session, id: string): AgentConfig {
     const agent = config.agents.find((candidate) => candidate.id === id);
     if (agent === undefined) {
       throw new ApiFailure(400, 'unknown_agent', `No agent with the id "${id}" is configured.`);
     }
+    requireGranted(session, agent.scope);
     return agent;
+  }
+
+  // An inquiry the session's user entered. Anyone else's is answered as an unknown one.
+  function ownInquiry(session: Session, inquiryId: string): Inquiry {
+    const inquiry = store.getInquiry(inquiryId, session.user.sub);
+    if (inquiry === undefined) {
+      throw inquiryNotFound();
+    }
+    return inquiry;
+  }
+
+  function may(session: Session): SessionMay {
+    return {
+      agents: config.agents.filter((agent) => session.granted.has(agent.scope)).map((agent) => agent.id),
+      read_cases: session.granted.has(CASES_READ),
+      decide_cases: session.granted.has(CASES_REVIEW),
+    };
   }
 
   // Runs in the background after the 202 has been sent. Everything that can throw is inside the try,
@@ -319,15 +353,11 @@ export function createClientServer(deps: ClientDeps): Server {
   }
 
   // Sends the stored message, with the id and receipt time it was given when it was received, and the
-  // access token of the user who started the run.
-  function startRun(inquiryId: string, agent: AgentConfig, startedBy: Actor, token: string): Run {
-    const inquiry = store.getInquiry(inquiryId);
-    if (inquiry === undefined) {
-      throw new ApiFailure(404, 'inquiry_not_found', `No inquiry has the id "${inquiryId}".`);
-    }
+  // token got for the agent's scope for the user who started the run.
+  function startRun(inquiry: Inquiry, agent: AgentConfig, startedBy: Actor, token: string): Run {
     const run = store.startRun(newId(), inquiry.id, agent.id, startedBy);
     if (run === undefined) {
-      throw new ApiFailure(404, 'inquiry_not_found', `No inquiry has the id "${inquiryId}".`);
+      throw inquiryNotFound();
     }
     const request: InvocationRequest = {
       message: { id: inquiry.id, received_at: inquiry.received_at, sender: inquiry.sender, text: inquiry.text },
@@ -336,13 +366,6 @@ export function createClientServer(deps: ClientDeps): Server {
     return run;
   }
 
-  function inquiryResponse(inquiryId: string): InquiryResponse {
-    const inquiry = store.getInquiry(inquiryId);
-    if (inquiry === undefined) {
-      throw new ApiFailure(404, 'inquiry_not_found', `No inquiry has the id "${inquiryId}".`);
-    }
-    return { inquiry };
-  }
 
   async function status(): Promise<SystemStatus> {
     const checkedAt = now().toISOString();
@@ -367,8 +390,8 @@ export function createClientServer(deps: ClientDeps): Server {
   type Route = Partial<Record<'GET' | 'POST', Handler>>;
 
   function sessionView(session: Session): SessionView {
-    const { name, username, roles, isReviewer } = session.user;
-    return { user: { name, username, roles: [...roles], is_reviewer: isReviewer } };
+    const { name, username, roles } = session.user;
+    return { user: { name, username, roles: [...roles] }, may: may(session) };
   }
 
   const routes = {
@@ -383,9 +406,11 @@ export function createClientServer(deps: ClientDeps): Server {
       },
     },
     agents: {
-      GET: async (_request, response) => {
+      GET: async (_request, response, _url, session) => {
         const payload: AgentList = {
-          agents: config.agents.map((agent) => ({ id: agent.id, name: agent.name, description: agent.description })),
+          agents: config.agents
+            .filter((agent) => session.granted.has(agent.scope))
+            .map((agent) => ({ id: agent.id, name: agent.name, description: agent.description })),
         };
         sendJson(response, 200, payload);
       },
@@ -397,8 +422,8 @@ export function createClientServer(deps: ClientDeps): Server {
       },
     },
     inquiries: {
-      GET: async (_request, response) => {
-        sendJson(response, 200, store.listInquiries());
+      GET: async (_request, response, _url, session) => {
+        sendJson(response, 200, store.listInquiries(session.user.sub));
       },
       POST: async (request, response, _url, session) => {
         const body = await readJson(request);
@@ -407,20 +432,22 @@ export function createClientServer(deps: ClientDeps): Server {
         if (text.length > MAX_TEXT_LENGTH) {
           throw badRequest(`"text" is longer than ${MAX_TEXT_LENGTH} characters.`);
         }
-        const agent = agentNamed(requiredString(body, 'agent_id'));
-        const token = await accessToken(session, AGENT_TOKEN_MIN_LIFE_MS);
+        const agent = runnableAgent(session, requiredString(body, 'agent_id'));
+        const token = await accessToken(session, agent.scope, AGENT_TOKEN_MIN_LIFE_MS);
         const id = newId();
         store.createInquiry({ id, receivedAt: now().toISOString(), sender, text, enteredBy: actorOf(session) });
-        startRun(id, agent, actorOf(session), token);
-        sendJson(response, 202, inquiryResponse(id));
+        startRun(ownInquiry(session, id), agent, actorOf(session), token);
+        const payload: InquiryResponse = { inquiry: ownInquiry(session, id) };
+        sendJson(response, 202, payload);
       },
     },
   } satisfies Record<string, Route>;
 
   function inquiryRoute(inquiryId: string): Route {
     return {
-      GET: async (_request, response) => {
-        sendJson(response, 200, inquiryResponse(inquiryId));
+      GET: async (_request, response, _url, session) => {
+        const payload: InquiryResponse = { inquiry: ownInquiry(session, inquiryId) };
+        sendJson(response, 200, payload);
       },
     };
   }
@@ -430,12 +457,10 @@ export function createClientServer(deps: ClientDeps): Server {
       POST: async (request, response, _url, session) => {
         const body = await readJson(request);
         const agentId = requiredString(body, 'agent_id');
-        if (store.getInquiry(inquiryId) === undefined) {
-          throw new ApiFailure(404, 'inquiry_not_found', `No inquiry has the id "${inquiryId}".`);
-        }
-        const agent = agentNamed(agentId);
-        const token = await accessToken(session, AGENT_TOKEN_MIN_LIFE_MS);
-        const payload: RunResponse = { run: startRun(inquiryId, agent, actorOf(session), token) };
+        const inquiry = ownInquiry(session, inquiryId);
+        const agent = runnableAgent(session, agentId);
+        const token = await accessToken(session, agent.scope, AGENT_TOKEN_MIN_LIFE_MS);
+        const payload: RunResponse = { run: startRun(inquiry, agent, actorOf(session), token) };
         sendJson(response, 202, payload);
       },
     };
@@ -443,7 +468,8 @@ export function createClientServer(deps: ClientDeps): Server {
 
   const casesRoute: Route = {
     GET: async (_request, response, url, session) => {
-      const token = await accessToken(session, CASE_TOKEN_MIN_LIFE_MS);
+      requireGranted(session, CASES_READ);
+      const token = await accessToken(session, CASES_READ, CASE_TOKEN_MIN_LIFE_MS);
       sendForwarded(response, await listCases(config.caseReviewUrl, url.searchParams.get('status'), token));
     },
   };
@@ -451,20 +477,20 @@ export function createClientServer(deps: ClientDeps): Server {
   function caseRoute(caseId: string): Route {
     return {
       GET: async (_request, response, _url, session) => {
-        const token = await accessToken(session, CASE_TOKEN_MIN_LIFE_MS);
+        requireGranted(session, CASES_READ);
+        const token = await accessToken(session, CASES_READ, CASE_TOKEN_MIN_LIFE_MS);
         sendForwarded(response, await getCase(config.caseReviewUrl, caseId, token));
       },
     };
   }
 
   // The reviewer is whoever is signed in, never a name the browser sends: the case system takes it from
-  // the access token. A non-reviewer is stopped here, and behind this by the case system.
+  // the access token. A session not granted cases:review is stopped here, and behind this by the case
+  // system.
   function reviewRoute(caseId: string): Route {
     return {
       POST: async (request, response, _url, session) => {
-        if (!session.user.isReviewer) {
-          throw new ApiFailure(403, 'not_a_reviewer', `Only a member of staff with the ${config.reviewerRole} role can decide a case.`);
-        }
+        requireGranted(session, CASES_REVIEW);
         const body = await readJson(request);
         if (field(body, 'reviewer') !== undefined) {
           throw badRequest('"reviewer" is set by the server to whoever is signed in. Do not send it.');
@@ -472,7 +498,7 @@ export function createClientServer(deps: ClientDeps): Server {
         const decision = field(body, 'decision');
         const note = field(body, 'note');
         const review: Record<string, unknown> = note === undefined ? { decision } : { decision, note };
-        const token = await accessToken(session, CASE_TOKEN_MIN_LIFE_MS);
+        const token = await accessToken(session, CASES_REVIEW, CASE_TOKEN_MIN_LIFE_MS);
         sendForwarded(response, await postReview(config.caseReviewUrl, caseId, review, token));
       },
     };
@@ -543,7 +569,7 @@ export function createClientServer(deps: ClientDeps): Server {
     const { pending, binding } = sessions.beginSignIn();
     let target: string;
     try {
-      target = await identity.authorizationUrl(pending);
+      target = await identity.authorizationUrl(pending, signInScopes);
     } catch (error) {
       // A provider that cannot be reached leaves no sign-in waiting.
       sessions.dropPending(pending.state);
@@ -586,7 +612,7 @@ export function createClientServer(deps: ClientDeps): Server {
       }
       throw error;
     }
-    const session = sessions.create(signedIn.user, signedIn.tokens);
+    const session = sessions.create(signedIn);
     response.writeHead(302, {
       location: '/',
       'set-cookie': [sessionCookie(session.id), CLEARED_SIGN_IN_COOKIE],
@@ -605,8 +631,8 @@ export function createClientServer(deps: ClientDeps): Server {
     response.setHeader('set-cookie', CLEARED_COOKIE);
     // The refresh token is revoked at the provider, so it cannot be used again. If that fails the local
     // session is still gone; the failure is logged and the browser is still sent to sign out there.
-    if (session.tokens.refreshToken !== null) {
-      const revoked = await identity.revoke(session.tokens.refreshToken);
+    if (session.refreshToken !== null) {
+      const revoked = await identity.revoke(session.refreshToken);
       if (revoked.outcome === 'failed') {
         console.error(`Sign-out: revoking the refresh token at the identity provider failed: ${revoked.reason}`);
       }

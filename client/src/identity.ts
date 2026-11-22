@@ -1,5 +1,5 @@
-// The desk's side of OpenID Connect: where sign-in starts, how it is completed, how an access token is
-// renewed, and where sign-out goes. openid-client runs the protocol and validates the ID token.
+// The desk's side of OpenID Connect: where sign-in starts, how it is completed, how an access token for
+// one scope is got by a refresh, and where sign-out goes. openid-client runs the protocol and validates the ID token.
 //
 // The discovery document is fetched here, not by openid-client, and its issuer must equal OIDC_ISSUER
 // exactly. In the lab it is fetched at http://identity:8080 and names http://localhost:8090/realms/lab;
@@ -28,15 +28,21 @@ export type SignedInUser = {
   name: string;
   username: string;
   roles: string[];
-  isReviewer: boolean;
 };
 
-export type TokenSet = {
+// What a completed sign-in leaves the session: the scopes the provider granted and the refresh token.
+// The access token from sign-in is sent to nobody, so it is not kept.
+export type SignInResult = { user: SignedInUser; granted: string[]; refreshToken: string | null };
+
+// An access token got by a refresh for one scope.
+export type Refreshed = {
   accessToken: string;
   // When the access token stops being valid, by this module's clock, in milliseconds since the epoch.
   accessExpiresAt: number;
+  // The scopes the token holds, from the response's scope.
+  granted: string[];
+  // The refresh token the provider returned, or null when it returned none and the old one stays good.
   refreshToken: string | null;
-  idToken: string;
 };
 
 export type PendingSignIn = { state: string; nonce: string; verifier: string };
@@ -82,6 +88,12 @@ function summary(error: unknown): string {
   return `${error.name}${code}: ${error.message}`;
 }
 
+// The scopes a token response names. A response without scope is taken as granting nothing, so nothing
+// is done on a scope the provider did not name.
+function scopesOf(response: oidc.TokenEndpointResponse): string[] {
+  return (response.scope ?? '').split(' ').filter((scope) => scope !== '');
+}
+
 function nonEmpty(claims: Record<string, unknown>, name: string): string {
   const value = claims[name];
   if (typeof value !== 'string' || value === '') {
@@ -93,14 +105,12 @@ function nonEmpty(claims: Record<string, unknown>, name: string): string {
 export class IdentityProvider {
   private readonly config: OidcConfig;
   private readonly rolesClaim: string;
-  private readonly reviewerRole: string;
   private readonly now: () => Date;
   private metadata: oidc.ServerMetadata | undefined;
 
-  constructor(config: OidcConfig, roles: { claim: string; reviewerRole: string }, now: () => Date) {
+  constructor(config: OidcConfig, rolesClaim: string, now: () => Date) {
     this.config = config;
-    this.rolesClaim = roles.claim;
-    this.reviewerRole = roles.reviewerRole;
+    this.rolesClaim = rolesClaim;
     this.now = now;
   }
 
@@ -178,14 +188,14 @@ export class IdentityProvider {
     return configuration;
   }
 
-  // Where to send the browser to sign in. Throws IdentityUnreachable.
-  async authorizationUrl(pending: PendingSignIn): Promise<string> {
+  // Where to send the browser to sign in, asking for openid and the given scopes. Throws IdentityUnreachable.
+  async authorizationUrl(pending: PendingSignIn, scopes: readonly string[]): Promise<string> {
     const configuration = this.configuration(await this.metadataNow());
     return oidc
       .buildAuthorizationUrl(configuration, {
         response_type: 'code',
         redirect_uri: this.config.redirectUri,
-        scope: 'openid',
+        scope: ['openid', ...scopes].join(' '),
         state: pending.state,
         nonce: pending.nonce,
         code_challenge: await oidc.calculatePKCECodeChallenge(pending.verifier),
@@ -194,20 +204,15 @@ export class IdentityProvider {
       .toString();
   }
 
-  private tokenSet(response: oidc.TokenEndpointResponse, previousIdToken: string | null): TokenSet {
-    const idToken = response.id_token ?? previousIdToken;
-    if (idToken === null) {
-      throw new SignInRefused('The identity provider returned no ID token.');
-    }
+  private refreshed(response: oidc.TokenEndpointResponse): Refreshed {
     // expires_in as the provider sent it, counted from this module's clock (openid-client's expiresIn()
-    // counts from the real one). A lifetime not given is treated as already over, so the token is
-    // renewed before use.
+    // counts from the real one). A lifetime not given is treated as already over.
     const lifetimeSeconds = response.expires_in ?? 0;
     return {
       accessToken: response.access_token,
       accessExpiresAt: this.now().getTime() + lifetimeSeconds * 1000,
+      granted: scopesOf(response),
       refreshToken: response.refresh_token ?? null,
-      idToken,
     };
   }
 
@@ -223,13 +228,12 @@ export class IdentityProvider {
       name: nonEmpty(claims, 'name'),
       username: nonEmpty(claims, 'preferred_username'),
       roles,
-      isReviewer: roles.includes(this.reviewerRole),
     };
   }
 
   // Exchanges the code from the callback and validates the ID token: signature, issuer, audience, nonce,
   // expiry. Throws IdentityUnreachable or SignInRefused.
-  async completeSignIn(callback: URLSearchParams, pending: PendingSignIn): Promise<{ user: SignedInUser; tokens: TokenSet }> {
+  async completeSignIn(callback: URLSearchParams, pending: PendingSignIn): Promise<SignInResult> {
     const configuration = this.configuration(await this.metadataNow());
     const currentUrl = new URL(this.config.redirectUri);
     currentUrl.search = callback.toString();
@@ -252,19 +256,16 @@ export class IdentityProvider {
     if (claims === undefined) {
       throw new SignInRefused('The identity provider returned no ID token.');
     }
-    return { user: this.userFrom({ ...claims }), tokens: this.tokenSet(response, null) };
+    return { user: this.userFrom({ ...claims }), granted: scopesOf(response), refreshToken: response.refresh_token ?? null };
   }
 
-  // A new access token for a refresh token. Throws IdentityUnreachable or SignInRefused.
-  async refresh(tokens: TokenSet): Promise<TokenSet> {
-    if (tokens.refreshToken === null) {
-      throw new SignInRefused('The session has no refresh token.');
-    }
+  // An access token for one scope, got by a refresh with scope=openid <scope>. The provider answers 200
+  // without a scope the person's role does not grant: the caller reads granted. Throws
+  // IdentityUnreachable or SignInRefused.
+  async refresh(refreshToken: string, scope: string): Promise<Refreshed> {
     const configuration = this.configuration(await this.metadataNow());
     try {
-      const response = await oidc.refreshTokenGrant(configuration, tokens.refreshToken);
-      const renewed = this.tokenSet(response, tokens.idToken);
-      return { ...renewed, refreshToken: renewed.refreshToken ?? tokens.refreshToken };
+      return this.refreshed(await oidc.refreshTokenGrant(configuration, refreshToken, { scope: `openid ${scope}` }));
     } catch (error) {
       if (isTransportFailure(error)) {
         throw new IdentityUnreachable('The identity provider could not be reached to renew the access token.');

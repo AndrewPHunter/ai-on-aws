@@ -40,7 +40,8 @@ create index if not exists runs_by_inquiry on runs(inquiry_id, n);
 `;
 
 // Columns added after the first release. A database written before them gets them, empty, when it is
-// opened; its existing rows read back with no author.
+// opened; its existing runs read back with no author, and its existing inquiries, having no author, are
+// read by nobody.
 const ADDED_COLUMNS: readonly { table: string; column: string }[] = [
   { table: 'inquiries', column: 'entered_by_sub' },
   { table: 'inquiries', column: 'entered_by_name' },
@@ -215,8 +216,10 @@ export class InquiryStore {
     return row === undefined ? undefined : runOf(row);
   }
 
-  getInquiry(inquiryId: string): Inquiry | undefined {
-    const row = this.db.prepare('select * from inquiries where id = ?').get(inquiryId);
+  // The inquiry as its reader may see it: undefined when there is none with that id or another person
+  // entered it. An inquiry with no author is nobody's.
+  getInquiry(inquiryId: string, readerSub: string): Inquiry | undefined {
+    const row = this.db.prepare('select * from inquiries where id = ? and entered_by_sub = ?').get(inquiryId, readerSub);
     if (row === undefined) {
       return undefined;
     }
@@ -230,9 +233,12 @@ export class InquiryStore {
     };
   }
 
-  // Newest first. One more row than the limit is read to know whether the list is truncated.
-  listInquiries(): InquiryList {
-    const rows = this.db.prepare('select * from inquiries order by n desc limit ?').all(LIST_LIMIT + 1);
+  // The inquiries the reader entered, newest first. One more row than the limit is read to know whether
+  // the list is truncated.
+  listInquiries(readerSub: string): InquiryList {
+    const rows = this.db
+      .prepare('select * from inquiries where entered_by_sub = ? order by n desc limit ?')
+      .all(readerSub, LIST_LIMIT + 1);
     const inquiries: InquirySummary[] = rows.slice(0, LIST_LIMIT).map((row) => {
       const id = text(row, 'id');
       return {

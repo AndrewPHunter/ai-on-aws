@@ -11,7 +11,10 @@
 //   GET  /authorize                          signs the scripted user in and redirects back with a code, the
 //                                           state and iss (or with error=access_denied)
 //   POST /token                              authorization_code (client secret and PKCE verifier enforced) and
-//                                           refresh_token grants
+//                                           refresh_token grants; each answers scope with what was asked, as a
+//                                           provider does for a user granted every scope: the code grant what
+//                                           /authorize was asked, a refresh its own scope or else what the code
+//                                           grant was given
 //   POST /revoke                             token revocation (RFC 7009), client secret enforced; a revoked
 //                                           refresh token is refused from then on
 //   GET  /logout                             end-session
@@ -72,7 +75,7 @@ export type StandInIssuerOptions = {
   // The issuer it names in discovery and in tokens. Default: the address it listens on.
   issuer?: string;
   accessTokenLifetimeSeconds?: number;
-  // The access token's audiences. Default: the lab's two, lab-agents and lab-case-system.
+  // The access token's audiences. Default: intake-handwritten and case-system, two of the lab's.
   audiences?: string[];
   // The revocation endpoint the discovery document names. Default: its own /revoke. Keycloak in the lab
   // names this one endpoint at the browser's address, which a container cannot reach; a test passes an
@@ -125,9 +128,14 @@ type PendingCode = {
   redirectUri: string;
   challenge: string;
   nonce: string | undefined;
+  // The scope /authorize was asked for.
+  scope: string;
   user: ScriptedUser;
   issuedAt: number;
 };
+
+// Whom a refresh token was issued to, and the scope the code grant that began its chain was given.
+type RefreshGrant = { user: ScriptedUser; scope: string };
 
 function random(): string {
   return randomBytes(24).toString('base64url');
@@ -180,9 +188,9 @@ export async function startStandInIssuer(options: StandInIssuerOptions): Promise
   const received: RecordedRequest[] = [];
   const issued: IssuedTokens[] = [];
   const codes = new Map<string, PendingCode>();
-  const refreshTokens = new Map<string, ScriptedUser>();
+  const refreshTokens = new Map<string, RefreshGrant>();
   const accessLifetime = options.accessTokenLifetimeSeconds ?? 600;
-  const audiences = options.audiences ?? ['lab-agents', 'lab-case-system'];
+  const audiences = options.audiences ?? ['intake-handwritten', 'case-system'];
 
   let url = '';
   let issuer = '';
@@ -191,7 +199,7 @@ export async function startStandInIssuer(options: StandInIssuerOptions): Promise
     return new SignJWT(claims).setProtectedHeader({ alg: 'RS256', kid, typ: 'JWT' }).sign(key);
   }
 
-  async function tokensFor(subject: ScriptedUser, nonce: string | undefined, forCode: boolean): Promise<IssuedTokens> {
+  async function tokensFor(subject: ScriptedUser, nonce: string | undefined, forCode: boolean, granted: string): Promise<IssuedTokens> {
     const now = seconds(options.now());
     const bad = forCode ? misbehaviour : 'none';
     const iat = bad === 'expired' ? now - EXPIRED_BY_SECONDS - accessLifetime : now;
@@ -225,7 +233,7 @@ export async function startStandInIssuer(options: StandInIssuerOptions): Promise
     }
     const id = await sign(idClaims, bad === 'other_key' ? other.privateKey : own.privateKey);
     const refresh = random();
-    refreshTokens.set(refresh, subject);
+    refreshTokens.set(refresh, { user: subject, scope: granted });
     const tokens = { access_token: access, refresh_token: refresh, id_token: id };
     issued.push(tokens);
     return tokens;
@@ -258,6 +266,7 @@ export async function startStandInIssuer(options: StandInIssuerOptions): Promise
       redirectUri: query.redirect_uri,
       challenge: query.code_challenge,
       nonce: query.nonce,
+      scope: query.scope ?? '',
       user,
       issuedAt: seconds(options.now()),
     });
@@ -290,19 +299,20 @@ export async function startStandInIssuer(options: StandInIssuerOptions): Promise
         oauthError(response, 400, 'invalid_grant', 'PKCE verification failed.');
         return;
       }
-      const tokens = await tokensFor(code.user, code.nonce, true);
-      sendJson(response, 200, { ...tokens, token_type: 'Bearer', expires_in: accessLifetime, scope: 'openid' });
+      const tokens = await tokensFor(code.user, code.nonce, true, code.scope);
+      sendJson(response, 200, { ...tokens, token_type: 'Bearer', expires_in: accessLifetime, scope: code.scope });
       return;
     }
     if (form.grant_type === 'refresh_token') {
-      const subject = form.refresh_token === undefined ? undefined : refreshTokens.get(form.refresh_token);
-      if (misbehaviour === 'refuse_refresh' || subject === undefined || form.refresh_token === undefined) {
+      const grant = form.refresh_token === undefined ? undefined : refreshTokens.get(form.refresh_token);
+      if (misbehaviour === 'refuse_refresh' || grant === undefined || form.refresh_token === undefined) {
         oauthError(response, 400, 'invalid_grant', 'The refresh token is not valid.');
         return;
       }
       refreshTokens.delete(form.refresh_token);
-      const tokens = await tokensFor(subject, undefined, false);
-      sendJson(response, 200, { ...tokens, token_type: 'Bearer', expires_in: accessLifetime, scope: 'openid' });
+      const scope = form.scope ?? grant.scope;
+      const tokens = await tokensFor(grant.user, undefined, false, grant.scope);
+      sendJson(response, 200, { ...tokens, token_type: 'Bearer', expires_in: accessLifetime, scope });
       return;
     }
     oauthError(response, 400, 'unsupported_grant_type', 'Only authorization_code and refresh_token are supported.');
