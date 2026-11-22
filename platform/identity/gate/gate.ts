@@ -1,17 +1,39 @@
 // Gate for the identity provider (platform/identity/README.md).
 //
-// Answers one question: does a running `identity` service issue the tokens the lab relies on?
-//   1. Its realm's discovery document answers from inside the stack's network, names the browser-facing
-//      issuer, and points at a token endpoint and key set that answer from inside the network.
-//   2. Each realm user can sign in through the real Authorization Code flow with PKCE (S256): the sign-in
-//      page is requested, its form is posted with a cookie jar, the redirect to the callback is read but not
-//      followed, and the code is exchanged with the client secret and the code verifier.
-//   3. Each access token is a JWS signed with RS256 by a key at jwks_uri, and carries the claims in the
-//      README's claims table. Each ID token is signed the same way, names the issuer and the client, and
-//      carries the user's roles.
-//   4. The token endpoint refuses the password grant and the client-credentials grant, and the
-//      authorization endpoint refuses a request with no PKCE challenge, with the plain method, and for
-//      the implicit flow (response_type=token).
+// Answers one question: does a running `identity` service, started from realm/lab-realm.json, decide who gets
+// which token the way the lab relies on? The statements, in the order they are checked (Gn names the statement
+// of the realm's contract each one makes):
+//   G14  The realm's discovery document answers from inside the stack's network, names the browser-facing
+//        issuer, and points at a key set that answers with keys.
+//   G1   Each person signs in through the real Authorization Code flow with PKCE (S256), asking for openid and
+//        every scope the desk client may ask for: the sign-in page is requested, its form is posted with a
+//        cookie jar, the redirect to the callback is read but not followed, and the code is exchanged with the
+//        client secret and the code verifier. The token is granted exactly the scopes the person's role grants.
+//   G2   That access token is a JWS signed with RS256 by a key at jwks_uri, and carries the issuer, exactly the
+//        granted scopes' audiences, client_id desk, the fixed sub, preferred_username, name, roles holding the
+//        person's one staff role and no other lab role, no realm_access or resource_access, and the realm's
+//        lifetime (G14). The ID token is signed the same way, names the issuer and the client, and carries the
+//        same roles.
+//   G3   A refresh with scope=openid <one granted scope> gives a token for that scope's audiences alone.
+//   G4   The refresh token that refresh returned still reaches the whole grant, and another granted scope.
+//   G5   A refresh for a scope the role does not grant is answered 200 with the scope and its audiences absent.
+//   G11, G12  Each machine obtains a token by client credentials for its scope, with its fixed sub, its name and
+//        its one role; evaluation is refused a scope its client may not ask for.
+//   G7, G8, G11  Each agent exchanges the token it is called with for a token for the one service it calls.
+//   G9   An agent is refused a person's token it is not an audience of.
+//   G13, G14  The token endpoint refuses the password grant for desk and client credentials for desk and the two
+//        audience-only clients; the authorization endpoint refuses a request with no PKCE challenge, with the
+//        plain method, and for the implicit flow (response_type=token).
+// Last, the answers the throwaway Keycloak runs did not observe on this path, so that a wrong expectation there
+// leaves every statement above checked:
+//   G10  The desk client, both audience-only clients and both machines cannot exchange a token.
+//   G9   An agent is refused a scope its client may not ask for.
+//   G6   The desk client asking for a scope it may not ask for is refused invalid_scope, at a refresh and at the
+//        authorization endpoint.
+//
+// Whether a token or an answer meets a statement is decided by the pure functions of ../src/judge.ts; this file
+// fetches, verifies signatures (jose) and reports. What stays here is transport: the cookie jar, the rewrite of
+// front-channel URLs (toTransport), and the requests. The gate stops at the first statement that does not hold.
 //
 // The gate stands in for the browser while running inside the network. The browser reaches the provider at
 // the issuer's origin (http://localhost:8090), which inside a container is the container itself, so every
@@ -19,31 +41,63 @@
 // query kept (toTransport below). Back-channel URLs from discovery are used as given.
 //
 // Usage: node gate.ts <config.json>
-//   Environment: IDENTITY_URL (where the gate reaches the provider), IDENTITY_DESK_CLIENT_SECRET, and the
-//   password variable each user in the config names.
+//   Environment: IDENTITY_URL (where the gate reaches the provider), and the password or secret variable each
+//   user, agent and machine in the config names, and the desk client's (clientSecretVariable).
 // Exit codes: 0 = every statement holds, 1 = a statement does not hold, 2 = the gate itself could not run.
-// The JSON report goes to stdout; progress goes to stderr. Neither carries a password, secret, code or token.
+// The JSON report goes to stdout; progress goes to stderr. Neither carries a password, secret, code or token:
+// a token appears only as its verified header and decoded claims.
 
 import { randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { createRemoteJWKSet, decodeProtectedHeader, jwtVerify } from 'jose'
-import { checkClaims, checkIdTokenRoles } from '../src/claims.ts'
-import { signInFormAction } from '../src/login-form.ts'
+import {
+  checkAuthorizationRefused,
+  checkDiscovery,
+  checkErrorAnswer,
+  checkExchangedToken,
+  checkGrantedScopes,
+  checkIdTokenRoles,
+  checkKeySet,
+  checkMachineToken,
+  checkNarrowedToken,
+  checkPersonToken,
+  checkRefused,
+  checkSignInPage,
+  checkSignInRedirect,
+  checkTokenAnswer,
+  checkUngrantedScope,
+  errorOf,
+  type Body,
+  type Claims,
+  type Discovery,
+  type Violation,
+} from '../src/judge.ts'
 import { codeChallengeS256, codeVerifier } from '../src/pkce.ts'
 
 // ---------- configuration ----------
 
-type UserConfig = { username: string; passwordVariable: string; isReviewer: boolean }
+type UserConfig = { username: string; passwordVariable: string; id: string; staffRole: string; granted: string[] }
+type AgentConfig = { clientId: string; secretVariable: string; audience: string; scopes: string[]; subject: { username: string; scope: string } }
+type MachineConfig = { clientId: string; secretVariable: string; id: string; role: string; scope: string; forbiddenScope?: string }
 
 type GateConfig = {
   issuer: string
   clientId: string
+  clientSecretVariable: string
   redirectUri: string
-  audiences: string[]
-  reviewerRole: string
   lifetimeSeconds: number
   requestTimeoutMs: number
+  /** Each custom scope and the audiences it names. */
+  scopes: Map<string, string[]>
+  deskScopes: string[]
+  deskForbiddenScope: string
+  staffRoles: string[]
+  machineRoles: string[]
   users: UserConfig[]
+  agents: AgentConfig[]
+  machines: MachineConfig[]
+  audienceOnlyClients: string[]
+  exchangeOffDescription: string
 }
 
 class UsageError extends Error {}
@@ -62,27 +116,63 @@ function field<T>(raw: Record<string, unknown>, name: string, check: (value: unk
 
 const isString = (value: unknown): value is string => typeof value === 'string' && value !== ''
 const isNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value)
-const isBoolean = (value: unknown): value is boolean => typeof value === 'boolean'
 const isStrings = (value: unknown): value is string[] => Array.isArray(value) && value.every(isString)
-const isRecords = (value: unknown): value is Record<string, unknown>[] =>
-  Array.isArray(value) && value.every((entry) => typeof entry === 'object' && entry !== null)
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
+const isRecords = (value: unknown): value is Record<string, unknown>[] => Array.isArray(value) && value.every(isRecord)
 
 function loadConfig(path: string): GateConfig {
   const raw = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
-  return {
+  const scopes = new Map<string, string[]>()
+  for (const [name, audiences] of Object.entries(field(raw, 'scopes', isRecord, 'an object'))) {
+    if (!isStrings(audiences)) throw new UsageError(`config: scopes.${name} must be a list of strings`)
+    scopes.set(name, audiences)
+  }
+  const config: GateConfig = {
     issuer: field(raw, 'issuer', isString, 'a string'),
     clientId: field(raw, 'clientId', isString, 'a string'),
+    clientSecretVariable: field(raw, 'clientSecretVariable', isString, 'a string'),
     redirectUri: field(raw, 'redirectUri', isString, 'a string'),
-    audiences: field(raw, 'audiences', isStrings, 'a list of strings'),
-    reviewerRole: field(raw, 'reviewerRole', isString, 'a string'),
     lifetimeSeconds: field(raw, 'lifetimeSeconds', isNumber, 'a number'),
     requestTimeoutMs: field(raw, 'requestTimeoutMs', isNumber, 'a number'),
+    scopes,
+    deskScopes: field(raw, 'deskScopes', isStrings, 'a list of strings'),
+    deskForbiddenScope: field(raw, 'deskForbiddenScope', isString, 'a string'),
+    staffRoles: field(raw, 'staffRoles', isStrings, 'a list of strings'),
+    machineRoles: field(raw, 'machineRoles', isStrings, 'a list of strings'),
     users: field(raw, 'users', isRecords, 'a list of objects').map((user) => ({
       username: field(user, 'username', isString, 'a string'),
       passwordVariable: field(user, 'passwordVariable', isString, 'a string'),
-      isReviewer: field(user, 'isReviewer', isBoolean, 'true or false'),
+      id: field(user, 'id', isString, 'a string'),
+      staffRole: field(user, 'staffRole', isString, 'a string'),
+      granted: field(user, 'granted', isStrings, 'a list of strings'),
     })),
+    agents: field(raw, 'agents', isRecords, 'a list of objects').map((agent) => {
+      const subject = field(agent, 'subject', isRecord, 'an object')
+      return {
+        clientId: field(agent, 'clientId', isString, 'a string'),
+        secretVariable: field(agent, 'secretVariable', isString, 'a string'),
+        audience: field(agent, 'audience', isString, 'a string'),
+        scopes: field(agent, 'scopes', isStrings, 'a list of strings'),
+        subject: { username: field(subject, 'username', isString, 'a string'), scope: field(subject, 'scope', isString, 'a string') },
+      }
+    }),
+    machines: field(raw, 'machines', isRecords, 'a list of objects').map((machine) => ({
+      clientId: field(machine, 'clientId', isString, 'a string'),
+      secretVariable: field(machine, 'secretVariable', isString, 'a string'),
+      id: field(machine, 'id', isString, 'a string'),
+      role: field(machine, 'role', isString, 'a string'),
+      scope: field(machine, 'scope', isString, 'a string'),
+      // A scope the machine's client may not ask for, whose refusal the gate states (G11). Optional.
+      ...(machine.forbiddenScope === undefined ? {} : { forbiddenScope: field(machine, 'forbiddenScope', isString, 'a string') }),
+    })),
+    audienceOnlyClients: field(raw, 'audienceOnlyClients', isStrings, 'a list of strings'),
+    exchangeOffDescription: field(raw, 'exchangeOffDescription', isString, 'a string'),
   }
+  for (const name of [...config.deskScopes, config.deskForbiddenScope, ...config.users.flatMap((user) => user.granted)]) {
+    if (!config.scopes.has(name)) throw new UsageError(`config: ${name} is not in scopes`)
+  }
+  if (config.users.length === 0) throw new UsageError('config: users is empty')
+  return config
 }
 
 // ---------- statements ----------
@@ -96,14 +186,17 @@ class StatementFailed extends Error {
   }
 }
 
-function must(condition: boolean, statement: string, detail: string): asserts condition {
-  if (!condition) throw new StatementFailed(statement, detail)
-}
-
 const held: string[] = []
 function holds(statement: string): void {
   held.push(statement)
   process.stderr.write(`gate: holds: ${statement}\n`)
+}
+
+/** Holds `statement` if the judge found nothing; otherwise fails it on the first departure. */
+function judged(statement: string, violations: readonly Violation[]): void {
+  const first = violations[0]
+  if (first !== undefined) throw new StatementFailed(`${statement}: ${first.statement}`, first.detail)
+  holds(statement)
 }
 
 // ---------- HTTP ----------
@@ -112,7 +205,7 @@ function holds(statement: string): void {
 function toTransport(url: string, browserOrigin: string, transportOrigin: string): string {
   const parsed = new URL(url)
   if (parsed.origin !== browserOrigin && parsed.origin !== transportOrigin) {
-    throw new StatementFailed('front-channel URL on the browser origin', `${parsed.origin} is neither ${browserOrigin} nor ${transportOrigin}`)
+    throw new StatementFailed('G14 front-channel URL on the browser origin', `${parsed.origin} is neither ${browserOrigin} nor ${transportOrigin}`)
   }
   return `${transportOrigin}${parsed.pathname}${parsed.search}`
 }
@@ -150,61 +243,86 @@ async function json(response: Response): Promise<Record<string, unknown>> {
   return value as Record<string, unknown>
 }
 
-// ---------- the checks ----------
+type Answer = { status: number; body: Body }
 
-type Discovery = {
-  issuer: string
-  authorization_endpoint: string
-  token_endpoint: string
-  jwks_uri: string
+/** A form posted to the token endpoint, and its answer. */
+async function tokenRequest(http: Http, discovery: Discovery, form: Record<string, string>): Promise<Answer> {
+  const response = await request(http, discovery.token_endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(form).toString(),
+  })
+  return { status: response.status, body: await json(response) }
 }
 
-async function discover(http: Http, transport: string, config: GateConfig): Promise<Discovery> {
-  const realmPath = new URL(config.issuer).pathname
-  const url = `${transport}${realmPath}/.well-known/openid-configuration`
-  const statement = `discovery document at ${url} answers 200`
+/** The answer's error code and description, for the report and for a failure's detail. */
+const refusal = (answer: Answer): { status: number } & ReturnType<typeof errorOf> => ({ status: answer.status, ...errorOf(answer.body) })
+
+// ---------- discovery and keys ----------
+
+type Keys = ReturnType<typeof createRemoteJWKSet>
+
+/** GET a URL and its JSON body. A provider that does not answer fails `statement`. */
+async function getJson(http: Http, url: string, statement: string): Promise<Answer> {
   let response: Response
   try {
     response = await request(http, url)
   } catch (error) {
     throw new StatementFailed(statement, `request failed: ${(error as Error).message}`)
   }
-  must(response.status === 200, statement, `status ${response.status}`)
-  const body = await json(response)
-  holds(statement)
+  return { status: response.status, body: response.status === 200 ? await json(response) : {} }
+}
 
-  const text = (name: keyof Discovery): string => {
-    const value = body[name]
-    must(typeof value === 'string' && value !== '', `discovery names ${name}`, `got ${JSON.stringify(value)}`)
-    return value
-  }
-  const discovery: Discovery = {
-    issuer: text('issuer'),
-    authorization_endpoint: text('authorization_endpoint'),
-    token_endpoint: text('token_endpoint'),
-    jwks_uri: text('jwks_uri'),
-  }
-  must(discovery.issuer === config.issuer, 'discovery issuer', `expected ${config.issuer}, got ${discovery.issuer}`)
-  holds(`discovery issuer is ${config.issuer}`)
+async function discover(http: Http, transport: string, config: GateConfig): Promise<Discovery> {
+  const realmPath = new URL(config.issuer).pathname
+  const url = `${transport}${realmPath}/.well-known/openid-configuration`
+  const statement = `G14 the discovery document at ${url} answers 200, names its endpoints, and names issuer ${config.issuer}`
+  const answer = await getJson(http, url, statement)
+  const { discovery, violations } = checkDiscovery(answer.status, answer.body, config.issuer)
+  judged(statement, violations)
+  if (discovery === null) throw new Error('checkDiscovery held without a discovery document')
 
-  const jwksStatement = `jwks_uri ${discovery.jwks_uri} answers 200 with keys`
-  let jwks: Response
-  try {
-    jwks = await request(http, discovery.jwks_uri)
-  } catch (error) {
-    throw new StatementFailed(jwksStatement, `request failed: ${(error as Error).message}`)
-  }
-  must(jwks.status === 200, jwksStatement, `status ${jwks.status}`)
-  const keys = (await json(jwks)).keys
-  must(Array.isArray(keys) && keys.length > 0, jwksStatement, 'no keys')
-  holds(jwksStatement)
+  const jwksStatement = `G14 jwks_uri ${discovery.jwks_uri} answers 200 with keys`
+  const jwks = await getJson(http, discovery.jwks_uri, jwksStatement)
+  judged(jwksStatement, checkKeySet(jwks.status, jwks.body))
   return discovery
 }
 
-type Secrets = { clientSecret: string; passwords: Map<string, string> }
+/** A field checkTokenAnswer has already found to be a non-empty string. */
+function tokenField(body: Body, name: string): string {
+  const value = body[name]
+  if (typeof value !== 'string') throw new Error(`${name} is not a string after checkTokenAnswer held`)
+  return value
+}
 
-/** The Authorization Code flow with PKCE, as a browser and the desk's server would run it. Returns the access and ID tokens. */
-async function signIn(http: Http, transport: string, config: GateConfig, discovery: Discovery, user: UserConfig, secrets: Secrets): Promise<{ accessToken: string; idToken: string }> {
+type Verified = { header: Record<string, unknown>; claims: Claims }
+
+/** The token's RS256 signature against the published keys (jose refuses any other alg). Returns its header and claims; the token itself is never reported. */
+async function verifyToken(token: string, keys: Keys, statement: string): Promise<Verified> {
+  try {
+    const header = decodeProtectedHeader(token)
+    const { payload } = await jwtVerify(token, keys, { algorithms: ['RS256'] })
+    holds(statement)
+    return { header: { alg: header.alg, kid: header.kid, typ: header.typ }, claims: { ...payload } }
+  } catch (error) {
+    throw new StatementFailed(statement, (error as Error).message)
+  }
+}
+
+/** checkTokenAnswer for `fields`, then the access token's signature. */
+async function verifiedAnswer(answer: Answer, keys: Keys, statement: string, fields: readonly string[] = ['access_token']): Promise<Verified> {
+  judged(statement, checkTokenAnswer(answer.status, answer.body, fields))
+  return verifyToken(tokenField(answer.body, 'access_token'), keys, `${statement}: the access token is a JWS signed with RS256 by a key at jwks_uri`)
+}
+
+// ---------- the sign-in ----------
+
+type Secrets = { deskSecret: string; passwords: Map<string, string>; clientSecrets: Map<string, string> }
+
+type SignedIn = { accessToken: Verified; idToken: string; refreshToken: string }
+
+/** The Authorization Code flow with PKCE, as a browser and the desk's server would run it, asking for `scope`. */
+async function signIn(http: Http, transport: string, config: GateConfig, discovery: Discovery, keys: Keys, user: UserConfig, secrets: Secrets, scope: string): Promise<SignedIn> {
   const who = user.username
   const browserOrigin = new URL(config.issuer).origin
   const jar = new CookieJar()
@@ -216,22 +334,17 @@ async function signIn(http: Http, transport: string, config: GateConfig, discove
     response_type: 'code',
     client_id: config.clientId,
     redirect_uri: config.redirectUri,
-    scope: 'openid',
+    scope,
     state,
     code_challenge: codeChallengeS256(verifier),
     code_challenge_method: 'S256',
   }).toString()
   const page = await request(http, authorize.toString())
   jar.take(page)
-  const pageStatement = `${who}: the authorization endpoint answers with the sign-in page`
-  must(page.status === 200, pageStatement, `status ${page.status}`)
-  let action: string
-  try {
-    action = signInFormAction(await page.text())
-  } catch (error) {
-    throw new StatementFailed(pageStatement, (error as Error).message)
-  }
-  holds(pageStatement)
+  const shown = checkSignInPage(page.status, await page.text())
+  judged(`G1 ${who}: the authorization endpoint answers with the sign-in page`, shown.violations)
+  if (shown.action === null) throw new Error('checkSignInPage held without an action')
+  const action = shown.action
 
   const password = secrets.passwords.get(who)
   if (password === undefined) throw new UsageError(`no password for ${who}`)
@@ -241,44 +354,31 @@ async function signIn(http: Http, transport: string, config: GateConfig, discove
     body: new URLSearchParams({ username: who, password, credentialId: '' }).toString(),
   })
   await posted.arrayBuffer()
-  const postStatement = `${who}: the sign-in form redirects to ${config.redirectUri} with a code and the state`
-  must(posted.status === 302 || posted.status === 303, postStatement, `status ${posted.status} (a sign-in page shown again means the password or the account is wrong)`)
-  const location = posted.headers.get('location') ?? ''
-  const callback = new URL(location, action)
-  must(`${callback.origin}${callback.pathname}` === config.redirectUri, postStatement, `redirected to ${callback.origin}${callback.pathname}`)
-  const code = callback.searchParams.get('code')
-  must(code !== null && code !== '', postStatement, `no code; error ${JSON.stringify(callback.searchParams.get('error'))}`)
-  must(callback.searchParams.get('state') === state, postStatement, 'state does not match')
-  holds(postStatement)
+  const redirect = checkSignInRedirect({ status: posted.status, location: posted.headers.get('location') }, action, config.redirectUri, state)
+  judged(`G1 ${who}: the sign-in form redirects to ${config.redirectUri} with a code and the state`, redirect.violations)
+  if (redirect.code === null) throw new Error('checkSignInRedirect held without a code')
 
-  const exchange = await request(http, discovery.token_endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'authorization_code',
-      code,
-      redirect_uri: config.redirectUri,
-      code_verifier: verifier,
-      client_id: config.clientId,
-      client_secret: secrets.clientSecret,
-    }).toString(),
+  const exchanged = await tokenRequest(http, discovery, {
+    grant_type: 'authorization_code',
+    code: redirect.code,
+    redirect_uri: config.redirectUri,
+    code_verifier: verifier,
+    client_id: config.clientId,
+    client_secret: secrets.deskSecret,
   })
-  const exchangeStatement = `${who}: the token endpoint exchanges the code for an access token`
-  const tokens = await json(exchange)
-  must(exchange.status === 200, exchangeStatement, `status ${exchange.status}, error ${JSON.stringify(tokens.error)}`)
-  const accessToken = tokens.access_token
-  must(typeof accessToken === 'string' && accessToken !== '', exchangeStatement, 'no access_token in the response')
-  const idToken = tokens.id_token
-  must(typeof idToken === 'string' && idToken !== '', exchangeStatement, 'no id_token in the response')
-  holds(exchangeStatement)
-  return { accessToken, idToken }
+  const accessToken = await verifiedAnswer(exchanged, keys, `G1 ${who}: the token endpoint exchanges the code for an access token, an ID token and a refresh token`, [
+    'access_token',
+    'id_token',
+    'refresh_token',
+  ])
+  return { accessToken, idToken: tokenField(exchanged.body, 'id_token'), refreshToken: tokenField(exchanged.body, 'refresh_token') }
 }
 
 /** The ID token's signature, issuer and audience, then the roles the desk's server reads from it. Returns its roles claim. */
-async function checkIdToken(idToken: string, keys: ReturnType<typeof createRemoteJWKSet>, config: GateConfig, user: UserConfig): Promise<unknown> {
+async function checkIdToken(idToken: string, keys: Keys, config: GateConfig, user: UserConfig): Promise<unknown> {
   const who = user.username
-  const signed = `${who}: the ID token is a JWS signed with RS256 by a key at jwks_uri, for issuer ${config.issuer} and audience ${config.clientId}`
-  let claims: Record<string, unknown>
+  const signed = `G14 ${who}: the ID token is a JWS signed with RS256 by a key at jwks_uri, for issuer ${config.issuer} and audience ${config.clientId}`
+  let claims: Claims
   try {
     const { payload } = await jwtVerify(idToken, keys, { algorithms: ['RS256'], issuer: config.issuer, audience: config.clientId })
     claims = { ...payload }
@@ -286,54 +386,56 @@ async function checkIdToken(idToken: string, keys: ReturnType<typeof createRemot
     throw new StatementFailed(signed, (error as Error).message)
   }
   holds(signed)
-  const first = checkIdTokenRoles(claims, { reviewerRole: config.reviewerRole, isReviewer: user.isReviewer })[0]
-  if (first !== undefined) throw new StatementFailed(`${who}: ${first.statement}`, first.detail)
-  holds(`${who}: the ID token carries roles, with ${config.reviewerRole} ${user.isReviewer ? 'present' : 'absent'}`)
+  judged(`G14 ${who}: the ID token carries roles holding ${user.staffRole} and no other lab role`, checkIdTokenRoles(claims, user.staffRole, labRoles(config)))
   return claims.roles
 }
 
-async function verifyToken(token: string, keys: ReturnType<typeof createRemoteJWKSet>, who: string): Promise<{ header: Record<string, unknown>; claims: Record<string, unknown> }> {
-  const statement = `${who}: the access token is a JWS signed with RS256 by a key at jwks_uri`
-  let header: Record<string, unknown>
-  try {
-    header = { ...decodeProtectedHeader(token) }
-  } catch (error) {
-    throw new StatementFailed(statement, `not a JWS: ${(error as Error).message}`)
-  }
-  must(header.alg === 'RS256', statement, `alg is ${JSON.stringify(header.alg)}`)
-  try {
-    const { payload } = await jwtVerify(token, keys, { algorithms: ['RS256'] })
-    holds(statement)
-    return { header: { alg: header.alg, kid: header.kid, typ: header.typ }, claims: { ...payload } }
-  } catch (error) {
-    throw new StatementFailed(statement, (error as Error).message)
-  }
-}
+const labRoles = (config: GateConfig): string[] => [...config.staffRoles, ...config.machineRoles]
+const customScopes = (config: GateConfig): string[] => [...config.scopes.keys()]
+const audiencesOf = (config: GateConfig, scopes: readonly string[]): string[] => [...new Set(scopes.flatMap((scope) => config.scopes.get(scope) ?? []))]
 
-async function passwordGrantRefused(http: Http, config: GateConfig, discovery: Discovery, user: UserConfig, secrets: Secrets): Promise<{ status: number; error: unknown }> {
-  const statement = 'the token endpoint refuses the password grant'
-  const response = await request(http, discovery.token_endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'password',
-      username: user.username,
-      password: secrets.passwords.get(user.username) ?? '',
-      scope: 'openid',
-      client_id: config.clientId,
-      client_secret: secrets.clientSecret,
-    }).toString(),
+// ---------- refreshes, exchanges and client credentials ----------
+
+function refresh(http: Http, config: GateConfig, discovery: Discovery, secrets: Secrets, refreshToken: string, scope: string): Promise<Answer> {
+  return tokenRequest(http, discovery, {
+    grant_type: 'refresh_token',
+    refresh_token: refreshToken,
+    scope,
+    client_id: config.clientId,
+    client_secret: secrets.deskSecret,
   })
-  const body = await json(response)
-  must(response.status >= 400 && response.status < 500 && body.access_token === undefined, statement, `status ${response.status}`)
-  holds(statement)
-  return { status: response.status, error: body.error }
 }
 
-type Refused = { status: number; error: string | null };
+/** RFC 8693, as the agents send it. A client with no secret (`secret` undefined) sends none. */
+function exchange(http: Http, discovery: Discovery, clientId: string, secret: string | undefined, subjectToken: string, audience: string, scopes: readonly string[]): Promise<Answer> {
+  return tokenRequest(http, discovery, {
+    grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
+    subject_token: subjectToken,
+    subject_token_type: 'urn:ietf:params:oauth:token-type:access_token',
+    audience,
+    scope: scopes.join(' '),
+    client_id: clientId,
+    ...(secret === undefined ? {} : { client_secret: secret }),
+  })
+}
 
-// An authorization request the provider must refuse. Refused means: answered 400, or redirected back with
-// error= and without a code or a token. The redirect is read, not followed.
+function clientCredentials(http: Http, discovery: Discovery, clientId: string, secret: string | undefined, scope: string | undefined): Promise<Answer> {
+  return tokenRequest(http, discovery, {
+    grant_type: 'client_credentials',
+    client_id: clientId,
+    ...(secret === undefined ? {} : { client_secret: secret }),
+    ...(scope === undefined ? {} : { scope }),
+  })
+}
+
+function clientSecret(secrets: Secrets, clientId: string): string {
+  const secret = secrets.clientSecrets.get(clientId)
+  if (secret === undefined) throw new UsageError(`no secret for client ${clientId}`)
+  return secret
+}
+
+// ---------- the authorization endpoint's refusals ----------
+
 async function authorizationRefused(
   http: Http,
   transport: string,
@@ -341,51 +443,36 @@ async function authorizationRefused(
   discovery: Discovery,
   statement: string,
   parameters: Record<string, string>,
-): Promise<Refused> {
+  expectedError?: string,
+): Promise<{ status: number; error: string | null }> {
   const browserOrigin = new URL(config.issuer).origin
   const url = new URL(toTransport(discovery.authorization_endpoint, browserOrigin, transport))
   url.search = new URLSearchParams({ client_id: config.clientId, redirect_uri: config.redirectUri, scope: 'openid', state: 'gate-refusal', ...parameters }).toString()
   const response = await request(http, url.toString())
   await response.arrayBuffer()
-  if (response.status === 400) {
-    holds(statement)
-    return { status: 400, error: null }
-  }
-  const location = response.headers.get('location') ?? ''
-  must(response.status === 302 || response.status === 303, statement, `status ${response.status}`)
-  const back = new URL(location, url)
-  const answer = new URLSearchParams(back.hash.startsWith('#') ? back.hash.slice(1) : back.search)
-  const error = answer.get('error')
-  must(error !== null && !answer.has('code') && !answer.has('access_token') && !answer.has('id_token'), statement, `redirected without an error, or with a code or token`)
-  holds(statement)
+  const { error, violations } = checkAuthorizationRefused({ status: response.status, location: response.headers.get('location') }, url.toString(), expectedError)
+  judged(statement, violations)
   return { status: response.status, error }
 }
 
-async function clientCredentialsRefused(http: Http, config: GateConfig, discovery: Discovery, secrets: Secrets): Promise<Refused> {
-  const statement = 'the token endpoint refuses the client-credentials grant'
-  const response = await request(http, discovery.token_endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ grant_type: 'client_credentials', client_id: config.clientId, client_secret: secrets.clientSecret }).toString(),
-  })
-  const body = await json(response)
-  must(response.status >= 400 && response.status < 500 && body.access_token === undefined, statement, `status ${response.status}`)
-  holds(statement)
-  return { status: response.status, error: typeof body.error === 'string' ? body.error : null }
-}
-
 // ---------- main ----------
+
+type TokenEntry = { header: Record<string, unknown>; claims: Claims }
 
 type Report = {
   passed: boolean
   failed: string | null
   transport: string
   discovery: Discovery | null
-  users: { username: string; header: Record<string, unknown>; claims: Record<string, unknown>; idTokenRoles: unknown }[]
+  users: { username: string; header: Record<string, unknown>; claims: Claims; idTokenRoles: unknown; narrowed: Record<string, TokenEntry> }[]
+  machines: { clientId: string; header: Record<string, unknown>; claims: Claims }[]
+  exchanges: { clientId: string; subject: string; header: Record<string, unknown>; claims: Claims }[]
   passwordGrant: { status: number; error: unknown } | null
-  refused: Record<string, Refused>
+  refused: Record<string, { status: number; error: unknown; error_description?: unknown }>
   held: string[]
 }
+
+type Subject = { name: string; token: string; claims: Claims; audiences: string[] }
 
 async function main(): Promise<number> {
   const configPath = process.argv[2]
@@ -393,63 +480,252 @@ async function main(): Promise<number> {
   const config = loadConfig(configPath)
   const transport = new URL(requiredEnv('IDENTITY_URL')).origin
   const secrets: Secrets = {
-    clientSecret: requiredEnv('IDENTITY_DESK_CLIENT_SECRET'),
+    deskSecret: requiredEnv(config.clientSecretVariable),
     passwords: new Map(config.users.map((user) => [user.username, requiredEnv(user.passwordVariable)])),
+    clientSecrets: new Map([...config.agents, ...config.machines].map((client) => [client.clientId, requiredEnv(client.secretVariable)])),
   }
   const http: Http = { timeoutMs: config.requestTimeoutMs }
-  const report: Report = { passed: false, failed: null, transport, discovery: null, users: [], passwordGrant: null, refused: {}, held }
+  const report: Report = { passed: false, failed: null, transport, discovery: null, users: [], machines: [], exchanges: [], passwordGrant: null, refused: {}, held }
+  const custom = customScopes(config)
+  const roles = labRoles(config)
+  const audiencesOfScope = (scope: string): string[] => config.scopes.get(scope) ?? []
 
   try {
     const discovery = await discover(http, transport, config)
     report.discovery = discovery
     const keys = createRemoteJWKSet(new URL(discovery.jwks_uri))
+    const everyDeskScope = ['openid', ...config.deskScopes].join(' ')
 
+    // The token each person's session gives for one scope (G3), kept for the exchanges (G7 to G10).
+    const narrowed = new Map<string, { token: string; claims: Claims }>()
+    const narrowedKey = (username: string, scope: string): string => `${username} ${scope}`
+    // The first person's refresh token, kept for G6.
+    let firstRefreshToken: string | null = null
+
+    // ---------- G1, G2: each person signs in; G3, G4, G5: a token per target ----------
     for (const user of config.users) {
-      const { accessToken, idToken } = await signIn(http, transport, config, discovery, user, secrets)
-      const { header, claims } = await verifyToken(accessToken, keys, user.username)
-      const entry: Report['users'][number] = { username: user.username, header, claims, idTokenRoles: null }
+      const who = user.username
+      const session = await signIn(http, transport, config, discovery, keys, user, secrets, everyDeskScope)
+      firstRefreshToken ??= session.refreshToken
+      const { header, claims } = session.accessToken
+      const entry: Report['users'][number] = { username: who, header, claims, idTokenRoles: null, narrowed: {} }
       report.users.push(entry)
-      const violations = checkClaims(claims, {
-        issuer: config.issuer,
-        audiences: config.audiences,
-        clientId: config.clientId,
-        reviewerRole: config.reviewerRole,
-        isReviewer: user.isReviewer,
-        lifetimeSeconds: config.lifetimeSeconds,
-      })
-      const first = violations[0]
-      if (first !== undefined) throw new StatementFailed(`${user.username}: claim ${first.statement}`, first.detail)
-      holds(`${user.username}: every claim in the claims table holds`)
-      entry.idTokenRoles = await checkIdToken(idToken, keys, config, user)
+      judged(`G1 ${who}: the sign-in grants exactly ${user.granted.join(' ')}`, checkGrantedScopes(claims.scope, user.granted, custom))
+      judged(
+        `G2 ${who}: the access token carries the issuer, the granted scopes' audiences, client_id, the fixed sub, preferred_username, name, roles with ${user.staffRole} alone of the lab roles, no realm_access or resource_access, and the lifetime`,
+        checkPersonToken(claims, {
+          issuer: config.issuer,
+          clientId: config.clientId,
+          lifetimeSeconds: config.lifetimeSeconds,
+          sub: user.id,
+          username: who,
+          audiences: audiencesOf(config, user.granted),
+          staffRole: user.staffRole,
+          labRoles: roles,
+        }),
+      )
+      entry.idTokenRoles = await checkIdToken(session.idToken, keys, config, user)
+
+      for (const scope of user.granted) {
+        const statement = `G3 ${who}: a refresh with scope=openid ${scope} gives a token for ${audiencesOfScope(scope).join(' and ')} alone`
+        const answer = await refresh(http, config, discovery, secrets, session.refreshToken, `openid ${scope}`)
+        const verified = await verifiedAnswer(answer, keys, `${statement}: answered`, ['access_token', 'refresh_token'])
+        judged(statement, checkNarrowedToken(verified.claims, { scope, audiences: audiencesOfScope(scope), customScopes: custom }))
+        entry.narrowed[scope] = verified
+        narrowed.set(narrowedKey(who, scope), { token: tokenField(answer.body, 'access_token'), claims: verified.claims })
+
+        // G4: the refresh token that refresh returned keeps the session's whole reach.
+        const returned = tokenField(answer.body, 'refresh_token')
+        const wholeStatement = `G4 ${who}: the refresh token returned with the ${scope} token, asked for every desk scope, still grants exactly ${user.granted.join(' ')}`
+        const whole = await verifiedAnswer(await refresh(http, config, discovery, secrets, returned, everyDeskScope), keys, `${wholeStatement}: answered`)
+        judged(wholeStatement, checkGrantedScopes(whole.claims.scope, user.granted, custom))
+        for (const other of user.granted.filter((name) => name !== scope)) {
+          const nextStatement = `G4 ${who}: the refresh token returned with the ${scope} token obtains a token for ${other}`
+          const next = await verifiedAnswer(await refresh(http, config, discovery, secrets, returned, `openid ${other}`), keys, `${nextStatement}: answered`)
+          judged(nextStatement, checkNarrowedToken(next.claims, { scope: other, audiences: audiencesOfScope(other), customScopes: custom }))
+        }
+      }
+
+      for (const scope of config.deskScopes.filter((name) => !user.granted.includes(name))) {
+        const statement = `G5 ${who}: a refresh for ${scope}, which the role does not grant, is answered 200 without ${scope} or its audiences`
+        const answer = await refresh(http, config, discovery, secrets, session.refreshToken, `openid ${scope}`)
+        let claims: Claims | undefined
+        if (answer.status === 200) claims = (await verifiedAnswer(answer, keys, `${statement}: answered`)).claims
+        judged(statement, checkUngrantedScope(answer.status, claims, { scope, audiences: audiencesOfScope(scope) }))
+      }
     }
 
+    // ---------- G11, G12: the machines, by client credentials ----------
+    const machineTokens = new Map<string, { token: string; claims: Claims }>()
+    for (const machine of config.machines) {
+      const secret = clientSecret(secrets, machine.clientId)
+      const statement = `G11/G12 ${machine.clientId}: client credentials with scope=${machine.scope} give a token with aud, client_id, the fixed sub, preferred_username service-account-${machine.clientId}, a name, roles with ${machine.role} and no staff role`
+      const answer = await clientCredentials(http, discovery, machine.clientId, secret, machine.scope)
+      const verified = await verifiedAnswer(answer, keys, `${statement}: answered`)
+      report.machines.push({ clientId: machine.clientId, ...verified })
+      judged(
+        statement,
+        checkMachineToken(verified.claims, {
+          issuer: config.issuer,
+          clientId: machine.clientId,
+          sub: machine.id,
+          username: `service-account-${machine.clientId}`,
+          audiences: audiencesOfScope(machine.scope),
+          scope: machine.scope,
+          role: machine.role,
+          staffRoles: config.staffRoles,
+        }),
+      )
+      machineTokens.set(machine.clientId, { token: tokenField(answer.body, 'access_token'), claims: verified.claims })
+
+      if (machine.forbiddenScope !== undefined) {
+        const refused = await clientCredentials(http, discovery, machine.clientId, secret, machine.forbiddenScope)
+        report.refused[`${machine.clientId}_${machine.forbiddenScope}`] = refusal(refused)
+        judged(
+          `G11 ${machine.clientId}: asking for ${machine.forbiddenScope}, which its client may not ask for, is refused invalid_scope`,
+          checkErrorAnswer(refused.status, refused.body, { status: 400, error: 'invalid_scope' }),
+        )
+      }
+    }
+
+    // ---------- G7, G8, G11: each agent exchanges the token it is called with ----------
+    const subjectOf = (username: string, scope: string): { token: string; claims: Claims } => {
+      const found = narrowed.get(narrowedKey(username, scope))
+      if (found === undefined) throw new UsageError(`config: no ${scope} token for ${username}; ${username} is not granted ${scope}`)
+      return found
+    }
+    // The people's tokens the agents are called with (the two intake agents are called with the same one).
+    const people: Subject[] = []
+    for (const agent of config.agents) {
+      const name = `${agent.subject.username}'s ${agent.subject.scope} token`
+      if (people.some((entry) => entry.name === name)) continue
+      people.push({ name, ...subjectOf(agent.subject.username, agent.subject.scope), audiences: audiencesOfScope(agent.subject.scope) })
+    }
+    const machines: Subject[] = []
+    for (const machine of config.machines) {
+      const token = machineTokens.get(machine.clientId)
+      if (token !== undefined) machines.push({ name: `${machine.clientId}'s ${machine.scope} token`, ...token, audiences: audiencesOfScope(machine.scope) })
+    }
+
+    for (const agent of config.agents) {
+      const secret = clientSecret(secrets, agent.clientId)
+      for (const subject of [...people, ...machines].filter((entry) => entry.audiences.includes(agent.clientId))) {
+        const statement = `G7/G8/G11 ${agent.clientId} exchanges ${subject.name} for audience=${agent.audience} scope=${agent.scopes.join(' ')}: aud ${agent.audience} alone, client_id and azp ${agent.clientId}, the subject's sub, preferred_username, name, roles and exp, every scope asked for, no refresh token`
+        const answer = await exchange(http, discovery, agent.clientId, secret, subject.token, agent.audience, agent.scopes)
+        const verified = await verifiedAnswer(answer, keys, `${statement}: answered`)
+        report.exchanges.push({ clientId: agent.clientId, subject: subject.name, ...verified })
+        judged(statement, checkExchangedToken(answer.body, verified.claims, subject.claims, { issuer: config.issuer, clientId: agent.clientId, audience: agent.audience, scopes: agent.scopes }))
+      }
+    }
+
+    // ---------- G9: a person's token an agent is not an audience of ----------
+    for (const agent of config.agents) {
+      const secret = clientSecret(secrets, agent.clientId)
+      for (const subject of people.filter((entry) => !entry.audiences.includes(agent.clientId))) {
+        const answer = await exchange(http, discovery, agent.clientId, secret, subject.token, agent.audience, agent.scopes)
+        report.refused[`${agent.clientId}_not_audience_of_${subject.name}`] = refusal(answer)
+        judged(
+          `G9 ${agent.clientId}: exchanging ${subject.name}, which it is not an audience of, is refused 403 "Client is not within the token audience"`,
+          checkErrorAnswer(answer.status, answer.body, { status: 403, error: 'access_denied', description: 'Client is not within the token audience' }),
+        )
+      }
+    }
+
+    // ---------- G13, G14: refused grants and authorization requests ----------
     const firstUser = config.users[0]
     if (firstUser === undefined) throw new UsageError('config: users is empty')
-    report.passwordGrant = await passwordGrantRefused(http, config, discovery, firstUser, secrets)
-    report.refused.client_credentials = await clientCredentialsRefused(http, config, discovery, secrets)
-    report.refused.no_code_challenge = await authorizationRefused(
+    const password = await tokenRequest(http, discovery, {
+      grant_type: 'password',
+      username: firstUser.username,
+      password: secrets.passwords.get(firstUser.username) ?? '',
+      scope: 'openid',
+      client_id: config.clientId,
+      client_secret: secrets.deskSecret,
+    })
+    report.passwordGrant = { status: password.status, error: password.body.error }
+    judged('G13 the token endpoint refuses the password grant for desk', checkRefused(password.status, password.body))
+    const deskCredentials = await clientCredentials(http, discovery, config.clientId, secrets.deskSecret, undefined)
+    report.refused.client_credentials = refusal(deskCredentials)
+    judged('G13 the token endpoint refuses the client-credentials grant for desk', checkRefused(deskCredentials.status, deskCredentials.body))
+    for (const clientId of config.audienceOnlyClients) {
+      const answer = await clientCredentials(http, discovery, clientId, undefined, undefined)
+      report.refused[`${clientId}_client_credentials`] = refusal(answer)
+      judged(`G13 the token endpoint refuses the client-credentials grant for ${clientId}`, checkRefused(answer.status, answer.body))
+    }
+    report.refused.no_code_challenge = await authorizationRefused(http, transport, config, discovery, 'G14 the authorization endpoint refuses a request with no code_challenge', {
+      response_type: 'code',
+    })
+    report.refused.plain_code_challenge = await authorizationRefused(http, transport, config, discovery, 'G14 the authorization endpoint refuses code_challenge_method=plain', {
+      response_type: 'code',
+      code_challenge: codeVerifier(randomBytes(32)),
+      code_challenge_method: 'plain',
+    })
+    report.refused.implicit = await authorizationRefused(http, transport, config, discovery, 'G14 the authorization endpoint refuses response_type=token', {
+      response_type: 'token',
+      nonce: 'gate-refusal',
+      code_challenge: codeChallengeS256(codeVerifier(randomBytes(32))),
+      code_challenge_method: 'S256',
+    })
+
+    // ---------- Last, the answers the throwaway runs did not observe on this path ----------
+
+    // G10: no client but the agents can exchange.
+    const firstAgent = config.agents[0]
+    if (firstAgent === undefined) throw new UsageError('config: agents is empty')
+    const deskToken = subjectOf(firstAgent.subject.username, firstAgent.subject.scope)
+    {
+      // A token issued to desk itself, so the audience rule would not refuse it: only token exchange being off does.
+      const answer = await exchange(http, discovery, config.clientId, secrets.deskSecret, deskToken.token, firstAgent.audience, firstAgent.scopes)
+      report.refused[`${config.clientId}_exchange`] = refusal(answer)
+      judged(
+        `G10 ${config.clientId} exchanging a token issued to itself is refused: token exchange is off`,
+        checkErrorAnswer(answer.status, answer.body, { status: 400, error: 'invalid_request', description: config.exchangeOffDescription }),
+      )
+    }
+    for (const clientId of config.audienceOnlyClients) {
+      // These clients have no secret anyone holds, so the refusal can only be of the client itself.
+      const answer = await exchange(http, discovery, clientId, undefined, deskToken.token, clientId, firstAgent.scopes)
+      report.refused[`${clientId}_exchange`] = refusal(answer)
+      judged(`G10 ${clientId} cannot exchange a token`, checkRefused(answer.status, answer.body))
+    }
+    for (const machine of config.machines) {
+      const own = machineTokens.get(machine.clientId)
+      if (own === undefined) throw new UsageError(`no token for ${machine.clientId}`)
+      const answer = await exchange(http, discovery, machine.clientId, clientSecret(secrets, machine.clientId), own.token, firstAgent.audience, firstAgent.scopes)
+      report.refused[`${machine.clientId}_exchange`] = refusal(answer)
+      judged(
+        `G10 ${machine.clientId} exchanging a token issued to itself is refused: token exchange is off`,
+        checkErrorAnswer(answer.status, answer.body, { status: 400, error: 'invalid_request', description: config.exchangeOffDescription }),
+      )
+    }
+
+    // G9: an agent asking for a scope its client may not ask for (the other kind of agent's scopes).
+    for (const agent of config.agents) {
+      const own = people.find((entry) => entry.audiences.includes(agent.clientId))
+      const otherAgent = config.agents.find((entry) => entry.audience !== agent.audience)
+      if (own === undefined || otherAgent === undefined) continue
+      const answer = await exchange(http, discovery, agent.clientId, clientSecret(secrets, agent.clientId), own.token, otherAgent.audience, otherAgent.scopes)
+      report.refused[`${agent.clientId}_scope_${otherAgent.scopes.join('_')}`] = refusal(answer)
+      judged(
+        `G9 ${agent.clientId}: asking for ${otherAgent.scopes.join(' ')}, which its client may not ask for, is refused invalid_scope`,
+        checkErrorAnswer(answer.status, answer.body, { status: 400, error: 'invalid_scope' }),
+      )
+    }
+
+    // G6: the desk client asking for a scope it may not ask for, at a refresh and at the authorization endpoint.
+    const forbidden = config.deskForbiddenScope
+    if (firstRefreshToken === null) throw new UsageError('config: users is empty')
+    const refreshed = await refresh(http, config, discovery, secrets, firstRefreshToken, `openid ${forbidden}`)
+    report.refused[`desk_refresh_${forbidden}`] = refusal(refreshed)
+    judged(`G6 a refresh by the desk client asking for ${forbidden} is refused invalid_scope`, checkErrorAnswer(refreshed.status, refreshed.body, { status: 400, error: 'invalid_scope' }))
+    report.refused[`desk_authorize_${forbidden}`] = await authorizationRefused(
       http,
       transport,
       config,
       discovery,
-      'the authorization endpoint refuses a request with no code_challenge',
-      { response_type: 'code' },
-    )
-    report.refused.plain_code_challenge = await authorizationRefused(
-      http,
-      transport,
-      config,
-      discovery,
-      'the authorization endpoint refuses code_challenge_method=plain',
-      { response_type: 'code', code_challenge: codeVerifier(randomBytes(32)), code_challenge_method: 'plain' },
-    )
-    report.refused.implicit = await authorizationRefused(
-      http,
-      transport,
-      config,
-      discovery,
-      'the authorization endpoint refuses response_type=token',
-      { response_type: 'token', nonce: 'gate-refusal', code_challenge: codeChallengeS256(codeVerifier(randomBytes(32))), code_challenge_method: 'S256' },
+      `G6 the authorization endpoint refuses the desk client asking for ${forbidden}, with invalid_scope`,
+      { response_type: 'code', scope: `openid ${forbidden}`, code_challenge: codeChallengeS256(codeVerifier(randomBytes(32))), code_challenge_method: 'S256' },
+      'invalid_scope',
     )
     report.passed = true
   } catch (error) {

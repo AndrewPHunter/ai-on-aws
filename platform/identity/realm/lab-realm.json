@@ -9,9 +9,297 @@
   "accessTokenLifespan": 600,
   "roles": {
     "realm": [
-      { "name": "reviewer", "description": "May review adverse event cases." }
+      {
+        "name": "desk",
+        "description": "Enters inquiries and runs the intake agents."
+      },
+      {
+        "name": "medical-information",
+        "description": "Does what the desk does, and runs the label expert."
+      },
+      {
+        "name": "safety-reviewer",
+        "description": "Reads adverse event cases and decides them."
+      },
+      {
+        "name": "auditor",
+        "description": "Reads every case and its audit trail; changes nothing."
+      },
+      {
+        "name": "evaluation",
+        "description": "Held only by the evaluation harness's service account."
+      },
+      {
+        "name": "knowledge-gate",
+        "description": "Held only by the knowledge gate's service account."
+      }
     ]
   },
+  "clientScopes": [
+    {
+      "name": "basic",
+      "description": "OpenID Connect scope for add all basic claims to the token",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "sub",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-sub-mapper",
+          "consentRequired": false,
+          "config": {"introspection.token.claim": "true", "access.token.claim": "true"}
+        }
+      ]
+    },
+    {
+      "name": "profile",
+      "description": "OpenID Connect built-in scope: profile",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true"
+      },
+      "protocolMappers": [
+        {
+          "name": "username",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "introspection.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "user.attribute": "username",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "preferred_username",
+            "jsonType.label": "String"
+          }
+        },
+        {
+          "name": "full name",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-full-name-mapper",
+          "consentRequired": false,
+          "config": {
+            "id.token.claim": "true",
+            "introspection.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "email",
+      "description": "OpenID Connect built-in scope: email",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true"
+      },
+      "protocolMappers": []
+    },
+    {
+      "name": "agents:intake",
+      "description": "Runs the intake agents (POST /invocations on intake-handwritten and intake-strands).",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience intake-handwritten",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "intake-handwritten",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "audience intake-strands",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "intake-strands",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "agents:expert",
+      "description": "Runs the label expert (POST /invocations on expert).",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience expert",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "expert",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "cases:write",
+      "description": "Creates a case and adds a follow-up in the case system (create_case, add_follow_up).",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience case-system",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "case-system",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "cases:lookup",
+      "description": "Finds a case in the case system (find_case).",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience case-system",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "case-system",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "cases:read",
+      "description": "Reads cases in the case system (GET /cases, GET /cases/<id>).",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience case-system",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "case-system",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "cases:review",
+      "description": "Decides a case in the case system (POST /cases/<id>/review).",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience case-system",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "case-system",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "labels:search",
+      "description": "Searches the retrieval service (find_labels, search_label).",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience knowledge",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "knowledge",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "scopeMappings": [
+    {
+      "clientScope": "agents:intake",
+      "roles": ["desk", "medical-information"]
+    },
+    {
+      "clientScope": "agents:expert",
+      "roles": ["medical-information", "evaluation"]
+    },
+    {
+      "clientScope": "cases:write",
+      "roles": ["desk", "medical-information"]
+    },
+    {
+      "clientScope": "cases:lookup",
+      "roles": ["desk", "medical-information"]
+    },
+    {
+      "clientScope": "cases:read",
+      "roles": ["safety-reviewer", "auditor"]
+    },
+    {
+      "clientScope": "cases:review",
+      "roles": ["safety-reviewer"]
+    },
+    {
+      "clientScope": "labels:search",
+      "roles": ["medical-information", "evaluation", "knowledge-gate"]
+    }
+  ],
+  "defaultDefaultClientScopes": ["basic", "profile", "email"],
+  "defaultOptionalClientScopes": [],
   "clients": [
     {
       "clientId": "desk",
@@ -39,41 +327,8 @@
         "standard.token.exchange.enabled": "false"
       },
       "defaultClientScopes": ["basic", "profile", "email"],
-      "optionalClientScopes": [],
+      "optionalClientScopes": ["agents:intake", "agents:expert", "cases:read", "cases:review"],
       "protocolMappers": [
-        {
-          "name": "audience lab-agents",
-          "protocol": "openid-connect",
-          "protocolMapper": "oidc-audience-mapper",
-          "config": {
-            "included.custom.audience": "lab-agents",
-            "access.token.claim": "true",
-            "id.token.claim": "false",
-            "introspection.token.claim": "true"
-          }
-        },
-        {
-          "name": "audience lab-case-system",
-          "protocol": "openid-connect",
-          "protocolMapper": "oidc-audience-mapper",
-          "config": {
-            "included.custom.audience": "lab-case-system",
-            "access.token.claim": "true",
-            "id.token.claim": "false",
-            "introspection.token.claim": "true"
-          }
-        },
-        {
-          "name": "audience lab-knowledge",
-          "protocol": "openid-connect",
-          "protocolMapper": "oidc-audience-mapper",
-          "config": {
-            "included.custom.audience": "lab-knowledge",
-            "access.token.claim": "true",
-            "id.token.claim": "false",
-            "introspection.token.claim": "true"
-          }
-        },
         {
           "name": "client_id",
           "protocol": "openid-connect",
@@ -103,6 +358,331 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "intake-handwritten",
+      "name": "Intake agent (hand-written loop)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "bearerOnly": false,
+      "consentRequired": false,
+      "fullScopeAllowed": true,
+      "redirectUris": [],
+      "webOrigins": [],
+      "defaultClientScopes": ["basic", "profile", "email"],
+      "secret": "${IDENTITY_INTAKE_HANDWRITTEN_CLIENT_SECRET}",
+      "attributes": {
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "standard.token.exchange.enabled": "true"
+      },
+      "optionalClientScopes": ["cases:write", "cases:lookup"],
+      "protocolMappers": [
+        {
+          "name": "client_id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "config": {
+            "claim.name": "client_id",
+            "claim.value": "intake-handwritten",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "intake-strands",
+      "name": "Intake agent (Strands)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "bearerOnly": false,
+      "consentRequired": false,
+      "fullScopeAllowed": true,
+      "redirectUris": [],
+      "webOrigins": [],
+      "defaultClientScopes": ["basic", "profile", "email"],
+      "secret": "${IDENTITY_INTAKE_STRANDS_CLIENT_SECRET}",
+      "attributes": {
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "standard.token.exchange.enabled": "true"
+      },
+      "optionalClientScopes": ["cases:write", "cases:lookup"],
+      "protocolMappers": [
+        {
+          "name": "client_id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "config": {
+            "claim.name": "client_id",
+            "claim.value": "intake-strands",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "expert",
+      "name": "Label expert agent",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "bearerOnly": false,
+      "consentRequired": false,
+      "fullScopeAllowed": true,
+      "redirectUris": [],
+      "webOrigins": [],
+      "defaultClientScopes": ["basic", "profile", "email"],
+      "secret": "${IDENTITY_EXPERT_CLIENT_SECRET}",
+      "attributes": {
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "standard.token.exchange.enabled": "true"
+      },
+      "optionalClientScopes": ["labels:search"],
+      "protocolMappers": [
+        {
+          "name": "client_id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "config": {
+            "claim.name": "client_id",
+            "claim.value": "expert",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "evaluation",
+      "name": "Evaluation harness",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "bearerOnly": false,
+      "consentRequired": false,
+      "fullScopeAllowed": true,
+      "redirectUris": [],
+      "webOrigins": [],
+      "defaultClientScopes": ["basic", "profile", "email"],
+      "secret": "${IDENTITY_EVALUATION_CLIENT_SECRET}",
+      "attributes": {
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "standard.token.exchange.enabled": "false"
+      },
+      "optionalClientScopes": ["agents:expert"],
+      "protocolMappers": [
+        {
+          "name": "client_id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "config": {
+            "claim.name": "client_id",
+            "claim.value": "evaluation",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "knowledge-gate",
+      "name": "Knowledge gate",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "bearerOnly": false,
+      "consentRequired": false,
+      "fullScopeAllowed": true,
+      "redirectUris": [],
+      "webOrigins": [],
+      "defaultClientScopes": ["basic", "profile", "email"],
+      "secret": "${IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET}",
+      "attributes": {
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "standard.token.exchange.enabled": "false"
+      },
+      "optionalClientScopes": ["labels:search"],
+      "protocolMappers": [
+        {
+          "name": "client_id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "config": {
+            "claim.name": "client_id",
+            "claim.value": "knowledge-gate",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "case-system",
+      "name": "Case system, named as an audience only",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "bearerOnly": false,
+      "consentRequired": false,
+      "fullScopeAllowed": true,
+      "redirectUris": [],
+      "webOrigins": [],
+      "defaultClientScopes": ["basic", "profile", "email"],
+      "attributes": {
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "standard.token.exchange.enabled": "false"
+      },
+      "optionalClientScopes": [],
+      "protocolMappers": []
+    },
+    {
+      "clientId": "knowledge",
+      "name": "Retrieval service, named as an audience only",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "bearerOnly": false,
+      "consentRequired": false,
+      "fullScopeAllowed": true,
+      "redirectUris": [],
+      "webOrigins": [],
+      "defaultClientScopes": ["basic", "profile", "email"],
+      "attributes": {
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "standard.token.exchange.enabled": "false"
+      },
+      "optionalClientScopes": [],
+      "protocolMappers": []
     }
   ],
   "users": [
@@ -116,9 +696,9 @@
       "emailVerified": true,
       "requiredActions": [],
       "credentials": [
-        { "type": "password", "value": "${IDENTITY_RILEY_PASSWORD}", "temporary": false }
+        {"type": "password", "value": "${IDENTITY_RILEY_PASSWORD}", "temporary": false}
       ],
-      "realmRoles": ["default-roles-lab", "reviewer"]
+      "realmRoles": ["default-roles-lab", "safety-reviewer"]
     },
     {
       "id": "6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f02",
@@ -130,9 +710,55 @@
       "emailVerified": true,
       "requiredActions": [],
       "credentials": [
-        { "type": "password", "value": "${IDENTITY_DANA_PASSWORD}", "temporary": false }
+        {"type": "password", "value": "${IDENTITY_DANA_PASSWORD}", "temporary": false}
       ],
-      "realmRoles": ["default-roles-lab"]
+      "realmRoles": ["default-roles-lab", "desk"]
+    },
+    {
+      "id": "6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f03",
+      "username": "morgan.medinfo",
+      "enabled": true,
+      "firstName": "Morgan",
+      "lastName": "Medinfo",
+      "email": "morgan.medinfo@example.org",
+      "emailVerified": true,
+      "requiredActions": [],
+      "credentials": [
+        {"type": "password", "value": "${IDENTITY_MORGAN_PASSWORD}", "temporary": false}
+      ],
+      "realmRoles": ["default-roles-lab", "medical-information"]
+    },
+    {
+      "id": "6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f04",
+      "username": "avery.auditor",
+      "enabled": true,
+      "firstName": "Avery",
+      "lastName": "Auditor",
+      "email": "avery.auditor@example.org",
+      "emailVerified": true,
+      "requiredActions": [],
+      "credentials": [
+        {"type": "password", "value": "${IDENTITY_AVERY_PASSWORD}", "temporary": false}
+      ],
+      "realmRoles": ["default-roles-lab", "auditor"]
+    },
+    {
+      "id": "6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f05",
+      "username": "service-account-evaluation",
+      "enabled": true,
+      "serviceAccountClientId": "evaluation",
+      "firstName": "Evaluation",
+      "lastName": "Harness",
+      "realmRoles": ["default-roles-lab", "evaluation"]
+    },
+    {
+      "id": "6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f06",
+      "username": "service-account-knowledge-gate",
+      "enabled": true,
+      "serviceAccountClientId": "knowledge-gate",
+      "firstName": "Knowledge",
+      "lastName": "Gate",
+      "realmRoles": ["default-roles-lab", "knowledge-gate"]
     }
   ]
 }
