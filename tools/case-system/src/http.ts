@@ -10,6 +10,7 @@ import type { IncomingHttpHeaders, IncomingMessage, Server, ServerResponse } fro
 
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 
+import { refusalAnswer } from '../../../shared/access-token.ts';
 import type { AccessTokenCheck, Caller } from '../../../shared/access-token.ts';
 import { CASE_STATUSES, REVIEW_DECISIONS } from '../../../shared/case-contract.ts';
 import { buildMcpServer } from './mcp.ts';
@@ -122,16 +123,17 @@ function pathOf(request: IncomingMessage): URL {
   return new URL(request.url ?? '/', 'http://case-system');
 }
 
-// The caller of an accepted token, or undefined once a refusal (401) or an unavailable check (503) has
-// been answered. Nothing of the request's body has been read either way.
+// The caller of an accepted token, or undefined once a refusal (403 for a missing scope, 401 otherwise) or an
+// unavailable check (503) has been answered. Nothing of the request's body has been read either way.
 async function callerOf(request: IncomingMessage, response: ServerResponse, checkToken: AccessTokenCheck): Promise<Caller | undefined> {
   const checked = await checkToken(request.headers.authorization);
   if (checked.kind === 'caller') {
     return checked.caller;
   }
   if (checked.kind === 'refused') {
-    response.writeHead(401, { 'content-type': 'application/json', 'www-authenticate': 'Bearer error="invalid_token"' });
-    response.end(JSON.stringify({ error: 'unauthorized', reason: checked.reason, detail: checked.detail }));
+    const answer = refusalAnswer(checked);
+    response.writeHead(answer.status, { 'content-type': 'application/json', 'www-authenticate': answer.wwwAuthenticate });
+    response.end(JSON.stringify(answer.body));
   } else {
     sendJson(response, 503, { error: 'identity_unavailable', detail: checked.detail });
   }

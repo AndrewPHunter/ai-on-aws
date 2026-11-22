@@ -42,6 +42,8 @@ export const EXPERT_TOKEN_CLAIMS = {
   preferred_username: 'dana.desk',
   name: 'Dana Desk',
   roles: ['default-roles-lab'],
+  // The token reaches the expert and is passed on to the retrieval service, so it carries the scopes of both.
+  scope: 'agents:expert labels:search',
 };
 
 export type ExpertTokens = {
@@ -64,17 +66,17 @@ export async function startExpertTokens(t: TestContext): Promise<ExpertTokens> {
     issuer: EXPERT_TOKEN_ISSUER,
   });
   t.after(() => issuer.close());
-  const check = (audience: string, minRemainingSeconds: number): AccessTokenCheck =>
+  const check = (audience: string, requiredScopes: string[], minRemainingSeconds: number): AccessTokenCheck =>
     createAccessTokenCheck(
-      { discoveryUrl: issuer.discoveryUrl, issuer: EXPERT_TOKEN_ISSUER, audience, allowedClients: ['desk'], rolesClaim: 'roles', minRemainingSeconds },
+      { discoveryUrl: issuer.discoveryUrl, issuer: EXPERT_TOKEN_ISSUER, audience, allowedClients: ['desk'], requiredScopes, rolesClaim: 'roles', minRemainingSeconds },
       { now, keyRefetchWaitMs: 30_000, timeoutMs: 30_000 },
     );
   const mint = (options: Partial<MintOptions> = {}): Promise<string> =>
     issuer.mintAccessToken({ lifetimeSeconds: 600, ...options, claims: { ...EXPERT_TOKEN_CLAIMS, ...options.claims } });
   return {
     issuer,
-    agentCheck: check('lab-agents', 150),
-    knowledgeCheck: check('lab-knowledge', 0),
+    agentCheck: check('lab-agents', ['agents:expert'], 150),
+    knowledgeCheck: check('lab-knowledge', ['labels:search'], 0),
     mint,
     caller: async (options = {}) => ({
       subject: EXPERT_TOKEN_CLAIMS.sub,
@@ -82,6 +84,7 @@ export async function startExpertTokens(t: TestContext): Promise<ExpertTokens> {
       name: EXPERT_TOKEN_CLAIMS.name,
       clientId: EXPERT_TOKEN_CLAIMS.client_id,
       roles: [...EXPERT_TOKEN_CLAIMS.roles],
+      scopes: EXPERT_TOKEN_CLAIMS.scope.split(' '),
       expiresAt: new Date(new Date(AGENT_START).getTime() + 600_000),
       token: await mint(options),
     }),
@@ -98,6 +101,7 @@ export async function unreachableIdentityCheck(t: TestContext): Promise<AccessTo
       issuer: EXPERT_TOKEN_ISSUER,
       audience: 'lab-knowledge',
       allowedClients: ['desk'],
+      requiredScopes: ['labels:search'],
       rolesClaim: 'roles',
       minRemainingSeconds: 0,
     },

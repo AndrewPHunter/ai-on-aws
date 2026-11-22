@@ -12,6 +12,7 @@ import type { AccessTokenCheck, AccessTokenSettings, TokenCheck } from '../acces
 const START = '2026-03-01T10:00:00.000Z';
 const ISSUER = 'http://localhost:8090/realms/lab';
 const MIN_REMAINING = 150;
+const REQUIRED_SCOPES = ['agents:intake', 'agents:expert'];
 
 const CLAIMS = {
   aud: ['lab-agents', 'lab-case-system'],
@@ -20,6 +21,7 @@ const CLAIMS = {
   preferred_username: 'riley.reviewer',
   name: 'Riley Reviewer',
   roles: ['default-roles-lab', 'reviewer'],
+  scope: 'openid agents:intake',
 };
 
 type Clock = { now: () => Date; advance: (ms: number) => void };
@@ -31,7 +33,7 @@ function clock(): Clock {
 
 type Rig = { issuer: StandInIssuer; clock: Clock; check: AccessTokenCheck; mint: (options?: Partial<MintOptions>) => Promise<string> };
 
-async function rig(t: TestContext, overrides: Partial<AccessTokenSettings> = {}, keyRefetchWaitMs = 0): Promise<Rig> {
+async function rig(t: TestContext, overrides: Partial<AccessTokenSettings> = {}, keyRefetchWaitMs = 0, timeoutMs = 2000): Promise<Rig> {
   const time = clock();
   const issuer = await startStandInIssuer({
     clientId: 'desk',
@@ -48,11 +50,12 @@ async function rig(t: TestContext, overrides: Partial<AccessTokenSettings> = {},
       issuer: ISSUER,
       audience: 'lab-agents',
       allowedClients: ['desk'],
+      requiredScopes: REQUIRED_SCOPES,
       rolesClaim: 'roles',
       minRemainingSeconds: MIN_REMAINING,
       ...overrides,
     },
-    { now: time.now, keyRefetchWaitMs, timeoutMs: 2000 },
+    { now: time.now, keyRefetchWaitMs, timeoutMs },
   );
   const mint = (options: Partial<MintOptions> = {}): Promise<string> =>
     issuer.mintAccessToken({ lifetimeSeconds: 600, ...options, claims: { ...CLAIMS, ...options.claims } });
@@ -79,6 +82,7 @@ test('K1. a valid token gives the caller: subject, username, name, client id, ro
       name: 'Riley Reviewer',
       clientId: 'desk',
       roles: ['default-roles-lab', 'reviewer'],
+      scopes: ['openid', 'agents:intake'],
       expiresAt: new Date(new Date(START).getTime() + 600_000),
       token,
     },
@@ -203,4 +207,92 @@ test('K9. a token signed with a key not yet seen, before the refetch wait, fetch
   r.clock.advance(1_000);
   assert.equal((await r.check(`Bearer ${newKey}`)).kind, 'caller');
   assert.equal(keyFetches(r.issuer), 2);
+});
+
+test('K10. a correctly signed token with no exp is refused as malformed', async (t) => {
+  const r = await rig(t);
+  const token = await r.mint({ claims: { exp: undefined } });
+  const { reason, detail } = refusal(await r.check(`Bearer ${token}`));
+  assert.equal(reason, 'malformed');
+  assert.ok(!detail.includes(token));
+});
+
+test('K11. a correctly signed token whose roles claim is not a list of strings is refused as malformed', async (t) => {
+  const r = await rig(t);
+  for (const roles of ['admin', ['admin', 7], { admin: true }]) {
+    const { reason } = refusal(await r.check(`Bearer ${await r.mint({ claims: { roles } })}`));
+    assert.equal(reason, 'malformed', JSON.stringify(roles));
+  }
+});
+
+// The test's own limit is far above the check's 1000 ms: a check that ignores its time limit waits on the held
+// connection and fails here, however long its own default would be. The check's limit is large enough that the
+// recovering request, to a live stand-in on loopback, is not cut short on a busy machine.
+test('K12. a provider that holds the discovery document, or the keys, past the time limit makes the check unavailable, and it recovers', { timeout: 10_000 }, async (t) => {
+  for (const hold of ['hold_discovery', 'hold_keys'] as const) {
+    const r = await rig(t, {}, 0, 1000);
+    const token = await r.mint();
+    r.issuer.misbehave(hold);
+    const held = await r.check(`Bearer ${token}`);
+    assert.equal(held.kind, 'unavailable', hold);
+    assert.match(held.kind === 'unavailable' ? held.detail : '', /did not answer in time/, hold);
+    assert.equal(r.issuer.received.at(-1)?.path, hold === 'hold_discovery' ? '/.well-known/openid-configuration' : '/jwks', hold);
+    r.issuer.misbehave('none');
+    assert.equal((await r.check(`Bearer ${token}`)).kind, 'caller', hold);
+  }
+});
+
+test('I01. the token must carry at least one required scope, by whole name; no scope claim, or one that is not a string, is no scope', async (t) => {
+  const r = await rig(t);
+  // One of the two required is enough.
+  for (const scope of ['agents:intake', 'agents:expert', 'openid agents:expert other']) {
+    assert.equal((await r.check(`Bearer ${await r.mint({ claims: { scope } })}`)).kind, 'caller', scope);
+  }
+  const lacking: { name: string; claims: Record<string, unknown> }[] = [
+    { name: 'no scope claim', claims: { scope: undefined } },
+    { name: 'other scopes only', claims: { scope: 'openid cases:read' } },
+    { name: 'an empty scope', claims: { scope: '' } },
+    { name: 'a scope claim that is a list', claims: { scope: ['agents:intake'] } },
+    { name: 'a longer name', claims: { scope: 'agents:intake-extra' } },
+    { name: 'a shorter name', claims: { scope: 'agents:in' } },
+  ];
+  for (const row of lacking) {
+    const token = await r.mint({ claims: row.claims });
+    const result = await r.check(`Bearer ${token}`);
+    assert.equal(result.kind, 'refused', row.name);
+    if (result.kind !== 'refused') continue;
+    assert.equal(result.reason, 'insufficient_scope', row.name);
+    assert.deepEqual(result.reason === 'insufficient_scope' ? result.scopes : [], REQUIRED_SCOPES, row.name);
+    assert.ok(result.detail.includes('agents:intake') && result.detail.includes('agents:expert'), row.name);
+    assert.ok(!result.detail.includes(token), `${row.name}: the sentence contains the token`);
+  }
+  // Neither name satisfies the other.
+  const reads = await rig(t, { requiredScopes: ['cases:re'] });
+  assert.equal(refusal(await reads.check(`Bearer ${await reads.mint({ claims: { scope: 'cases:read' } })}`)).reason, 'insufficient_scope');
+  const read = await rig(t, { requiredScopes: ['cases:read'] });
+  assert.equal(refusal(await read.check(`Bearer ${await read.mint({ claims: { scope: 'cases:re' } })}`)).reason, 'insufficient_scope');
+  assert.equal((await read.check(`Bearer ${await read.mint({ claims: { scope: 'cases:re cases:read' } })}`)).kind, 'caller');
+});
+
+test('I02. a token with two faults is refused for the earlier: expired, issuer, audience, client, scope, remaining life', async (t) => {
+  const r = await rig(t);
+  const pairs: { name: string; options: Partial<MintOptions>; reason: string }[] = [
+    { name: 'expired and another issuer', options: { lifetimeSeconds: -1, claims: { iss: 'http://elsewhere.example.org/realms/lab' } }, reason: 'expired' },
+    { name: 'another issuer and another audience', options: { claims: { iss: 'http://elsewhere.example.org/realms/lab', aud: ['lab-case-system'] } }, reason: 'wrong_issuer' },
+    { name: 'another audience and another client', options: { claims: { aud: ['lab-case-system'], client_id: 'other-client' } }, reason: 'wrong_audience' },
+    { name: 'another client and no required scope', options: { claims: { client_id: 'other-client', scope: 'openid' } }, reason: 'wrong_client' },
+    { name: 'no required scope and too little life left', options: { lifetimeSeconds: MIN_REMAINING - 1, claims: { scope: 'openid' } }, reason: 'insufficient_scope' },
+  ];
+  for (const pair of pairs) {
+    assert.equal(refusal(await r.check(`Bearer ${await r.mint(pair.options)}`)).reason, pair.reason, pair.name);
+  }
+});
+
+test("I03. the caller's scopes are every scope in the token's scope claim, in the token's order", async (t) => {
+  const r = await rig(t);
+  const result = await r.check(`Bearer ${await r.mint({ claims: { scope: 'zeta agents:expert alpha agents:intake' } })}`);
+  assert.equal(result.kind, 'caller');
+  assert.deepEqual(result.kind === 'caller' ? result.caller.scopes : [], ['zeta', 'agents:expert', 'alpha', 'agents:intake']);
+  const other = await r.check(`Bearer ${await r.mint({ scopes: ['agents:intake'] })}`);
+  assert.deepEqual(other.kind === 'caller' ? other.caller.scopes : [], ['agents:intake']);
 });

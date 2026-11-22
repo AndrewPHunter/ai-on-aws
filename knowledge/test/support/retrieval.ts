@@ -22,6 +22,7 @@ export const DANA = {
   preferred_username: 'dana.desk',
   name: 'Dana Desk',
   roles: ['default-roles-lab'],
+  scope: 'labels:search',
 };
 
 export type Tokens = { issuer: StandInIssuer; check: AccessTokenCheck; mint: (options?: Partial<MintOptions>) => Promise<string> };
@@ -38,7 +39,7 @@ export async function startTokens(t: TestContext): Promise<Tokens> {
   });
   t.after(() => issuer.close());
   const check = createAccessTokenCheck(
-    { discoveryUrl: issuer.discoveryUrl, issuer: ISSUER, audience: 'lab-knowledge', allowedClients: ['desk'], rolesClaim: 'roles', minRemainingSeconds: 0 },
+    { discoveryUrl: issuer.discoveryUrl, issuer: ISSUER, audience: 'lab-knowledge', allowedClients: ['desk'], requiredScopes: ['labels:search'], rolesClaim: 'roles', minRemainingSeconds: 0 },
     { now, keyRefetchWaitMs: 30_000, timeoutMs: 30_000 },
   );
   const mint = (options: Partial<MintOptions> = {}): Promise<string> =>

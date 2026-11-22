@@ -20,6 +20,7 @@ services:
       AUTH_ALLOWED_AUDIENCE: lab-case-system
       AUTH_ALLOWED_CLIENTS: desk
       AUTH_ROLES_CLAIM: roles
+      AUTH_REQUIRED_SCOPES: cases:write,cases:lookup,cases:read,cases:review
       # Deciding a case needs this role in the token.
       AUTH_REVIEWER_ROLE: reviewer
     ports:

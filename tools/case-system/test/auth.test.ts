@@ -117,6 +117,50 @@ test('D2. a token signed by another key, from another issuer, for lab-agents onl
   assert.equal(rig.store.find({}).cases.length, 0);
 });
 
+test("I04. agents' server: a token without any case-system scope is 403 insufficient_scope naming the scopes; another refusal is still 401; nothing is stored", async (t) => {
+  const rig = await start(t);
+  const token = await rig.tokens.mint({ claims: { scope: 'openid agents:intake' } });
+  const lacking = await postMcp(rig, bearer(token));
+  assert.equal(lacking.status, 403);
+  assert.equal(lacking.headers.get('www-authenticate'), 'Bearer error="insufficient_scope", scope="cases:write cases:lookup cases:read cases:review"');
+  const text = await lacking.text();
+  const body = JSON.parse(text) as Record<string, unknown>;
+  assert.equal(body.error, 'forbidden');
+  assert.equal(body.reason, 'insufficient_scope');
+  assert.equal(typeof body.detail, 'string');
+  assert.ok(!text.includes(token), 'the answer contains the token');
+
+  const other = await postMcp(rig, bearer(await rig.tokens.mint({ claims: { aud: ['lab-agents'] } })));
+  assert.equal(other.status, 401);
+  assert.equal(other.headers.get('www-authenticate'), 'Bearer error="invalid_token"');
+  assert.equal(await reasonOf(other), 'wrong_audience');
+  assert.equal(rig.store.find({}).cases.length, 0);
+});
+
+test('I04. review server: a token without any case-system scope is 403 insufficient_scope naming the scopes on every route; another refusal is still 401', async (t) => {
+  const rig = await start(t);
+  const token = await rig.tokens.mint({ claims: { scope: 'openid agents:intake' } });
+  const routes: [string, RequestInit][] = [
+    [`${rig.reviewUrl}/cases`, {}],
+    [`${rig.reviewUrl}/cases/AE-000001`, {}],
+    [`${rig.reviewUrl}/cases/AE-000001/review`, { method: 'POST', body: JSON.stringify({ decision: 'approve' }) }],
+  ];
+  for (const [url, init] of routes) {
+    const lacking = await fetch(url, { ...init, headers: bearer(token) });
+    assert.equal(lacking.status, 403, url);
+    assert.equal(lacking.headers.get('www-authenticate'), 'Bearer error="insufficient_scope", scope="cases:write cases:lookup cases:read cases:review"', url);
+    const text = await lacking.text();
+    const body = JSON.parse(text) as Record<string, unknown>;
+    assert.equal(body.error, 'forbidden', url);
+    assert.equal(body.reason, 'insufficient_scope', url);
+    assert.ok(!text.includes(token), `${url}: the answer contains the token`);
+  }
+  const other = await fetch(`${rig.reviewUrl}/cases`, { headers: bearer(await rig.tokens.mint({ claims: { client_id: 'other-client' } })) });
+  assert.equal(other.status, 401);
+  assert.equal(other.headers.get('www-authenticate'), 'Bearer error="invalid_token"');
+  assert.equal(await reasonOf(other), 'wrong_client');
+});
+
 test('D3. with the provider down both servers answer 503 identity_unavailable; once it is back the next request succeeds', async (t) => {
   const rig = await start(t);
   const token = await rig.tokens.mint();
@@ -199,6 +243,7 @@ const ENV = {
   AUTH_ISSUER: 'http://localhost:8090/realms/lab',
   AUTH_ALLOWED_AUDIENCE: 'lab-case-system',
   AUTH_ALLOWED_CLIENTS: 'desk',
+  AUTH_REQUIRED_SCOPES: 'cases:write,cases:lookup,cases:read,cases:review',
   AUTH_ROLES_CLAIM: 'roles',
   AUTH_REVIEWER_ROLE: 'reviewer',
 };
@@ -211,6 +256,7 @@ test('D7. each setting is required and named when missing', () => {
       issuer: 'http://localhost:8090/realms/lab',
       audience: 'lab-case-system',
       allowedClients: ['desk'],
+      requiredScopes: ['cases:write', 'cases:lookup', 'cases:read', 'cases:review'],
       rolesClaim: 'roles',
       minRemainingSeconds: 0,
     },

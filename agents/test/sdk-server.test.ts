@@ -379,6 +379,7 @@ test('R14. LOCAL_RUNTIME_EDGE is required and must be on or off; on puts the SDK
     AUTH_ISSUER: 'http://identity.invalid/realms/lab',
     AUTH_ALLOWED_AUDIENCE: 'lab-agents',
     AUTH_ALLOWED_CLIENTS: 'desk',
+    AUTH_REQUIRED_SCOPES: 'agents:intake',
     AUTH_ROLES_CLAIM: 'roles',
     CASE_MCP_URL: 'http://case-system.invalid/mcp',
     KNOWLEDGE_MCP_URL: 'http://knowledge.invalid/mcp',
@@ -444,6 +445,7 @@ test('R19. the hand-written agent still starts on the hand-written contract serv
     AUTH_ISSUER: 'http://identity.invalid/realms/lab',
     AUTH_ALLOWED_AUDIENCE: 'lab-agents',
     AUTH_ALLOWED_CLIENTS: 'desk',
+    AUTH_REQUIRED_SCOPES: 'agents:intake',
     AUTH_ROLES_CLAIM: 'roles',
     CASE_MCP_URL: 'http://case-system.invalid/mcp',
   };

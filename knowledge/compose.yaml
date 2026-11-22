@@ -66,6 +66,7 @@ services:
       AUTH_ALLOWED_AUDIENCE: lab-knowledge
       AUTH_ALLOWED_CLIENTS: desk
       AUTH_ROLES_CLAIM: roles
+      AUTH_REQUIRED_SCOPES: labels:search
     ports:
       # Published on this machine only: MCP for agents.
       - "127.0.0.1:8002:8000"

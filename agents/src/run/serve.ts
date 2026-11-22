@@ -15,6 +15,7 @@
 //   AUTH_ISSUER            the issuer that document and every access token must name
 //   AUTH_ALLOWED_AUDIENCE  a value that must be in the access token's aud
 //   AUTH_ALLOWED_CLIENTS   the client ids an access token may be issued to, separated by commas
+//   AUTH_REQUIRED_SCOPES   the scopes an access token must hold at least one of, separated by commas
 //   AUTH_ROLES_CLAIM       the access-token claim holding the caller's roles
 //   LOCAL_RUNTIME_EDGE     on the AgentCore SDK server only: on or off (see ../contract/runtime-contract.ts)
 // and whatever the agent's own reader reads from the same object.
@@ -82,6 +83,13 @@ export function agentSettingsFrom<Own>(env: Environment, limits: Limits, readOwn
   if (clients.length === 0) {
     throw new Error('AUTH_ALLOWED_CLIENTS names no client id.');
   }
+  const scopes = required(env, 'AUTH_REQUIRED_SCOPES', 'the scopes an access token must hold at least one of, separated by commas')
+    .split(',')
+    .map((scope) => scope.trim())
+    .filter((scope) => scope !== '');
+  if (scopes.length === 0) {
+    throw new Error('AUTH_REQUIRED_SCOPES names no scope.');
+  }
   const namedModel = env['MODEL_ID']?.trim();
   const baseUrl = required(env, 'MODEL_BASE_URL', 'the address of the model server, ending in /v1').replace(/\/+$/, '');
   const apiKey = required(env, 'MODEL_API_KEY', 'the key the model server expects');
@@ -96,6 +104,7 @@ export function agentSettingsFrom<Own>(env: Environment, limits: Limits, readOwn
       issuer: required(env, 'AUTH_ISSUER', 'the issuer the discovery document and every access token must name'),
       audience: required(env, 'AUTH_ALLOWED_AUDIENCE', "a value that must be in the access token's aud"),
       allowedClients: clients,
+      requiredScopes: scopes,
       rolesClaim: required(env, 'AUTH_ROLES_CLAIM', "the access-token claim holding the caller's roles"),
       minRemainingSeconds: limits.runMs / 1000,
     },

@@ -97,6 +97,27 @@ test('R01. no token, and a bad token: 401 with the hand-written server\'s body a
   assert.equal(upstream.received.length, 0);
 });
 
+test('I04. local edge: a token without the agent\'s scope is 403 insufficient_scope naming the scope; another refusal is still 401; the upstream receives nothing', async (t) => {
+  const upstream = await startUpstream(t);
+  const edge = await startEdge(t, upstream.address);
+
+  const token = await edge.tokens.mint({ claims: { scope: 'openid cases:read' } });
+  const lacking = await invoke(edge, { authorization: `Bearer ${token}` });
+  assert.equal(lacking.status, 403);
+  assert.equal(lacking.headers.get('www-authenticate'), 'Bearer error="insufficient_scope", scope="agents:intake"');
+  assert.equal(prop(lacking.body, 'error'), 'forbidden');
+  assert.equal(prop(lacking.body, 'reason'), 'insufficient_scope');
+  assert.equal(typeof prop(lacking.body, 'detail'), 'string');
+  assert.equal(JSON.stringify(lacking.body).includes(token), false);
+
+  const other = await invoke(edge, { authorization: `Bearer ${await edge.tokens.mint({ claims: { client_id: 'other-client' } })}` });
+  assert.equal(other.status, 401);
+  assert.equal(other.headers.get('www-authenticate'), 'Bearer error="invalid_token"');
+  assert.equal(prop(other.body, 'reason'), 'wrong_client');
+
+  assert.equal(upstream.received.length, 0);
+});
+
 test('R02. the identity provider cannot be asked: 503 identity_unavailable; the upstream receives nothing', async (t) => {
   const upstream = await startUpstream(t);
   const edge = await startEdge(t, upstream.address);

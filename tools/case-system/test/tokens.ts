@@ -11,6 +11,8 @@ import type { MintOptions, StandInIssuer } from '../../../test-support/issuer.ts
 
 export const ISSUER = 'http://localhost:8090/realms/lab';
 export const REVIEWER_ROLE = 'reviewer';
+// The scopes the case system requires, as its compose file sets them.
+export const CASE_SYSTEM_SCOPES = ['cases:write', 'cases:lookup', 'cases:read', 'cases:review'];
 
 export const RILEY = {
   aud: ['lab-agents', 'lab-case-system'],
@@ -19,6 +21,7 @@ export const RILEY = {
   preferred_username: 'riley.reviewer',
   name: 'Riley Reviewer',
   roles: ['default-roles-lab', 'reviewer'],
+  scope: CASE_SYSTEM_SCOPES.join(' '),
 };
 
 export const DANA = {
@@ -52,6 +55,7 @@ export async function startTokens(t: TestContext, now: () => Date): Promise<Toke
       issuer: ISSUER,
       audience: 'lab-case-system',
       allowedClients: ['desk'],
+      requiredScopes: CASE_SYSTEM_SCOPES,
       rolesClaim: 'roles',
       minRemainingSeconds: 0,
     },

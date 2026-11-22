@@ -534,6 +534,7 @@ export async function startCaseSystem(t: TestContext): Promise<CaseSystem> {
       issuer: TOKEN_ISSUER,
       audience: 'lab-case-system',
       allowedClients: ['desk'],
+      requiredScopes: CASE_SYSTEM_SCOPES,
       rolesClaim: 'roles',
       minRemainingSeconds: 0,
     },
@@ -555,6 +556,7 @@ export async function startCaseSystem(t: TestContext): Promise<CaseSystem> {
     name: TOKEN_CLAIMS.name,
     clientId: TOKEN_CLAIMS.client_id,
     roles: [...TOKEN_CLAIMS.roles],
+    scopes: TOKEN_CLAIMS.scope.split(' '),
     expiresAt: new Date(new Date(STORE_START).getTime() + 600_000),
     token,
   };
@@ -581,6 +583,7 @@ export const TEST_CALLER: Caller = {
   name: 'Dana Desk',
   clientId: 'desk',
   roles: ['default-roles-lab'],
+  scopes: ['agents:intake'],
   expiresAt: new Date('2026-03-01T10:10:00.000Z'),
   token: 'access-token-of-the-test-caller',
 };
@@ -748,6 +751,11 @@ export function item<T>(items: readonly T[], index: number, what: string): T {
 export const TOKEN_ISSUER = 'http://localhost:8090/realms/lab';
 export const TOKEN_MIN_REMAINING_SECONDS = 150;
 
+// The scopes each check here requires, as the lab's compose files set them.
+export const INTAKE_SCOPES = ['agents:intake'];
+export const CASE_SYSTEM_SCOPES = ['cases:write', 'cases:lookup', 'cases:read', 'cases:review'];
+
+// The token reaches the agent and is passed on to the case system, so it carries the scopes of both.
 export const TOKEN_CLAIMS = {
   aud: ['lab-agents', 'lab-case-system'],
   client_id: 'desk',
@@ -755,6 +763,7 @@ export const TOKEN_CLAIMS = {
   preferred_username: 'riley.reviewer',
   name: 'Riley Reviewer',
   roles: ['default-roles-lab', 'reviewer'],
+  scope: [...INTAKE_SCOPES, ...CASE_SYSTEM_SCOPES].join(' '),
 };
 
 export type TokenRig = {
@@ -782,6 +791,7 @@ export async function startTokenRig(t: { after(fn: () => unknown): void }): Prom
       issuer: TOKEN_ISSUER,
       audience: 'lab-agents',
       allowedClients: ['desk'],
+      requiredScopes: INTAKE_SCOPES,
       rolesClaim: 'roles',
       minRemainingSeconds: TOKEN_MIN_REMAINING_SECONDS,
     },

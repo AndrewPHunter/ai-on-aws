@@ -9,6 +9,7 @@ import type { Caller } from '../../shared/access-token.ts';
 import type { InvocationResponse } from '../../shared/agent-contract.ts';
 import type { MintOptions } from '../../test-support/issuer.ts';
 import { createContractServer } from '../src/contract/server.ts';
+import { expertSettingsFrom } from '../src/expert/serve.ts';
 import { settingsFrom } from '../src/intake/serve.ts';
 import { TOKEN_CLAIMS, TOKEN_MIN_REMAINING_SECONDS, listen, message, startTokenRig, stop } from './helpers.ts';
 import type { TokenRig } from './helpers.ts';
@@ -151,6 +152,7 @@ const ENV = {
   AUTH_ISSUER: 'http://localhost:8090/realms/lab',
   AUTH_ALLOWED_AUDIENCE: 'lab-agents',
   AUTH_ALLOWED_CLIENTS: ' desk , other-client ',
+  AUTH_REQUIRED_SCOPES: 'agents:intake',
   AUTH_ROLES_CLAIM: 'roles',
 };
 
@@ -161,6 +163,7 @@ test('A7. each AUTH_ setting is required and named when missing; the client list
     issuer: 'http://localhost:8090/realms/lab',
     audience: 'lab-agents',
     allowedClients: ['desk', 'other-client'],
+    requiredScopes: ['agents:intake'],
     rolesClaim: 'roles',
     minRemainingSeconds: 150,
   });
@@ -171,4 +174,38 @@ test('A7. each AUTH_ setting is required and named when missing; the client list
     assert.throws(() => settingsFrom({ ...ENV, [name]: '  ' }), new RegExp(`^Error: ${name} is not set`), name);
   }
   assert.throws(() => settingsFrom({ ...ENV, AUTH_ALLOWED_CLIENTS: ' , ' }), /AUTH_ALLOWED_CLIENTS names no client id/);
+});
+
+test('I04. contract server: a token without the agent\'s scope is 403 insufficient_scope naming the scope, and calls no handler; another refusal is still 401', async (t) => {
+  const agent = await startAgent(t);
+  const token = await agent.tokens.mint({ claims: { scope: 'openid cases:read' } });
+  const answer = await invoke(agent, `Bearer ${token}`);
+  assert.equal(answer.status, 403);
+  assert.equal(answer.headers.get('www-authenticate'), 'Bearer error="insufficient_scope", scope="agents:intake"');
+  const body: unknown = JSON.parse(answer.text);
+  assert.equal(Reflect.get(body as object, 'error'), 'forbidden');
+  assert.equal(Reflect.get(body as object, 'reason'), 'insufficient_scope');
+  assert.equal(typeof Reflect.get(body as object, 'detail'), 'string');
+  assert.ok(!answer.text.includes(token), 'the answer contains the token');
+
+  const other = await invoke(agent, `Bearer ${await agent.tokens.mint({ claims: { aud: ['lab-case-system'] } })}`);
+  assert.equal(other.status, 401);
+  assert.equal(other.headers.get('www-authenticate'), 'Bearer error="invalid_token"');
+  assert.equal(reasonOf(other.text), 'wrong_audience');
+  assert.equal(agent.callers.length, 0);
+});
+
+test('I15. an agent does not start without AUTH_REQUIRED_SCOPES, or with one naming no scope; the list splits on commas and trims', () => {
+  const expertEnv = { ...ENV, AGENT_ID: 'expert', AUTH_REQUIRED_SCOPES: 'agents:expert', KNOWLEDGE_MCP_URL: 'http://knowledge:8000/mcp' };
+  for (const [name, read, env] of [
+    ['intake', settingsFrom, ENV],
+    ['expert', expertSettingsFrom, expertEnv],
+  ] as const) {
+    const missing: Record<string, string | undefined> = { ...env };
+    delete missing.AUTH_REQUIRED_SCOPES;
+    assert.throws(() => read(missing), /^Error: AUTH_REQUIRED_SCOPES is not set/, name);
+    assert.throws(() => read({ ...env, AUTH_REQUIRED_SCOPES: '  ' }), /^Error: AUTH_REQUIRED_SCOPES is not set/, name);
+    assert.throws(() => read({ ...env, AUTH_REQUIRED_SCOPES: ' , ' }), /^Error: AUTH_REQUIRED_SCOPES names no scope/, name);
+    assert.deepEqual(read({ ...env, AUTH_REQUIRED_SCOPES: ' agents:intake , agents:expert ' }).auth.requiredScopes, ['agents:intake', 'agents:expert'], name);
+  }
 });

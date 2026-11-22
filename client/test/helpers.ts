@@ -173,13 +173,18 @@ export const RILEY: ScriptedUser = {
   preferred_username: 'riley.reviewer',
   name: 'Riley Reviewer',
   roles: ['default-roles-lab', 'reviewer'],
+  scopes: ['cases:read', 'cases:review'],
 };
 export const DANA: ScriptedUser = {
   sub: '6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f02',
   preferred_username: 'dana.desk',
   name: 'Dana Desk',
   roles: ['default-roles-lab'],
+  scopes: ['cases:read'],
 };
+
+// The scopes the case system requires, as its compose file sets them.
+export const CASE_SYSTEM_SCOPES = ['cases:write', 'cases:lookup', 'cases:read', 'cases:review'];
 
 // The clock sessions, tokens and the stand-in issuer go by. It moves only when a test moves it.
 export type SettableClock = { now: () => Date; advance: (ms: number) => void };
@@ -231,6 +236,7 @@ export function caseSystemCheck(issuer: StandInIssuer, clock: SettableClock): Ac
       issuer: issuer.issuer,
       audience: 'lab-case-system',
       allowedClients: [CLIENT_ID],
+      requiredScopes: CASE_SYSTEM_SCOPES,
       rolesClaim: 'roles',
       minRemainingSeconds: 0,
     },
@@ -242,6 +248,7 @@ export function caseSystemCheck(issuer: StandInIssuer, clock: SettableClock): Ac
 export function tokenFor(issuer: StandInIssuer, user: ScriptedUser): Promise<string> {
   return issuer.mintAccessToken({
     lifetimeSeconds: 600,
+    scopes: user.scopes ?? [],
     claims: {
       aud: ['lab-agents', 'lab-case-system'],
       client_id: CLIENT_ID,

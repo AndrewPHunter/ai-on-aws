@@ -153,6 +153,7 @@ test('V13. as the service wires it: from its settings, each request reaches its 
     AUTH_ISSUER: 'http://localhost:8090/realms/lab',
     AUTH_ALLOWED_AUDIENCE: 'lab-knowledge',
     AUTH_ALLOWED_CLIENTS: 'desk',
+    AUTH_REQUIRED_SCOPES: 'labels:search',
     AUTH_ROLES_CLAIM: 'roles',
     MODEL_EMBED_BASE_URL: embedServer.baseUrl,
     MODEL_RERANK_BASE_URL: rerankServer.baseUrl,

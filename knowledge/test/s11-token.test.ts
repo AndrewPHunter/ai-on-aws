@@ -59,3 +59,27 @@ test('S11. /ping needs no token', async (t) => {
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { status: 'Healthy' });
 });
+
+test('I04. retrieval service: a token without labels:search is 403 insufficient_scope naming it; another refusal is still 401; nothing is searched', async (t) => {
+  const { url, tokens, searched } = await rig(t);
+  const token = await tokens.mint({ claims: { scope: 'openid agents:expert' } });
+  const lacking = await fetch(`${url}/mcp`, { method: 'POST', headers: { ...mcpHeaders, authorization: `Bearer ${token}` }, body: MCP_LIST });
+  assert.equal(lacking.status, 403);
+  assert.equal(lacking.headers.get('www-authenticate'), 'Bearer error="insufficient_scope", scope="labels:search"');
+  const text = await lacking.text();
+  const payload = JSON.parse(text) as Record<string, unknown>;
+  assert.equal(payload.error, 'forbidden');
+  assert.equal(payload.reason, 'insufficient_scope');
+  assert.equal(typeof payload.detail, 'string');
+  assert.ok(!text.includes(token), 'the answer contains the token');
+
+  const other = await fetch(`${url}/mcp`, {
+    method: 'POST',
+    headers: { ...mcpHeaders, authorization: `Bearer ${await tokens.mint({ claims: { client_id: 'other-client' } })}` },
+    body: MCP_LIST,
+  });
+  assert.equal(other.status, 401);
+  assert.equal(other.headers.get('www-authenticate'), 'Bearer error="invalid_token"');
+  assert.equal(((await other.json()) as Record<string, unknown>).reason, 'wrong_client');
+  assert.equal(searched(), 0);
+});

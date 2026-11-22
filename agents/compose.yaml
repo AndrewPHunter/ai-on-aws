@@ -49,6 +49,7 @@ services:
     environment:
       <<: *auth
       AGENT_ID: intake-handwritten
+      AUTH_REQUIRED_SCOPES: agents:intake
       # The case system's MCP endpoint, by its service name on the shared network.
       CASE_MCP_URL: http://case-system:8000/mcp
     ports:
@@ -63,6 +64,7 @@ services:
     environment:
       <<: *auth
       AGENT_ID: intake-strands
+      AUTH_REQUIRED_SCOPES: agents:intake
       CASE_MCP_URL: http://case-system:8000/mcp
       # Served by AWS's SDK server (BedrockAgentCoreApp). on: a local stand-in for AgentCore Runtime's front
       # door listens on 8080 in the same process, checks the token, gives the request a session id and
@@ -79,6 +81,7 @@ services:
     environment:
       <<: *auth
       AGENT_ID: expert
+      AUTH_REQUIRED_SCOPES: agents:expert
       # The retrieval service's MCP endpoint, by its service name on the shared network.
       KNOWLEDGE_MCP_URL: http://knowledge:8000/mcp
       # Served by AWS's SDK server, behind the local stand-in for AgentCore Runtime's front door, as above.

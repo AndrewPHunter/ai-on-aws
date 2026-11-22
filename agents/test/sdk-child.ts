@@ -30,6 +30,7 @@ const checkToken = createAccessTokenCheck(
     issuer: options.issuer,
     audience: 'lab-agents',
     allowedClients: ['desk'],
+    requiredScopes: ['agents:intake'],
     rolesClaim: 'roles',
     minRemainingSeconds: 150,
   },

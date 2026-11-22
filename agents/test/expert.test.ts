@@ -782,6 +782,7 @@ test('E20. over HTTP through the shared contract server: 401 without a token and
     AUTH_ISSUER: 'http://identity.invalid/realms/lab',
     AUTH_ALLOWED_AUDIENCE: 'lab-agents',
     AUTH_ALLOWED_CLIENTS: 'desk',
+    AUTH_REQUIRED_SCOPES: 'agents:expert',
     AUTH_ROLES_CLAIM: 'roles',
     KNOWLEDGE_MCP_URL: 'http://knowledge:8000/mcp',
   };

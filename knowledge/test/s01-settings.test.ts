@@ -13,6 +13,7 @@ const ENV = {
   AUTH_ISSUER: 'http://localhost:8090/realms/lab',
   AUTH_ALLOWED_AUDIENCE: 'lab-knowledge',
   AUTH_ALLOWED_CLIENTS: 'desk',
+  AUTH_REQUIRED_SCOPES: 'labels:search',
   AUTH_ROLES_CLAIM: 'roles',
 };
 
@@ -27,6 +28,7 @@ test('S1. complete settings are read', () => {
       issuer: ENV.AUTH_ISSUER,
       audience: 'lab-knowledge',
       allowedClients: ['desk'],
+      requiredScopes: ['labels:search'],
       rolesClaim: 'roles',
       minRemainingSeconds: 0,
     },
