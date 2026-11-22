@@ -11,6 +11,7 @@ import { invocationResponseSchema } from '../../shared/agent-contract.ts';
 import type { InvocationResponse } from '../../shared/agent-contract.ts';
 import type { Question } from './benchmark.ts';
 import { InputError } from './benchmark.ts';
+import type { Variant } from './variant.ts';
 
 export const CONCURRENCY = 4;
 // The client waits 180 s for an agent; the runner waits a little longer, so an agent's own ending is what it records.
@@ -30,6 +31,9 @@ export type CallRecord = {
 };
 
 export type RunFile = {
+  // The variant of the sample the run was made on, and the SHA-256 of that variant's file. A run file from before
+  // variants existed has no variant: it is a run on the original sample.
+  variant?: Variant;
   sample_sha256: string;
   agent_id: string | null;
   models: string[];
@@ -40,6 +44,7 @@ export type RunFile = {
 
 export type RunOptions = {
   questions: readonly Question[];
+  variant: Variant;
   sampleSha256: string;
   runDir: string;
   agentUrl: string;
@@ -157,6 +162,10 @@ async function callOnce(options: RunOptions, question: Question): Promise<CallRe
 export async function runQuestions(options: RunOptions): Promise<RunResult> {
   const previous = await readRecords(options.runDir);
   const prior = await readRunFile(options.runDir);
+  if (prior !== null && (prior.variant ?? 'original') !== options.variant) {
+    options.log(`could not run: this run was made on the ${prior.variant ?? 'original'} sample, not the ${options.variant} one`);
+    return { exitCode: 2, sent: 0, failures: 0 };
+  }
   if (prior !== null && prior.sample_sha256 !== options.sampleSha256) {
     options.log(`could not run: this run was made with another sample`);
     return { exitCode: 2, sent: 0, failures: 0 };
@@ -166,6 +175,7 @@ export async function runQuestions(options: RunOptions): Promise<RunResult> {
   const models = new Set(prior?.models ?? []);
   let agentId = prior?.agent_id ?? null;
   const run: RunFile = {
+    variant: options.variant,
     sample_sha256: options.sampleSha256,
     agent_id: agentId,
     models: [],

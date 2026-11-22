@@ -1,17 +1,18 @@
 #!/bin/sh
-# Calls the judge adapter once for each request file in a folder, at most <parallel> at once, on the operator's
-# machine. For each <name>.json it writes <name>.out (the adapter's standard output: one JSON verdict) and
-# <name>.status (the adapter's exit code, or "timeout"). The adapter's standard error is discarded: it can carry the
-# question or the reply. Nothing here prints any of them.
+# Calls a model adapter (the judge's, or the rewriter's) once for each request file in a folder, at most <parallel> at
+# once, on the operator's machine. The adapter is run as `<adapter> <schema-file>`, the schema its answer must keep to,
+# with the request on standard input. For each <name>.json it writes <name>.out (the adapter's standard output: one
+# JSON answer) and <name>.status (the adapter's exit code, or "timeout"). The adapter's standard error is discarded: it
+# can carry the question or the reply. Nothing here prints any of them.
 #
-#   evaluation/judge/call-all.sh <pending-dir> <adapter> <parallel> <timeout-seconds>
+#   evaluation/judge/call-all.sh <pending-dir> <adapter> <parallel> <timeout-seconds> <schema-file>
 #
 # A request that already has a .status file is not sent again. Exit code 0 when every request has a status, 2 when
 # it could not run. Needs only a POSIX shell, xargs, sleep and kill.
 set -eu
 
 usage() {
-  printf '%s\n' "usage: evaluation/judge/call-all.sh <pending-dir> <adapter> <parallel> <timeout-seconds>" >&2
+  printf '%s\n' "usage: evaluation/judge/call-all.sh <pending-dir> <adapter> <parallel> <timeout-seconds> <schema-file>" >&2
   exit 2
 }
 
@@ -22,7 +23,7 @@ call_one() {
     return 0
   fi
   rm -f "$pending/$name.timeout"
-  "$adapter" <"$pending/$name.json" >"$pending/$name.out" 2>/dev/null &
+  "$adapter" "$schema" <"$pending/$name.json" >"$pending/$name.out" 2>/dev/null &
   pid=$!
   # The watchdog holds none of this script's output open, and takes its sleep with it when it is ended.
   (
@@ -47,23 +48,25 @@ call_one() {
 # xargs runs this script again for each name, at most <parallel> at once.
 if [ "${CALL_ALL_ONE:-}" = 1 ]; then
   # Some xargs run the command once with no name when there is nothing to call: nothing to do then.
-  [ "$#" -ne 4 ] || exit 0
-  [ "$#" -eq 5 ] || usage
+  [ "$#" -ne 5 ] || exit 0
+  [ "$#" -eq 6 ] || usage
   pending=$1
   adapter=$2
   limit=$4
-  call_one "$5"
+  schema=$5
+  call_one "$6"
   exit 0
 fi
 
-[ "$#" -eq 4 ] || usage
+[ "$#" -eq 5 ] || usage
 pending=$1
 adapter=$2
 parallel=$3
 limit=$4
+schema=$5
 
-if [ ! -d "$pending" ] || [ ! -x "$adapter" ]; then
-  printf '%s\n' "call-all.sh: the pending folder or the adapter does not exist" >&2
+if [ ! -d "$pending" ] || [ ! -x "$adapter" ] || [ ! -f "$schema" ]; then
+  printf '%s\n' "call-all.sh: the pending folder, the adapter or the schema file does not exist" >&2
   exit 2
 fi
 
@@ -74,4 +77,4 @@ for request in "$pending"/*.json; do
     continue
   fi
   printf '%s\n' "$name"
-done | CALL_ALL_ONE=1 xargs -n 1 -P "$parallel" "$0" "$pending" "$adapter" "$parallel" "$limit"
+done | CALL_ALL_ONE=1 xargs -n 1 -P "$parallel" "$0" "$pending" "$adapter" "$parallel" "$limit" "$schema"

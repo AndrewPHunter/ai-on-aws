@@ -1,12 +1,15 @@
 // What the evaluation tests share: temporary folders, synthetic benchmark questions and manifests, contract
-// responses built for a measure, and one test double (labelled below): a stand-in agent. All text is invented.
+// responses built for a measure, one test double (labelled below): a stand-in agent, and the steps of reword.sh run
+// with another (the stand-in rewriter, labelled in its own file). All text is invented.
 
+import { execFile } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { TestContext } from 'node:test';
+import { promisify } from 'node:util';
 
 import type { InvocationResponse, Step } from '../../shared/agent-contract.ts';
 import type { Question, QuestionType } from '../src/benchmark.ts';
@@ -37,6 +40,10 @@ export function question(qid: string, type: QuestionType, overrides: Partial<Que
 
 // A benchmark line as the benchmark file holds it.
 export const benchmarkLine = (q: Question): string => JSON.stringify({ ...q, drug_name: 'Examplamab', citations: [], context: [], source: 'invented' });
+
+// A benchmark line with the passages it was written from, as the benchmark's `context` entries hold them.
+export const benchmarkLineWith = (q: Question, context: readonly string[], drugName = 'Examplamab'): string =>
+  JSON.stringify({ ...q, drug_name: drugName, citations: [], context: context.map((text, at) => ({ doc_id: 'invented', section_code: 'x', section_title: 'Invented', text, doc_chunk_index: at, section_chunk_index: at, has_answer: true })), source: 'invented' });
 
 export function manifestText(setIds: readonly string[]): string {
   const hex = (n: number): string => n.toString(16).padStart(64, '0');
@@ -178,6 +185,32 @@ export async function startAgentStandIn(t: TestContext, answer: (request: AgentR
     server.close();
   });
   return { url: `http://127.0.0.1:${address.port}`, received, mostAtOnce: () => most };
+}
+
+// --- Rewording, with the labelled stand-in rewriter (evaluation/test/stand-in-rewriter.sh, a test double) ----------
+// What evaluation/reword.sh does, step by step, with the stand-in in place of the Codex adapter: each command line step
+// through `command`, each round of calls through evaluation/judge/call-all.sh. Returns each step's exit code.
+
+const CALL_ALL = new URL('../judge/call-all.sh', import.meta.url).pathname;
+export const STAND_IN_REWRITER = new URL('./stand-in-rewriter.sh', import.meta.url).pathname;
+const REWRITE_SCHEMA = new URL('../reword/rewrite.schema.json', import.meta.url).pathname;
+const SAME_SCHEMA = new URL('../reword/same.schema.json', import.meta.url).pathname;
+
+export async function rewordWithStandIn(
+  paths: { sample: string; qa: string; pending: string; calls: string },
+  command: (argv: string[]) => Promise<number>,
+): Promise<{ prepare: number; checkPrepare: number; collect: number }> {
+  const run = promisify(execFile);
+  const env = { ...process.env, STAND_IN_CALLS: paths.calls };
+  const flags = ['--sample', paths.sample, '--qa', paths.qa, '--pending', paths.pending];
+  const prepare = await command(['reword-prepare', ...flags]);
+  const { stdout } = await run(STAND_IN_REWRITER, ['--describe'], { env });
+  await writeFile(join(paths.pending, 'describe.json'), stdout);
+  await run(CALL_ALL, [join(paths.pending, 'rewrite'), STAND_IN_REWRITER, '4', '20', REWRITE_SCHEMA], { env });
+  const checkPrepare = await command(['reword-check-prepare', ...flags]);
+  await run(CALL_ALL, [join(paths.pending, 'check'), STAND_IN_REWRITER, '4', '20', SAME_SCHEMA], { env });
+  const collect = await command(['reword-collect', ...flags]);
+  return { prepare, checkPrepare, collect };
 }
 
 // The command line's input and output, collected.

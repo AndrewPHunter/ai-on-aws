@@ -9,7 +9,8 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
 
-import { CHECK_FILE, checkFile, collectJudging, judgeRequest, personVerdicts, prepareJudging, promptSha256, readJudgments, toJudge } from '../src/judge.ts';
+import { LEGACY_CHECK_FILE, checkFile, collectJudging, judgeRequest, personVerdicts, prepareJudging, readJudgments, toJudge } from '../src/judge.ts';
+import { instructionsSha256 } from '../src/rubric.ts';
 import { scoreRun } from '../src/score.ts';
 import type { Judgment } from '../src/score.ts';
 import { formatScores } from '../src/table.ts';
@@ -17,10 +18,11 @@ import { folder, question, record, response } from './support.ts';
 
 const run = promisify(execFile);
 const CALL_ALL = new URL('../judge/call-all.sh', import.meta.url).pathname;
+const SCHEMA = new URL('../judge/verdict.schema.json', import.meta.url).pathname;
 
 test('Q10. the request holds the question, the reference and the reply without citation markers, and nothing else', () => {
   const q = question('q1', 'factual', { question: 'Invented question?', answer: 'Invented reference.' });
-  const request = judgeRequest(q, 'First invented statement. [1]\n\nSecond invented statement. [2]');
+  const request = judgeRequest('completeness', q, 'First invented statement. [1]\n\nSecond invented statement. [2]');
   assert.deepEqual(Object.keys(request).sort(), ['instructions', 'question', 'reference', 'reply']);
   assert.equal(request.question, 'Invented question?');
   assert.equal(request.reference, 'Invented reference.');
@@ -48,11 +50,11 @@ async function judgeOnce(
   records: ReturnType<typeof record>[],
   retryFailed = false,
 ) {
-  await prepareJudging(runDir, questions, records, retryFailed);
+  await prepareJudging(runDir, 'completeness', questions, records, retryFailed);
   const { stdout } = await run(adapter.path, ['--describe'], { env: adapter.env });
-  await writeFile(join(runDir, 'judge-pending', 'describe.json'), stdout);
-  await run(CALL_ALL, [join(runDir, 'judge-pending'), adapter.path, '4', '20'], { env: adapter.env });
-  return collectJudging(runDir);
+  await writeFile(join(runDir, 'judge-pending-completeness', 'describe.json'), stdout);
+  await run(CALL_ALL, [join(runDir, 'judge-pending-completeness'), adapter.path, '4', '20', SCHEMA], { env: adapter.env });
+  return collectJudging(runDir, 'completeness');
 }
 
 test('Q11. verdicts are stored; a failing command and an answer outside the schema are failures, counted; resuming does not ask again', async (t) => {
@@ -73,7 +75,7 @@ test('Q11. verdicts are stored; a failing command and an answer outside the sche
   assert.deepEqual(first, { judged: 3, failures: 2 });
   // Only answerable questions the agent answered are judged.
   assert.equal(await adapter.calls(), 5);
-  const judgments = (await readJudgments(runDir)) ?? [];
+  const judgments = (await readJudgments(runDir, 'completeness')) ?? [];
   assert.deepEqual(
     judgments.map((j) => (j.ok ? [j.qid, j.verdict] : [j.qid, j.failure])),
     [
@@ -84,16 +86,16 @@ test('Q11. verdicts are stored; a failing command and an answer outside the sche
       ['q4', 'the judge answered outside the schema'],
     ],
   );
-  const judgeFile = JSON.parse(await readFile(join(runDir, 'judge.json'), 'utf8')) as Record<string, string>;
-  assert.deepEqual(judgeFile, { judge: 'stand-in', model: 'none', effort: 'none', prompt_sha256: promptSha256() });
-  assert.equal((await readdir(runDir)).includes('judge-pending'), false);
+  const judgeFile = JSON.parse(await readFile(join(runDir, 'judge-completeness.json'), 'utf8')) as Record<string, string>;
+  assert.deepEqual(judgeFile, { judge: 'stand-in', model: 'none', effort: 'none', rubric: 'completeness', instructions_sha256: instructionsSha256('completeness') });
+  assert.equal((await readdir(runDir)).includes('judge-pending-completeness'), false);
 
   // Started again: nothing asked. With --retry-failed: only the two failures.
   assert.deepEqual(await judgeOnce(runDir, adapter, questions, records), { judged: 0, failures: 0 });
   assert.equal(await adapter.calls(), 5);
   await judgeOnce(runDir, adapter, questions, records, true);
   assert.equal(await adapter.calls(), 7);
-  assert.equal(((await readJudgments(runDir)) ?? []).length, 5);
+  assert.equal(((await readJudgments(runDir, 'completeness')) ?? []).length, 5);
 });
 
 test('Q12. scores: the three shares by type with judgments; "not judged" without; the agreement with a filled check file', () => {
@@ -121,15 +123,15 @@ test('Q12. scores: the three shares by type with judgments; "not judged" without
   assert.equal(judged.perQuestion.f1?.judged_correct, true);
 
   // The check file: drawn items with an empty person column; filled in, the agreement.
-  const text = checkFile(toJudge(questions, records), judgments, 2);
+  const text = checkFile('completeness', toJudge(questions, records), judgments, 2);
   const lines = text.trim().split('\n');
   assert.equal(lines[0], '"qid","question","reference","reply","person_verdict"');
   assert.equal(lines.length, 3);
-  assert.equal(personVerdicts(text), null);
+  assert.equal(personVerdicts(text, LEGACY_CHECK_FILE), null);
   const filled = `${lines[0]}\n"f1","q","r","x","correct"\n"f2","q","r","x","correct"\n"n1","q","r","x","partly_correct"\n`;
-  const agreement = scoreRun({ ...base, judgments, personVerdicts: personVerdicts(filled) }).agreement;
+  const agreement = scoreRun({ ...base, judgments, personVerdicts: personVerdicts(filled, LEGACY_CHECK_FILE) }).agreement;
   assert.deepEqual([agreement?.judgeAndPersonAgree.numerator, agreement?.judgeAndPersonAgree.denominator], [2, 3]);
-  assert.throws(() => personVerdicts(`${lines[0]}\n"f1","q","r","x","maybe"\n`), new RegExp(`${CHECK_FILE} row 2`));
+  assert.throws(() => personVerdicts(`${lines[0]}\n"f1","q","r","x","maybe"\n`, LEGACY_CHECK_FILE), new RegExp(`${LEGACY_CHECK_FILE} row 2`));
 });
 
 test('Q12. a reference answer with no letter in it is not judged, and a judgment stored for it is not counted', async (t) => {
@@ -140,7 +142,7 @@ test('Q12. a reference answer with no letter in it is not judged, and a judgment
   // Not asked of the judge.
   assert.deepEqual(toJudge(questions, records).map((item) => item.question.qid), ['f1']);
   const dir = await folder(t);
-  assert.equal(await prepareJudging(dir, questions, records, false), 1);
+  assert.equal(await prepareJudging(dir, 'completeness', questions, records, false), 1);
 
   // A judgment stored before (an incorrect, from a judge that found no fact to grade against) is ignored, not deleted.
   const judgments: Judgment[] = [
