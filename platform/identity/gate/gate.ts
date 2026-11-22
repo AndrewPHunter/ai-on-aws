@@ -781,7 +781,11 @@ async function main(): Promise<number> {
 }
 
 main().then(
-  (code) => process.exit(code),
+  // The exit code is set and the process left to end by itself, so the whole report reaches a pipe:
+  // process.exit would cut a report longer than the pipe's buffer.
+  (code) => {
+    process.exitCode = code
+  },
   (error: unknown) => {
     process.stderr.write(`gate: could not run: ${error instanceof Error ? error.message : String(error)}\n`)
     process.exit(2)
