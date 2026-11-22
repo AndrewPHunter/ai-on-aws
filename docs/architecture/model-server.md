@@ -26,18 +26,32 @@ reaches them by their URLs and that key.
 | Embedding | `embed` | `/v1/embeddings` | `MODEL_BIND_ADDRESS:MODEL_EMBED_PORT` | retrieval settings, `EMBED_*` |
 | Reranker | `rerank` | `/v1/rerank` | `MODEL_BIND_ADDRESS:MODEL_RERANK_PORT` | retrieval settings, `RERANK_*` |
 
+Each also serves `/v1/models`, which lists its served name, and `/health`, which its health check reads. Each listens on port 8000 in its container.
+
+Where the knowledge piece meets these servers:
+
+| Setting | From | Read by the knowledge piece as |
+|---|---|---|
+| `MODEL_EMBED_BASE_URL`, `MODEL_RERANK_BASE_URL`, `MODEL_API_KEY` | machine settings | where the embedding stage and the retrieval service send requests, and the key they carry |
+| `EMBED_MODEL_ID`, `RERANK_MODEL_ID` | retrieval settings | the served names each request names |
+| `EMBED_MODEL_REPO`, `EMBED_MODEL_REVISION`, `EMBED_DIMENSIONS` | retrieval settings | the vectors' identity, recorded in the embed report and the index and compared by the service before it uses a vector |
+
+The knowledge piece runs in containers on the lab's network and reaches these URLs from there. A server published on a loopback address of the host is not reachable from those containers.
+
 ## Setup
 
 ```mermaid
 flowchart TD
     subgraph Control["Control machine"]
-        A["setup.sh: flags"] --> S["Select a tier"]
+        A["setup.sh: flags"] --> K["Existing machine settings"]
+        S["Select a tier"]
         S --> W["Write machine settings"]
         C["Chat capacity check"]
         E["Embedding capacity check"]
         G["Gate"] --> R["Report and summary"]
     end
     subgraph GPU["GPU machine"]
+        RU["None of the three running"]
         P["Probe: GPU, memory, driver"]
         D["Disk: cache directory, Docker storage"]
         DL["Download three models' weights"]
@@ -45,7 +59,7 @@ flowchart TD
         VE["Embedding server"]
         VR["Reranker server"]
     end
-    A --> P --> S
+    K --> RU --> P --> S
     S --> D --> W
     W --> DL --> V
     V -- "start-up log" --> C
@@ -122,20 +136,23 @@ flowchart TD
 | Step | Runs on | Changes anything |
 |---|---|---|
 | Parse flags, select a tier, decide the disk verdict | control machine | no |
-| Probe the GPU; inspect the cache directory and Docker's storage | GPU machine | no |
+| List the lab's running servers; run the pinned Node image once; probe the GPU; inspect the cache directory and Docker's storage | GPU machine | no |
 | Write machine settings | control machine | `model/.env` |
 | Download weights of the three models | GPU machine | the cache directory |
-| Run the three servers | GPU machine | three containers |
+| Run the three servers, one at a time, each waited on until healthy for at most 900 seconds | GPU machine | three containers |
 | Check capacity from the chat and embedding servers' start-up logs | control machine | no |
-| Gate | control machine | `model/gate-report.json`, replacing any earlier one |
+| Gate, on the host's network when the servers are published on a loopback address | control machine | `model/gate-report.json`; an earlier one is removed before the downloads |
+
+Every decision (flags, selection, disk verdict, the text of machine settings, health, capacity, exit codes) is made by `model/setup/tool.ts`, run in the pinned Node image on the control machine with no network.
 
 ## What the gate checks
 
 | Server | Check | Passes when |
 |---|---|---|
-| Chat | Key | no key and a wrong key are rejected; the right key is accepted |
+| Chat | Key | no key and a wrong key are rejected with 401; the right key is accepted |
+| Chat | Model listed | the profile's model name is listed |
 | Chat | Tool calling under load | conversations run several at once; the share that ends correctly is at or above the threshold, and none shows a server fault |
-| Chat | Long prompts at once | several long prompts sent together are each answered from their own content |
+| Chat | Long prompts at once | several long prompts sent together are each answered from their own content, and none with another's |
 | Embedding | Key, model listed | as for chat; the model's name is listed |
 | Embedding | Vectors | every vector has the configured number of dimensions and unit length within a tolerance |
 | Embedding | Ranking | for a fixed synthetic set, the passage that answers each query is the most similar in at least the threshold share |
@@ -150,7 +167,7 @@ flowchart TD
 
 | Exit | Meaning | Left behind |
 |---|---|---|
-| 0 | the three servers running and shown fit | machine settings, the gate's report, the servers |
+| 0 | the three servers running and shown fit; with `--check`, the machine would get the printed tier | machine settings, the gate's report, the servers; with `--check`, nothing written and nothing started |
 | 1 | a download failed, or a server started and was not shown fit | machine settings; the servers stopped, their containers kept for their logs; the gate's report if the gate ran |
 | 2 | could not run | no server left running; machine settings only if the failure came after they were written |
 | 3 | machine not supported or too small | nothing written, nothing started |
@@ -161,9 +178,9 @@ flowchart TD
 |---|---|---|
 | Server and download definitions | `model/compose.yaml` | setup, a person starting the servers by hand |
 | Profiles | `model/profiles/` | the chat server, the gate, setup |
-| Retrieval settings | `model/retrieval.env` | the embedding and reranker servers, the gate, setup |
+| Retrieval settings | `model/retrieval.env` | the embedding and reranker servers, the gate, setup; in the knowledge piece, the embedding stage, the retrieval service and the knowledge gate |
 | Tiers: chat peaks, retrieval peaks, margin, download sizes, minimum driver and GPU generation | `model/tiers.json` | setup |
-| Machine settings | `model/.env` | the servers, the gate, the rest of the lab |
+| Machine settings | `model/.env` | the servers, the gate, the rest of the lab (the agents; the knowledge piece's embedding stage and retrieval service) |
 | Setup: sequencing | `model/setup.sh` | a person |
 | Setup: decisions, as pure functions with tests | `model/setup/` | `setup.sh` |
 | Gate, its thresholds and its fixed synthetic set | `model/gate/` | setup, a person |

@@ -10,20 +10,20 @@ It serves the same contract as the intake agents, through the same startup (`run
 |---|---|
 | Label | One approved drug label, one version of it, identified by its set id |
 | Passage | One chunk of a label's text, as `search_label` returns it: its text, section, part (body or Highlights), type and the label's version, date and page |
-| Handle | The short name the model is shown for a passage: `P1`, `P2`, … in the order first seen in the run. A passage seen again keeps its handle |
+| Handle | The short name of a passage: `P1`, `P2`, … in the order first seen in the run. A passage seen again keeps its handle. The model sees it for a passage it is shown; the retrieval step records it for every passage |
 | Shown | A passage whose whole text the model was given. Only a shown passage can be cited |
 | Reading allowance | The characters of passage text the model may be shown in one run |
 | Statement | One sentence of an answer, with the handles it cites and a quote |
 | Quote | One continuous span copied from one cited passage |
 | Final tool | `answer` or `cannot_answer`. Once one is accepted the run ends |
-| Correction | A final tool that was not accepted, told to the model with every problem found |
+| Correction | A final tool that was not accepted, told to the model with every problem found. A refused `answer` and a refused `cannot_answer` count alike |
 | Label answer | `label_answer` in the response: `answered`, `no_label`, `label_does_not_answer` or `not_a_label_question`. Set on every completed run, absent otherwise |
 
 ## Modules and what each owns
 
 | Module | Owns | Knows nothing about |
 |---|---|---|
-| `expert/main.ts` | Starting the agent through `run/serve.ts` on the AgentCore SDK server; this agent's output allowance | The rules of a run |
+| `expert/main.ts` | Starting the agent through `run/serve.ts` on the AgentCore SDK server, with the implementation `Strands`; this agent's output allowance | The rules of a run |
 | `expert/serve.ts` | Reading `KNOWLEDGE_MCP_URL`, beside what `run/serve.ts` reads | Everything else |
 | `expert/settings.ts` | Every number of this agent: limits, output allowance, searches, reading allowance, answer limits | Where they are used |
 | `expert/prompt.ts` | What the model is told, and the message laid out for it (its text only, inside `<message>`) | Everything else |
@@ -73,7 +73,21 @@ flowchart TD
     class Infer inference
 ```
 
-Two calls asked for in one turn are run one at a time, in order, so a search on a label the same turn's `find_labels` returned is made after it. Once a final tool is accepted, or a search fails, the run is stopped through a cancel signal: anything else asked for in that turn is not called and the model is not asked again.
+Two calls asked for in one turn are run one at a time, in order, so a search on a label the same turn's `find_labels` returned is made after it. Once a final tool is accepted, a search fails, or a final tool fails after the last correction, the run is stopped through a cancel signal: anything else asked for in that turn is not called and the model is not asked again. A tool asked for when the run's time is already used up calls nothing and ends the run at its time limit.
+
+Connecting to the retrieval service and listing its tools share one time limit: the tool limit, or what the run has left. Every request to the retrieval service carries `Authorization: Bearer` with the caller's token as presented, and no other header of this agent's: no context headers. The retrieval service checks that token again with its own audience, `lab-knowledge` (`knowledge/compose.yaml`), and no minimum remaining life; a token without it fails the run at connection.
+
+What the model is told when code refuses a call, each recorded as a tool step with `is_error` and the refusal as its result:
+
+| Refusal | When |
+|---|---|
+| `invalid_input` | `drug` empty or not a string; `set_id` not a string, `query` empty or not a string, or `part` other than `body` or `highlights` |
+| `label_not_returned` | The set id is not one `find_labels` returned in this run |
+| `search_limit_reached` | The run has sent its 4 searches |
+| `answer_not_accepted` | A final tool that did not pass. The step's result lists every problem |
+| `unknown_tool` | A tool the model named that does not exist. Strands answers it in its own words; the step records them |
+
+A search that is answered gives the model each passage best first: shown whole with its handle, named by its handle as shown above, or, when it does not fit what is left of the reading allowance, described by section, part, type and size with no handle. It then says how many searches are left. It is recorded as a `retrieval` step: the query, the strategy the service reports, and each hit's label names, section, score, first 300 characters, passage id, handle (given to every passage, shown or not) and whether it was shown. A `find_labels` call, and a search the service did not answer with a success of its own label's passages, are recorded as `tool` steps with the service's answer as their result.
 
 ## Who decides what
 
@@ -131,10 +145,10 @@ Readings chosen where the rules leave a choice, each pinned by a test:
 ## Always true
 
 1. The agent writes nowhere. It calls the model and `find_labels` and `search_label`, and nothing else.
-2. Text the model writes reaches the reply only as statements that passed every check. No other sentence of the reply carries model text: each is written by code, from what the retrieval service returned at most (a label's names, version and date), and so is every stop reason. What the model searched for is in its tool steps.
+2. Text the model writes reaches the reply only as statements that passed every check. No other sentence of the reply carries model text: each is written by code, from what the retrieval service returned at most (a label's names, version and date), and so is every stop reason. What the model searched for is in its tool and retrieval steps.
 3. Every citation names the passage the quote was found in, and that passage's label, version, date and page, as the retrieval service returned them.
 4. A search that could not be made is never told to the model and never repeated. An unknown error code, or an error the agent cannot read, counts as one.
-5. The caller's token goes to the retrieval service on every request of the run. The model is given the message's text only: not the sender, not the receipt time.
+5. The caller's token goes to the retrieval service on every request of the run, and nothing else of the message. The model is given the message's text only: not the sender, not the receipt time.
 6. No passage is cut. A passage is shown whole or named as not shown.
 7. Runs share no state. A new Agent and a new MCP client are made for every message.
 
@@ -144,7 +158,7 @@ Readings chosen where the rules leave a choice, each pinned by a test:
 |---|---|---|
 | `completed` | `answer` accepted | none. `label_answer` is `answered`; one citation per statement |
 | `completed` | `cannot_answer` accepted | none. `label_answer` is the reason; no citations |
-| `stopped` | The turn limit, or the time limit | The same sentences as the intake agents |
+| `stopped` | The turn limit, or the time limit (checked before each turn, before each tool call, and by a timer for a request in flight) | The same sentences as the intake agents |
 | `stopped` | A third final tool that does not pass | "The answer did not pass the checks after 2 corrections, and was not returned." |
 | `stopped` | The model ended its turn with text and no final tool | Names the finish reason; the text stays in the model step |
 | `stopped` | A turn cut off at the output allowance after the one retry with thinking off | Says so; nothing written is returned |
@@ -154,6 +168,8 @@ Readings chosen where the rules leave a choice, each pinned by a test:
 | `failed` | Either tool answered an error code no list names | "The label search answered with an error this agent does not know: " and the code |
 | `failed` | Either tool answered an error that is not `{ error, detail }`, or a success of a shape the agent does not expect | One sentence each |
 | `failed` | No answer within the tool limit | Names the limit |
+| `failed` | A search answered with a passage from another label than the one searched | "The retrieval service returned a passage from another label than the one searched." |
+| `failed` | Strands stopped the run with an error no row above names | "Strands stopped the run with" the error's type |
 
 A `stopped` or `failed` run has no reply, no citations and no `label_answer`.
 
@@ -161,10 +177,10 @@ A `stopped` or `failed` run has no reply, no citations and no `label_answer`.
 
 | Number | Value | Set in |
 |---|---|---|
-| Model turns in a run | 8 | `EXPERT_LIMITS`, `expert/settings.ts` |
+| Model turns in a run | 8. A turn asked again with thinking off is not counted, as in the intake agent on Strands | `EXPERT_LIMITS`, `expert/settings.ts` |
 | Time for a run | 150 s | `EXPERT_LIMITS` |
 | Time for one model request | 90 s | `EXPERT_LIMITS` |
-| Time for one tool call | 10 s | `EXPERT_LIMITS` |
+| Time for one tool call, and for connecting and listing the tools | 10 s, or what the run has left | `EXPERT_LIMITS` |
 | Output allowance | 4,096 tokens | `OUTPUT_ALLOWANCE`, `expert/settings.ts`; applied in `expert/main.ts` |
 | Temperature and seed | shared | `run/sampling.ts` |
 | Searches in a run | 4 | `EXPERT_SETTINGS.search`, `expert/settings.ts` |
@@ -192,7 +208,7 @@ Passage text costs a median of 0.24, a 99th percentile of 0.59, and at most 0.75
 
 ## How it is tested
 
-`agents/test/expert.test.ts`, E01 to E23. Each run uses the scripted model stand-in, the real retrieval service in-process over the search engine stand-in, and real tokens from the stand-in issuer; every response is checked against the contract schema. A labelled stand-in MCP server (`startOddRetrieval` in `agents/test/expert-helpers.ts`) gives the answers the real retrieval service cannot: an error code no list names, an error or a success of another shape, and a service offering one tool.
+`agents/test/expert.test.ts`, E01 to E23 and V19 (the strategy and scores a retrieval step carries). E20 serves the agent over HTTP through the hand-written contract server, not the SDK server. The SDK server and the edge are tested in `agents/test/sdk-server.test.ts` and `agents/test/edge.test.ts` with a handler written for the tests, not this agent's. Each run uses the scripted model stand-in, the real retrieval service in-process over the search engine stand-in, and real tokens from the stand-in issuer; every response is checked against the contract schema. A labelled stand-in MCP server (`startOddRetrieval` in `agents/test/expert-helpers.ts`) gives the answers the real retrieval service cannot: an error code no list names, an error or a success of another shape, and a service offering one tool.
 
 The tests' limits are real time limits: a model request's is kept by the OpenAI client, a tool call's by the MCP client (it also bounds connecting to the retrieval service), and the run's by a real timer as well as by the test's clock. A test whose subject is not a time limit gets limits no busy machine reaches: 30 s for a model request, 20 s for a tool call, 60 s for the run. A test whose subject is a limit either moves the test's clock (E17) or sets a short limit of its own where the other side never answers, so the expiry is the only way the test can end (E12's tool limit, 3 s).
 
@@ -203,7 +219,7 @@ The tests' limits are real time limits: a model request's is kept by the OpenAI 
 - The wording of a statement is not checked against the passage beyond its quote and its numbers. A statement can say something its quote does not.
 - Which of several matching labels is used is the model's choice. It is visible only in the citation.
 - Whether a message is a report or a question is the model's judgement. A bare report of a side effect is declined as `not_a_label_question` by instruction, not by a check.
-- The reading allowance is counted in characters, not tokens, so it is safe only up to the worst rate measured. A passage denser than that could still overflow the context, and the run would then end `failed` with the model server's status.
+- The reading allowance is counted in characters, not tokens, so it is safe only up to the worst rate recorded in `expert/settings.ts`. Text denser than that could still overflow the context, and the run would then end `failed` with the model server's status.
 - No choice of how passages are ranked: the retrieval service ranks by its own setting (`SEARCH_STRATEGY`: keyword, vector, fused or fused_reranked; keyword in the lab's compose file), and the retrieval step records the strategy the service reports it ran, with each hit's score as the service returned it.
 - One implementation, on Strands. The two intake agents exist to show what a framework's loop does and what it leaves to the agent's own code, and that comparison is made. This agent's subject is retrieval and what code checks about an answer. Evaluation scores an agent, so a second loop would double what is scored and show nothing new.
 - No hand-off to the intake agent when a message reports an adverse event: it is declined, and the caller must send it to intake.

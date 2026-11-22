@@ -6,7 +6,7 @@ Strands is `@strands-agents/sdk` 1.25.0, the TypeScript SDK. To run the agent, s
 
 The contract is served by `BedrockAgentCoreApp` from `bedrock-agentcore` 0.4.6, behind a local stand-in for AgentCore Runtime's front door; how, and where it answers differently from the hand-written server, is in [agent-runtime.md](agent-runtime.md).
 
-Strands is used the way it comes. Its default model is Amazon Bedrock, which this agent moves to on AWS. Until then the local model server stands in, through Strands' OpenAI model on that model's default API, the Responses API.
+Strands is used the way it comes. Its default model is Amazon Bedrock; here the local model server takes that place, through Strands' OpenAI model on that model's default API, the Responses API.
 
 ## What is shared and what is not
 
@@ -66,7 +66,9 @@ flowchart LR
     MCP -->|"MCP over HTTP,<br/>context headers"| Cases
 ```
 
-`intake/strands.ts` is the only file that imports Strands.
+`intake/strands.ts` is the only file of the intake agent that imports Strands. The label expert's `expert/strands.ts` is the only other.
+
+Connecting to the case system and listing its tools share one time limit: the tool limit, 10 s, or what the run has left. A connection that fails or runs out of time ends the run `failed`, with the same three reasons as the hand-written agent: not reached, the caller's token refused, or the token not checkable.
 
 ## One request, end to end
 
@@ -126,7 +128,7 @@ The rule is one function in `intake/run.ts` or `run/turns.ts` in both agents. Th
 
 ## What Strands does differently
 
-Each row was seen in a test in [`agents/test/intake.test.ts`](../../agents/test/intake.test.ts), which runs one table of 31 behaviours against both agents. 20 rows are asserted identically for both.
+[`agents/test/intake.test.ts`](../../agents/test/intake.test.ts) runs one table of 33 behaviours against both agents. 22 are asserted identically for both. The other 11 each assert one of the differences below, through the implementation's own entry (`Implementation` in [`agents/test/helpers.ts`](../../agents/test/helpers.ts)).
 
 | Situation | Hand-written loop | Strands | What this file does about it |
 |---|---|---|---|
@@ -144,6 +146,8 @@ Each row was seen in a test in [`agents/test/intake.test.ts`](../../agents/test/
 | A failed request to the model is sent again | Each failure is an error step | The OpenAI client sends it again inside itself. No hook is called | Nothing. The record shows only a failure that reached Strands |
 | The model never answers | One request. The run fails when its time allowed runs out | The OpenAI client sends the request again, until the run's time limit | Nothing. The run's own time limit is what ends it |
 | The model answers 429 three times in a row | The run fails: it has made its three requests | The client's three requests are one failed call to Strands, which waits and asks again | Records the failed call as an error step, and does not count it as how the run ended if a later attempt answers |
+| Strands stops the run with an error no other row names | Not applicable | `invoke` throws | Ends the run `failed`: "Strands stopped the run with" the error's type, recorded as an error step |
+| A write gets no answer and the run's time is already out | Repeats it with the time left, none, so the repeat gets no answer either; the run fails as a write not answered twice | Is already stopping the run, so no repeat is made | Ends the run `failed`: the write is not known, and the time ran out before it could be repeated. Both outcomes are `failed` as not known |
 
 Several tool calls in one turn are run by both, in order, and the model is sent every result.
 
@@ -163,7 +167,7 @@ What follows:
 - **A model that never answers holds the run for all of its 150 s.** The first request times out at 90 s, the client sends it again, and the run's time limit cuts the second one short. The hand-written agent does not send a timed-out request again, so its run fails at 90 s.
 - **Only a failure that reaches Strands** is seen by this file's hooks and recorded.
 
-The numbers are read from the source of Strands 1.25.0 and OpenAI client 6.49.0. Tests saw three requests for a model that answers 500, one request for a 400, a fourth request after three 429s, and two requests to a model that never answers when the run has time for two and a half. The later attempts of Strands' six were not run.
+The numbers are read from the source of Strands 1.25.0 and OpenAI client 6.49.0. The tests pin three requests for a model that answers 500, one request for a 400, a fourth request after three 429s, and two requests to a model that never answers when the run has time for two and a half. No test reaches Strands' third attempt. The later attempts of Strands' six were not run.
 
 ### A known defect on the path not taken
 
@@ -188,11 +192,11 @@ Everything in the hand-written agent's "Not present" list is also absent here, i
 |---|---|
 | The model's reasoning text in the record | Strands reads it into the message, but this agent records only the reply text, so as in the hand-written agent only its cost appears in `output_tokens`. Strands does not send reasoning back to the model on later turns over the Responses API, and logs a warning each time it leaves it out |
 | Control of what Strands writes to the log | Strands logs its own warnings and errors to the container's output, including a stack trace when tool arguments cannot be parsed |
-| A smaller image | Strands requires the AWS SDK's Bedrock client and the OpenAI client, and the AgentCore SDK brings Fastify and more AWS SDK clients. Both agents run from one image, so both now carry them |
+| A smaller image | Strands requires the AWS SDK's Bedrock client and the OpenAI client, and the AgentCore SDK brings Fastify and more AWS SDK clients. All three agents run from one image, `ai-on-aws-agents:local`, so the hand-written agent's container carries them too |
 
 ## What was checked
 
-- The check passes with 228 tests on arm64 (amd64 not re-run since the access-token checks were added). 66 of them are the 33 rows of the shared table, run once for each agent.
+- 66 of the tests are the 33 rows of the shared table, run once for each agent.
 - Against the 9B model, before the retries were turned on, the Strands agent was sent the seven prepared inquiries on an empty store. It gave the expected result for all seven and left three cases: one awaiting review at version 2, one incomplete, one awaiting review. The prompt was tuned on these seven with the hand-written agent, so this is not a held-out set.
 - With the retries on, each agent answered one inquiry against the 9B model, and each was run once with a model address where nothing listens. Both failed the run with "The model could not be reached." after about 1.4 s. The hand-written agent recorded three error steps, the Strands agent one.
 - With a bare Strands `Agent` against the 9B model, before this agent was written this way: a turn with a sentence and two tool calls came through whole; a turn cut off by its output allowance raised `MaxTokensError` carrying what had been written; asking again with `reasoning.effort: 'none'` gave an answer with no thinking; a tool result marked as an error was understood by the model.

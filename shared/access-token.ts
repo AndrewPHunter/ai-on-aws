@@ -1,5 +1,5 @@
 // The check of an access token presented as `Authorization: Bearer <token>`, for every piece that serves
-// requests on behalf of a signed-in member of staff: the agents, and the case system.
+// requests on behalf of a signed-in member of staff: the agents, the case system and the retrieval service.
 //
 // It is configured by the same values as AgentCore Runtime's JWT authorizer (a discovery URL, an allowed
 // audience, allowed client IDs read from the `client_id` claim), so the check made by a container
