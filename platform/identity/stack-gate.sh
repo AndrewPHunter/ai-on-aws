@@ -8,6 +8,9 @@
 # sign-out. Then, on the Docker host, that the client wrote no revocation failure while the gate ran. See
 # platform/identity/README.md.
 #
+# It changes the stack it is run against: it enters three inquiries, all from the sender "Dr Gate,
+# gate@example.org", and each intake agent may open one case from its inquiry.
+#
 #   platform/identity/stack-gate.sh <compose-project>
 #
 # <compose-project> is the compose project the whole stack runs in: ai-on-aws for the lab. The gate joins

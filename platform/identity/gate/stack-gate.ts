@@ -15,6 +15,10 @@
 //      each to a service, which must accept it or refuse it for the stated reason;
 //   7. signs each person out.
 //
+// It changes the stack it is run against: it enters three inquiries, all from the sender "Dr Gate,
+// gate@example.org", and each intake agent may open one case from its inquiry (an adverse event about the
+// invented medicine "examplamab"). Run it on a stack whose data may hold them.
+//
 // A run may end at the model on a stack with no model server, or the model may open no case. The statements
 // that need what such a run did not reach are then neither held nor failed: they go in the report's
 // not_checked list, each with the reason, and standard error says so too.
@@ -68,17 +72,21 @@ const HTTP: Http = { timeoutMs: 20_000 };
 const RUN_WAIT_MS = 90_000;
 // The reasons an agent gives for a run that stopped at a token: its tool server refused the token or could not
 // check it, the tool server could not be reached, or the exchange for the tool server's token failed. A run that
-// stopped for one of these did not show its token was accepted where it was sent. This list must match the
-// agents' own sentences: agents/src/tools/mcp-answers.ts (serviceSentences, for "case system" and "retrieval
-// service") and the agents' sentences for a refused or failed exchange.
+// stopped for one of these did not show its token was accepted where it was sent. These must match the agents'
+// own sentences: agents/src/tools/mcp-answers.ts (serviceSentences, for "case system" and "retrieval service"),
+// matched exactly, and agents/src/tools/tool-token.ts (toolToken), whose reason for a failed exchange starts with
+// a fixed sentence and goes on with the provider's words, matched by its start.
 const TOKEN_STOP_REASONS = [
-  "The case system refused the caller's token.",
-  "The case system could not check the caller's token.",
+  "The case system refused the agent's token.",
+  "The case system could not check the agent's token.",
   'The case system could not be reached.',
-  "The retrieval service refused the caller's token.",
-  "The retrieval service could not check the caller's token.",
+  "The retrieval service refused the agent's token.",
+  "The retrieval service could not check the agent's token.",
   'The retrieval service could not be reached.',
 ];
+const EXCHANGE_FAILED_PREFIXES = ['The agent could not get a token for the case system: ', 'The agent could not get a token for the retrieval service: '];
+const stoppedAtToken = (reason: string | null): boolean =>
+  reason !== null && (TOKEN_STOP_REASONS.includes(reason) || EXCHANGE_FAILED_PREFIXES.some((prefix) => reason.startsWith(prefix)));
 // What a JWT looks like: a base64url header that starts {"
 const JWT_PATTERN = /eyJ[A-Za-z0-9_-]{10,}\./;
 
@@ -316,6 +324,14 @@ async function signInStatements(person: Person): Promise<string | undefined> {
     `${who}: /api/session names ${person.name} and says they may ${describeMay(person.may)}`,
     `status ${view.status}, ${JSON.stringify({ username: viewed.user?.username, name: viewed.user?.name, may: viewed.may ?? null })}`,
   );
+  // The list's shape is AgentList in client/shared/api.ts: { agents: [{ id, name, description }] }.
+  const listed = await jsonOf(await get(`${CLIENT}/api/agents`, session));
+  const ids = Array.isArray(listed.agents) ? (listed.agents as { id?: unknown }[]).map((agent) => agent.id) : null;
+  statement(
+    ids !== null && ids.every((id) => typeof id === 'string') && sameSet(ids as string[], person.may.agents),
+    `${who}: /api/agents lists exactly the agents /api/session says they may run (${person.may.agents.length === 0 ? 'none' : person.may.agents.join(' and ')})`,
+    `listed ${JSON.stringify(ids)}`,
+  );
   statement(!JWT_PATTERN.test(viewText), `${who}: /api/session carries no token`);
 
   const status = await jsonOf(await get(`${CLIENT}/api/status`, session));
@@ -409,6 +425,25 @@ async function permissionStatements(sessions: Sessions): Promise<void> {
 
 // ---------- runs, to the end ----------
 
+// What the runs are sent. All invented: no real medicine, patient or label. Each intake report carries the four
+// things a case needs (a patient, the reporter with a contact, which is the sender, the suspect drug and the
+// event), with a different patient per agent so the two are not taken for one case. The expert's question names
+// the medicine, so the expert looks for its label.
+const SENDER = 'Dr Gate, gate@example.org';
+const INTAKE_REPORTS: Record<(typeof INTAKE_AGENTS)[number], string> = {
+  'intake-handwritten':
+    'I am reporting an adverse event. My patient, J.K., a 54-year-old man, started examplamab 10 mg once daily and ' +
+    'developed a widespread itchy rash a week later. I can be reached at gate@example.org.',
+  'intake-strands':
+    'I am reporting an adverse event. My patient, M.R., a 67-year-old woman, started examplamab 20 mg once daily and ' +
+    'had severe dizziness with a fall three days later. I can be reached at gate@example.org.',
+};
+const EXPERT_QUESTION = 'What does the examplamab label say about the usual starting dose for adults?';
+// The retrieval service's tools. A tool step of one of these that is not an error is recorded only after the
+// service answered the call with a result of the expected shape (agents/src/expert/strands.ts, recordCall); a
+// call the agent refused or could not make is always recorded as an error.
+const RETRIEVAL_TOOLS = ['find_labels', 'search_label'];
+
 type RunView = {
   state?: string;
   started_by?: { name?: string } | null;
@@ -416,7 +451,7 @@ type RunView = {
     outcome?: string;
     stop_reason?: string | null;
     case_actions?: { kind?: string; case_id?: string }[];
-    steps?: { kind?: string }[];
+    steps?: { kind?: string; tool?: string; is_error?: boolean }[];
   } | null;
 };
 
@@ -425,7 +460,7 @@ type Sent = { inquiryId: string; run: RunView | undefined };
 /** Sends an inquiry as the person and waits for its run to end. States that it was accepted and how the run ended. */
 async function runStatements(person: Person, session: string, agent: string, text: string): Promise<Sent | undefined> {
   const who = person.username;
-  const sent = await postAs(session, '/api/inquiries', { sender: 'Dr Gate, gate@example.org', text, agent_id: agent });
+  const sent = await postAs(session, '/api/inquiries', { sender: SENDER, text, agent_id: agent });
   const created = (await jsonOf(sent)).inquiry as { id?: string; entered_by?: { name?: string } | null } | undefined;
   statement(
     sent.status === 202 && created?.entered_by?.name === person.name,
@@ -447,7 +482,7 @@ async function runStatements(person: Person, session: string, agent: string, tex
   }
   const stop = run?.response?.stop_reason ?? null;
   statement(
-    run?.state === 'completed' && run.started_by?.name === person.name && !TOKEN_STOP_REASONS.includes(stop ?? ''),
+    run?.state === 'completed' && run.started_by?.name === person.name && !stoppedAtToken(stop),
     what,
     JSON.stringify({ state: run?.state, outcome: run?.response?.outcome, stop_reason: stop, started_by: run?.started_by ?? null }),
   );
@@ -474,14 +509,21 @@ async function caseAuditStatement(sessions: Sessions, agent: string, sent: Sent 
   statement(answer.status === 200 && created?.actor === agent, what, `status ${answer.status}, actor ${JSON.stringify(created?.actor ?? null)}`);
 }
 
-/** If the expert's run made a retrieval step, the retrieval service answered it, so it accepted the expert's token. */
+/**
+ * If the expert's run has a step that exists only after the retrieval service accepted its token and answered (a
+ * retrieval step, or a find_labels or search_label step that is not an error, an empty find included), the
+ * service accepted the expert's token.
+ */
 function retrievalStatement(sent: Sent | undefined): void {
-  const what = `${EXPERT}: the retrieval service accepted the token the expert sent it (the run has a retrieval step the service answered)`;
-  if (sent?.run?.response?.steps?.some((step) => step.kind === 'retrieval') === true) {
+  const what = `${EXPERT}: the retrieval service accepted the token the expert sent it (the run has a step the service answered)`;
+  const answered = sent?.run?.response?.steps?.some(
+    (step) => step.kind === 'retrieval' || (step.kind === 'tool' && RETRIEVAL_TOOLS.includes(step.tool ?? '') && step.is_error === false),
+  );
+  if (answered === true) {
     statement(true, what);
     return;
   }
-  notCheckable(what, sent === undefined ? 'no run was started' : `the run made no retrieval step; ${howItEnded(sent.run)}`);
+  notCheckable(what, sent === undefined ? 'no run was started' : `the run has no step the retrieval service answered; ${howItEnded(sent.run)}`);
 }
 
 // ---------- an inquiry belongs to who entered it ----------
@@ -493,14 +535,14 @@ async function answerAbout(response: Response, id: string): Promise<{ status: nu
 
 async function ownershipStatements(sessions: Sessions, inquiryId: string | undefined): Promise<void> {
   const unknown = randomUUID();
+  // The inquiry carries its runs, so reading it covers them.
   const asks: [string, (session: string, id: string) => Promise<Response>][] = [
-    ['the inquiry', (session, id) => get(`${CLIENT}/api/inquiries/${encodeURIComponent(id)}`, session)],
-    ['its runs', (session, id) => get(`${CLIENT}/api/inquiries/${encodeURIComponent(id)}/runs`, session)],
+    ['reading', (session, id) => get(`${CLIENT}/api/inquiries/${encodeURIComponent(id)}`, session)],
     // An agent morgan may run, so that a refusal can only be about whose inquiry it is.
-    ['to start a run on it', (session, id) => postAs(session, `/api/inquiries/${encodeURIComponent(id)}/runs`, { agent_id: INTAKE_AGENTS[0] })],
+    ['starting a run on', (session, id) => postAs(session, `/api/inquiries/${encodeURIComponent(id)}/runs`, { agent_id: INTAKE_AGENTS[0] })],
   ];
-  for (const [asked, send] of asks) {
-    const what = `morgan.medinfo: asking for ${asked} of the inquiry dana.desk entered gets the same status and body (the id aside) as for an inquiry id that does not exist`;
+  for (const [doing, send] of asks) {
+    const what = `morgan.medinfo: ${doing} the inquiry dana.desk entered gets the same status and body (the id aside) as an inquiry id that does not exist`;
     if (inquiryId === undefined) {
       statement(false, what, "dana.desk's inquiry was not accepted, so there was none to ask for");
       continue;
@@ -771,14 +813,14 @@ async function main(): Promise<number> {
   for (const agent of INTAKE_AGENTS) {
     const what = `dana.desk, ${agent}: an inquiry is accepted and the run ends inside the contract`;
     const session = sessionFor(sessions, 'dana.desk', what);
-    const sent = session === undefined ? undefined : await runStatements(named('dana.desk'), session, agent, 'What is the usual starting dose?');
+    const sent = session === undefined ? undefined : await runStatements(named('dana.desk'), session, agent, INTAKE_REPORTS[agent]);
     danaInquiry ??= sent?.inquiryId;
     await caseAuditStatement(sessions, agent, sent);
   }
   {
     const what = `morgan.medinfo, ${EXPERT}: a question is accepted and the run ends inside the contract`;
     const session = sessionFor(sessions, 'morgan.medinfo', what);
-    const sent = session === undefined ? undefined : await runStatements(named('morgan.medinfo'), session, EXPERT, 'What does the label say about the usual starting dose?');
+    const sent = session === undefined ? undefined : await runStatements(named('morgan.medinfo'), session, EXPERT, EXPERT_QUESTION);
     retrievalStatement(sent);
   }
 
