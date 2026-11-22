@@ -1,9 +1,10 @@
 // Two HTTP servers over one store.
 //   The agent server speaks MCP at POST /mcp and answers GET /ping. It is what agents are given.
 //   The review server is for people: list cases, read one with its history, and record a decision.
-// Every route on both but GET /ping requires a valid access token, checked before the body is read. On
-// the agent server the token's user becomes the user the agent acted for; on the review server it is
-// the reviewer, and deciding a case needs the reviewer role.
+// Every route on both but GET /ping requires a valid access token, checked before the body is read, and
+// each server has its own check. On the agent server the token's client is the agent and its user the
+// user the agent acted for; on the review server the token's user is the reviewer. Each tool and route
+// needs its own scope (scopes.ts).
 
 import { createServer } from 'node:http';
 import type { IncomingHttpHeaders, IncomingMessage, Server, ServerResponse } from 'node:http';
@@ -11,16 +12,18 @@ import type { IncomingHttpHeaders, IncomingMessage, Server, ServerResponse } fro
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 
 import { refusalAnswer } from '../../../shared/access-token.ts';
-import type { AccessTokenCheck, Caller } from '../../../shared/access-token.ts';
+import type { AccessTokenCheck, Caller, Refusal } from '../../../shared/access-token.ts';
 import { CASE_STATUSES, REVIEW_DECISIONS } from '../../../shared/case-contract.ts';
 import { buildMcpServer } from './mcp.ts';
+import { routeRefusal } from './scopes.ts';
+import type { Route } from './scopes.ts';
 import type { CallContext, CaseStatus, CaseStore, Person, ReviewDecision } from './store.ts';
 
-// Headers the calling agent's code sets on every MCP request that changes anything.
+// Headers the calling agent's code sets on every MCP request that changes anything. Which agent is
+// calling is not among them: it is the client the access token was issued to.
 export const CONTEXT_HEADERS = {
   messageId: 'x-message-id',
   receivedAt: 'x-received-at',
-  agentId: 'x-agent-id',
   // Percent-encoded, because a header cannot carry every character a name can contain.
   sender: 'x-sender',
 } as const;
@@ -45,16 +48,16 @@ function single(headers: IncomingHttpHeaders, name: string): string | undefined 
 
 // No context headers at all is allowed: listing tools and plain lookups need none.
 // Some but not all, a receipt time that is not a time, or one that is still in the future,
-// is a mistake by the caller and is refused. actingFor is the user of the accepted access token.
-export function contextFrom(headers: IncomingHttpHeaders, now: () => Date, actingFor: Person): CallContext | undefined {
+// is a mistake by the caller and is refused. The agent is the client the accepted access token was issued
+// to, and the user it acted for is the token's user.
+export function contextFrom(headers: IncomingHttpHeaders, now: () => Date, caller: Caller): CallContext | undefined {
   const messageId = single(headers, CONTEXT_HEADERS.messageId);
   const receivedAt = single(headers, CONTEXT_HEADERS.receivedAt);
-  const agentId = single(headers, CONTEXT_HEADERS.agentId);
   const encodedSender = single(headers, CONTEXT_HEADERS.sender);
-  if (messageId === undefined && receivedAt === undefined && agentId === undefined && encodedSender === undefined) {
+  if (messageId === undefined && receivedAt === undefined && encodedSender === undefined) {
     return undefined;
   }
-  if (messageId === undefined || receivedAt === undefined || agentId === undefined || encodedSender === undefined) {
+  if (messageId === undefined || receivedAt === undefined || encodedSender === undefined) {
     throw new BadRequest(`Send all of ${Object.values(CONTEXT_HEADERS).join(', ')}, or none`);
   }
   let sender: string;
@@ -73,7 +76,7 @@ export function contextFrom(headers: IncomingHttpHeaders, now: () => Date, actin
   if (received.getTime() > now().getTime() + RECEIPT_ALLOWANCE_MS) {
     throw new BadRequest(`Header ${CONTEXT_HEADERS.receivedAt} is in the future`);
   }
-  return { messageId, receivedAt: received.toISOString(), agentId, actingFor, sender };
+  return { messageId, receivedAt: received.toISOString(), agentId: caller.clientId, actingFor: personOf(caller), sender };
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {
@@ -123,6 +126,12 @@ function pathOf(request: IncomingMessage): URL {
   return new URL(request.url ?? '/', 'http://case-system');
 }
 
+function sendRefusal(response: ServerResponse, refusal: Refusal): void {
+  const answer = refusalAnswer(refusal);
+  response.writeHead(answer.status, { 'content-type': 'application/json', 'www-authenticate': answer.wwwAuthenticate });
+  response.end(JSON.stringify(answer.body));
+}
+
 // The caller of an accepted token, or undefined once a refusal (403 for a missing scope, 401 otherwise) or an
 // unavailable check (503) has been answered. Nothing of the request's body has been read either way.
 async function callerOf(request: IncomingMessage, response: ServerResponse, checkToken: AccessTokenCheck): Promise<Caller | undefined> {
@@ -131,9 +140,7 @@ async function callerOf(request: IncomingMessage, response: ServerResponse, chec
     return checked.caller;
   }
   if (checked.kind === 'refused') {
-    const answer = refusalAnswer(checked);
-    response.writeHead(answer.status, { 'content-type': 'application/json', 'www-authenticate': answer.wwwAuthenticate });
-    response.end(JSON.stringify(answer.body));
+    sendRefusal(response, checked);
   } else {
     sendJson(response, 503, { error: 'identity_unavailable', detail: checked.detail });
   }
@@ -169,9 +176,9 @@ export function createAgentServer(store: CaseStore, now: () => Date, checkToken:
         return;
       }
 
-      const context = contextFrom(request.headers, now, personOf(caller));
+      const context = contextFrom(request.headers, now, caller);
       const body = await readJson(request);
-      const mcp = buildMcpServer(store, context);
+      const mcp = buildMcpServer(store, context, caller.scopes);
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
       response.on('close', () => {
         void transport.close();
@@ -210,7 +217,29 @@ function optionalString(body: unknown, name: string): string | undefined {
   return value;
 }
 
-export function createReviewServer(store: CaseStore, checkToken: AccessTokenCheck, reviewerRole: string): Server {
+type Target = { route: 'GET /cases' } | { route: Exclude<Route, 'GET /cases'>; caseId: string };
+
+// Which review route a request is for.
+function targetOf(pathname: string, method: string | undefined): Target | 'not_found' | 'method_not_allowed' {
+  if (pathname === '/cases' && method === 'GET') {
+    return { route: 'GET /cases' };
+  }
+  const match = /^\/cases\/([^/]+)(\/review)?$/.exec(pathname);
+  const caseId = match?.[1];
+  if (match === null || caseId === undefined) {
+    return 'not_found';
+  }
+  const isReview = match[2] !== undefined;
+  if (!isReview && method === 'GET') {
+    return { route: 'GET /cases/<id>', caseId };
+  }
+  if (isReview && method === 'POST') {
+    return { route: 'POST /cases/<id>/review', caseId };
+  }
+  return 'method_not_allowed';
+}
+
+export function createReviewServer(store: CaseStore, checkToken: AccessTokenCheck): Server {
   return createServer(
     listener(async (request, response) => {
       const url = pathOf(request);
@@ -224,7 +253,21 @@ export function createReviewServer(store: CaseStore, checkToken: AccessTokenChec
         return;
       }
 
-      if (url.pathname === '/cases' && request.method === 'GET') {
+      const target = targetOf(url.pathname, request.method);
+      if (target === 'not_found' || target === 'method_not_allowed') {
+        sendJson(response, target === 'not_found' ? 404 : 405, { error: target });
+        return;
+      }
+
+      // Decided before a case is looked up or the body read, so a caller without the scope learns nothing.
+      const refusal = routeRefusal(target.route, caller.scopes);
+      if (refusal !== undefined) {
+        request.resume();
+        sendRefusal(response, refusal);
+        return;
+      }
+
+      if (target.route === 'GET /cases') {
         const wanted = url.searchParams.get('status');
         if (wanted === null) {
           sendJson(response, 200, store.find({}));
@@ -237,16 +280,9 @@ export function createReviewServer(store: CaseStore, checkToken: AccessTokenChec
         sendJson(response, 200, store.find({ status }));
         return;
       }
+      const { caseId } = target;
 
-      const match = /^\/cases\/([^/]+)(\/review)?$/.exec(url.pathname);
-      const caseId = match?.[1];
-      if (match === null || caseId === undefined) {
-        sendJson(response, 404, { error: 'not_found' });
-        return;
-      }
-      const isReview = match[2] !== undefined;
-
-      if (!isReview && request.method === 'GET') {
+      if (target.route === 'GET /cases/<id>') {
         const found = store.getCase(caseId);
         if (found === undefined) {
           sendJson(response, 404, { error: 'case_not_found' });
@@ -256,44 +292,34 @@ export function createReviewServer(store: CaseStore, checkToken: AccessTokenChec
         return;
       }
 
-      if (isReview && request.method === 'POST') {
-        // Decided before the case is looked up or the body read, so a non-reviewer learns nothing.
-        if (!caller.roles.includes(reviewerRole)) {
-          request.resume();
-          sendJson(response, 403, { error: 'not_a_reviewer', detail: `Deciding a case needs the ${reviewerRole} role.` });
-          return;
-        }
-        const body = await readJson(request);
-        if (field(body, 'reviewer') !== undefined) {
-          throw new BadRequest('"reviewer" is not accepted: the reviewer is whoever the access token names');
-        }
-        const reviewer = personOf(caller);
-        const wanted = requiredString(body, 'decision');
-        const decision = DECISIONS.find((candidate) => candidate === wanted);
-        if (decision === undefined) {
-          throw new BadRequest(`"decision" must be one of ${DECISIONS.join(', ')}`);
-        }
-        const result = store.review(caseId, reviewer, decision, optionalString(body, 'note'));
-        switch (result.outcome) {
-          case 'done':
-            sendJson(response, 200, result);
-            return;
-          case 'not_found':
-            sendJson(response, 404, { error: 'case_not_found' });
-            return;
-          case 'note_required':
-            sendJson(response, 400, { error: 'note_required', detail: 'Say what information is needed.' });
-            return;
-          case 'not_allowed':
-            sendJson(response, 409, {
-              error: 'not_allowed',
-              detail: `A case that is ${result.status} cannot be given the decision ${decision}.`,
-            });
-            return;
-        }
+      const body = await readJson(request);
+      if (field(body, 'reviewer') !== undefined) {
+        throw new BadRequest('"reviewer" is not accepted: the reviewer is whoever the access token names');
       }
-
-      sendJson(response, 405, { error: 'method_not_allowed' });
+      const reviewer = personOf(caller);
+      const wanted = requiredString(body, 'decision');
+      const decision = DECISIONS.find((candidate) => candidate === wanted);
+      if (decision === undefined) {
+        throw new BadRequest(`"decision" must be one of ${DECISIONS.join(', ')}`);
+      }
+      const result = store.review(caseId, reviewer, decision, optionalString(body, 'note'));
+      switch (result.outcome) {
+        case 'done':
+          sendJson(response, 200, result);
+          return;
+        case 'not_found':
+          sendJson(response, 404, { error: 'case_not_found' });
+          return;
+        case 'note_required':
+          sendJson(response, 400, { error: 'note_required', detail: 'Say what information is needed.' });
+          return;
+        case 'not_allowed':
+          sendJson(response, 409, {
+            error: 'not_allowed',
+            detail: `A case that is ${result.status} cannot be given the decision ${decision}.`,
+          });
+          return;
+      }
     }),
   );
 }

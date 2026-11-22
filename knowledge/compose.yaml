@@ -63,8 +63,8 @@ services:
       # The access token every request but /ping must carry, checked as the case system checks it.
       AUTH_DISCOVERY_URL: http://identity:8080/realms/lab/.well-known/openid-configuration
       AUTH_ISSUER: http://localhost:8090/realms/lab
-      AUTH_ALLOWED_AUDIENCE: lab-knowledge
-      AUTH_ALLOWED_CLIENTS: desk
+      AUTH_ALLOWED_AUDIENCE: knowledge
+      AUTH_ALLOWED_CLIENTS: expert,knowledge-gate
       AUTH_ROLES_CLAIM: roles
       AUTH_REQUIRED_SCOPES: labels:search
     ports:
