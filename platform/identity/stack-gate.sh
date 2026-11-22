@@ -1,8 +1,8 @@
 #!/bin/sh
 # Checks a running stack end to end, from inside its network: sign-in of both realm users through the
 # client and Keycloak, the cookies, the session, refused callbacks, a cross-site POST, sign-out; each
-# agent's and the case system's refusal of a request without a token; an inquiry to each agent as each
-# user, through to the end of its run; the reviewer role enforced on a review. Then, on the Docker host,
+# intake agent's and the case system's refusal of a request without a token; an inquiry to each intake
+# agent as each user, through to the end of its run; the reviewer role enforced on a review. Then, on the Docker host,
 # that the client wrote no revocation failure while the gate ran. See platform/identity/README.md.
 #
 #   platform/identity/stack-gate.sh <compose-project>

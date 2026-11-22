@@ -8,7 +8,7 @@ Every command on this page is run from the root of the repository, unless its se
 
 - A machine with one NVIDIA GPU with at least 14,590 MiB of memory free. vLLM v0.34.0 needs driver 580 or newer and a GPU of compute capability 7.5 or newer.
 - Docker with Compose and the NVIDIA Container Toolkit on that machine.
-- Disk on that machine: about 36 GB for the vLLM image, about 11 GB of weights for the 9B chat model or 5 GB for the 4B, about 1.2 GB for the embedding model and about 2.3 GB for the reranker. Setup checks there is room for whichever of these is not already there.
+- Disk on that machine: 37,000 MiB in Docker's storage for the vLLM image, and in the cache directory 11,000 MiB of weights for the 9B chat model or 5,400 MiB for the 4B, 1,200 MiB for the embedding model and 2,300 MiB for the reranker (the figures in `model/tiers.json`). Setup checks there is room for whichever of these is not already there.
 - Nothing else. Setup needs only a shell and Docker; every tool it uses runs in a container.
 
 ## Set it up
@@ -32,7 +32,7 @@ Setup then:
 7. starts the reranker server;
 8. runs the gate on all three, and reports success only if the gate passes.
 
-The embedding and reranker servers start after the chat server is healthy. Each of the three checks at start-up that a set share of the card is free, and the two smaller servers make that check with the chat server's memory already in use.
+Setup waits at most 900 seconds for each server to report healthy. The embedding and reranker servers start after the chat server is healthy. Each of the three checks at start-up that a set share of the card is free, and the two smaller servers make that check with the chat server's memory already in use.
 
 To see what it would select without changing anything:
 
@@ -41,6 +41,8 @@ model/setup.sh --check --cache-dir <directory>
 ```
 
 Unless you say otherwise, the servers are published on `127.0.0.1`: chat on port 8000, the embedding model on 8001, the reranker on 8002.
+
+The lab's agents and its knowledge piece run in containers and reach the servers from the lab's network, where `127.0.0.1` is the container itself: a server published on a loopback address is not reachable from them. On a machine that also runs the lab, the defaults also take the ports the lab publishes on `127.0.0.1` (the case system's 8000 and 8001, the retrieval service's 8002). For the lab, publish the servers with `--bind` on an address its containers can reach.
 
 ## From another machine
 
@@ -56,14 +58,14 @@ model/setup.sh --host ssh://<user>@<gpu-machine> --bind <address> --cache-dir <d
 
 | Flag | Meaning |
 |---|---|
-| `--cache-dir <directory>` | Where the weights are kept on the GPU machine. Required, unless `--keep-env`. |
+| `--cache-dir <directory>` | Where the weights are kept on the GPU machine: an absolute path with no white space, quote, `#`, `$` or backslash. Required, unless `--keep-env`. |
 | `--bind <address>` | IPv4 address the servers are published on. Default `127.0.0.1`. Required with `--host`, where it may not be a loopback address. |
 | `--port <n>` | Port the chat server is published on. Default `8000`. |
 | `--embed-port <n>` | Port the embedding server is published on. Default `8001`. |
 | `--rerank-port <n>` | Port the reranker server is published on. Default `8002`. |
 | `--host <docker-host>` | Docker address of the GPU machine, when it is not the machine setup runs on. |
 | `--tier <name>` | Use `large`, `medium` or `small` instead of the largest that fits. It must still fit. |
-| `--check` | Run the checks and the selection, print the result, change nothing. |
+| `--check` | Run the checks and the selection, print the result, change nothing. An existing `model/.env` does not stop it. |
 | `--keep-env` | Use the existing `model/.env` as it is, key included. `--cache-dir`, `--bind`, `--port`, `--embed-port` and `--rerank-port` are then not accepted. |
 
 The three ports must differ, and setup refuses two that are equal. For that reason `--port 8001` given alone is refused: 8001 is the embedding server's default.
@@ -82,7 +84,7 @@ Setup writes these to `model/.env`, beside the address, cache directory and user
 | `MODEL_RERANK_BASE_URL` | The reranker server: `http://<address>:<rerank port>/v1`, serving `/rerank` |
 | `MODEL_PORT`, `MODEL_EMBED_PORT`, `MODEL_RERANK_PORT` | The three ports |
 
-The names of the embedding model and the reranker, the embedding model's number of dimensions and the longest input each accepts are in `model/retrieval.env`: `EMBED_MODEL_ID`, `EMBED_DIMENSIONS`, `EMBED_MAX_MODEL_LEN`, `RERANK_MODEL_ID`, `RERANK_MAX_MODEL_LEN`.
+The names of the embedding model and the reranker, the embedding model's number of dimensions and the longest input each accepts are in `model/retrieval.env`: `EMBED_MODEL_ID`, `EMBED_DIMENSIONS`, `EMBED_MAX_MODEL_LEN`, `RERANK_MODEL_ID`, `RERANK_MAX_MODEL_LEN`. The knowledge piece also reads `EMBED_MODEL_REPO` and `EMBED_MODEL_REVISION` from it: with `EMBED_DIMENSIONS` they are the identity of its vectors, and its retrieval service refuses to use vectors made with another (`knowledge/README.md`).
 
 ## Tiers
 
@@ -109,8 +111,8 @@ Setup selects on the memory that is free when it runs, not on the size of the ca
 |---|---|---|
 | 0 | The three servers are running and passed the gate. | `model/.env`, `model/gate-report.json`, the servers |
 | 1 | A download failed, or a server started but was not shown fit. | `model/.env`; every server that started is stopped, its container kept so its log can be read |
-| 2 | Setup could not run: a bad flag, Docker not reachable, `model/.env` already there, one of the lab's servers already running, a missing directory, or setup's own tool failing. | No server left running. `model/.env` only if the failure came after it was written |
-| 3 | The machine is not supported or is too small. | Nothing written, nothing started |
+| 2 | Setup could not run: a bad flag; a variable named under Flags set in the shell; Docker not reachable; `model/.env` already there (without `--keep-env` or `--check`), or missing or incomplete with `--keep-env`; one of the lab's servers already running; the cache directory missing; the pinned Node image not runnable on the GPU machine; output of `nvidia-smi` or of the disk probe not understood; a file of `model/` not as expected; `model/.env` or the old gate report not writable; or setup's own tool failing. | No server left running. `model/.env` only if the failure came after it was written |
+| 3 | The machine is not supported or is too small: no GPU, more than one, a driver or GPU too old, too little free GPU memory, or too little disk. | Nothing written, nothing started |
 
 ## Running it again
 
@@ -126,7 +128,7 @@ Setup selects on the memory that is free when it runs, not on the size of the ca
 
 ## Restarting
 
-- Any one of the three servers can be restarted on its own with `docker restart <container>` while the other two run (run for the chat server; see below). Each gives vLLM an explicit start-up share of the card (`--gpu-memory-utilization 0.05`: in `CHAT_EXTRA_ARGS` in each profile, and in `model/retrieval.env`). Without it vLLM asks for 92% of the card to be free, and with the other two servers running it never is.
+- Any one of the three servers can be restarted on its own with `docker restart <container>` while the other two run. Each gives vLLM an explicit start-up share of the card (`--gpu-memory-utilization 0.05`: in `CHAT_EXTRA_ARGS` in each profile, and in `model/retrieval.env`). Without it vLLM asks for 92% of the card to be free, and with the other two servers running it never is.
 - `docker compose ... up -d chat embed rerank` (the command under [By hand](#by-hand)) starts them in order: the embedding and reranker servers wait until the chat server reports healthy.
 - Setting up again needs all three stopped first (see above).
 
@@ -189,16 +191,22 @@ Setup automates these steps. To do them yourself, from `model/` on the GPU machi
 
 The gate is a script that decides whether the running servers are fit for the lab. All the text it sends is synthetic.
 
-- Chat: requests without the key are rejected, tool calling works under concurrent load, and several long prompts are answered correctly at once.
+- Chat: no key and a wrong key are rejected and the right key accepted; the model is listed; tool calling works under concurrent load; and several long prompts are answered correctly at once.
 - Embedding: no key and a wrong key are rejected and the right key accepted; the model is listed; every vector has the configured number of dimensions and unit length within a tolerance; for a fixed set of queries, each with one passage that answers it and several that do not, the answering passage is the most similar in at least the configured share; an input over the limit is refused; several batches sent at once are all answered.
 - Reranker: the same key checks; the model is listed; for the same set, the answering passage is ranked first in at least the configured share; a document over the limit is refused, and accepted with `max_tokens_per_doc`; several requests sent at once are all answered.
 
-Thresholds are in `model/gate/gate.config.json`, and they are the same for every tier. The report has a section for each server and names each check that failed.
+Thresholds are in `model/gate/gate.config.json`, and they are the same for every tier: 20 rounds of 4 tool-calling conversations with at least 95% correct and no server fault; 4 prompts of at least 14,000 tokens at once; vectors of unit length within 0.001; the answering passage first in at least 90% of the fixed set, for the embedding server and for the reranker; 4 batches of 32 inputs, and 4 reranker requests, at once. Each request may take 180 seconds. The report has a section for each server and names each check that failed.
 
 Setup runs it for you. To run it yourself, from `model/gate/`, on any machine that can reach the servers:
 
 ```bash
 docker compose --env-file ../.env --env-file ../profiles/qwen3.5-9b-w4a16.env --env-file ../retrieval.env run --rm gate
+```
+
+When the servers are published on a loopback address of the machine the gate runs on, add the override that puts the gate on the host's network, as setup does:
+
+```bash
+docker compose -f compose.yaml -f compose.host-network.yaml --env-file ../.env --env-file ../profiles/qwen3.5-9b-w4a16.env --env-file ../retrieval.env run --rm gate
 ```
 
 It prints a JSON report and exits 0 on a pass, 1 if a check failed, and 2 if it could not run.

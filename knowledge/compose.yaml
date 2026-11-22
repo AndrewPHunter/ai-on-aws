@@ -1,5 +1,5 @@
 # The Bedrock Knowledge Bases stand-in: the search engine that holds the label chunks, and the retrieval service
-# that gives agents keyword search over them as MCP tools. Started with the rest of the lab from the root
+# that gives agents search over them as MCP tools, by the strategy SEARCH_STRATEGY names. Started with the rest of the lab from the root
 # compose.yaml. The index is built separately, into a running stack, with knowledge/index.sh.
 name: ai-on-aws-knowledge
 

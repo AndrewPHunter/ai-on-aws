@@ -6,10 +6,10 @@ An agent is an actor in which one step of the behaviour is decided by inference.
 
 | An actor has | In the intake agent | Where |
 |---|---|---|
-| A mailbox | `POST /invocations`. One message per request | `contract/server.ts` |
+| A mailbox | `POST /invocations`, with an accepted access token. One message per request | `contract/server.ts` for the hand-written loop; the local edge (`contract/edge.ts`) and AWS's SDK app (`contract/sdk-app.ts`) for Strands |
 | State that nothing else can touch | The run: its steps, its case actions, the case it opened, whether a write is unsettled, its deadline. And the conversation with the model | `IntakeRun` in `intake/run.ts`, built on `RunState` in `run/state.ts`; the conversation held by the loop |
 | A behaviour: what it does when a message arrives | Ask the model, apply the rules, call the case system, answer | `intake/handwritten.ts`, or Strands' `Agent` with four hooks in `intake/strands.ts` |
-| Messages it sends to other actors | Requests to the model server and to the case system, and one answer to the caller | `model/chat.ts` or Strands' `OpenAIModel`; `tools/case-system.ts` or Strands' `McpClient` |
+| Messages it sends to other actors | Requests to the model server and to the case system, requests for the identity provider's discovery document and keys, and one answer to the caller | `model/chat.ts` or Strands' `OpenAIModel`; `tools/case-system.ts` or Strands' `McpClient`; `shared/access-token.ts` |
 | A lifetime | One message. Each message gets a new run with new state, and nothing is kept once it is answered | `startRun` in `intake/run.ts` |
 
 One step of the behaviour is not written in code: what to do next, given the conversation so far. That step is asked of a model. Every other step is ordinary code.
@@ -22,26 +22,30 @@ flowchart LR
     Agent["Intake agent<br/>one run per message"]
     Model["Model server<br/>inference"]
     Cases["Case system"]
+    Identity["Identity provider"]
     Reviewer["Reviewer<br/>a person"]
 
-    Caller -->|"message: id, receipt time,<br/>sender, text"| Agent
-    Agent -->|"answer: outcome, reply,<br/>case actions, steps"| Caller
+    Caller -->|"message: id, receipt time,<br/>sender, text, with an access token"| Agent
+    Agent -->|"answer: outcome, reply,<br/>case actions, steps,<br/>citations always empty"| Caller
     Agent -->|"conversation and<br/>tool descriptions"| Model
     Model -->|"text, or requests<br/>for tools"| Agent
-    Agent -->|"tool call, with<br/>context headers"| Cases
+    Agent -->|"tool call, with context headers<br/>and the caller's token"| Cases
     Cases -->|"result, refusal,<br/>or nothing"| Agent
-    Reviewer -->|"approve or reject"| Cases
+    Agent -->|"discovery document<br/>and signing keys"| Identity
+    Cases -->|"discovery document<br/>and signing keys"| Identity
+    Reviewer -->|"approve, reject or<br/>ask for information"| Cases
 ```
 
 Every message is a request that waits for its answer, with a time limit. None is sent and forgotten.
 
 | Actor | State it owns | What it decides |
 |---|---|---|
-| Caller | The message's identifier and receipt time; the answers it was given | Which agent is sent the message, and whether to send it again |
+| Caller | The message's identifier, receipt time and sender; the access token; the answers it was given | Which agent is sent the message, and whether to send it again |
 | Intake agent | One run, discarded when answered | The order of work, whether a call may be made, and how the run ends |
 | Model server | Nothing between requests | What to write, or which tool to ask for, given the conversation it is sent |
 | Case system | Cases, their versions and the audit trail | Whether a case exists, is complete or is a repeat, and which sender may see it |
-| Reviewer | Nothing | Whether a case is approved |
+| Identity provider | Who the caller is: the token's claims and the keys that sign it | Which tokens it issues |
+| Reviewer | Nothing | Whether a case is approved, rejected or sent back for information |
 
 ## The behaviour for one message
 
@@ -49,11 +53,13 @@ A six-sided box is decided by inference. A diamond is decided by code. A slanted
 
 ```mermaid
 flowchart TD
-    Arrive(["A message arrives"]) --> Valid{"Does it match<br/>the contract?"}
+    Arrive(["A message arrives"]) --> Token{"An accepted<br/>access token?"}
+    Token -- no --> RefusedToken(["Refused with status 401,<br/>or 503 if it cannot be checked.<br/>The body is not read"])
+    Token -- yes --> Valid{"Does it match<br/>the contract?"}
     Valid -- no --> Refused(["Refused with status 400.<br/>Nothing runs"])
     Valid -- yes --> Start["Start a run:<br/>new state, a deadline"]
-    Start --> Connect[/"Connect to the case system<br/>and list its tools"/]
-    Connect --> Reached{"Reached?"}
+    Start --> Connect[/"Connect to the case system<br/>with the caller's token,<br/>and list its tools"/]
+    Connect --> Reached{"Reached, and<br/>the token accepted?"}
     Reached -- no --> FailedStart(["failed"])
     Reached -- yes --> Limits{"Any turns and<br/>time left?"}
 
@@ -70,7 +76,7 @@ flowchart TD
     Lost -- yes --> ThinkingOff["Turn thinking off"]
     ThinkingOff --> Limits
 
-    Infer -- "asked for tools" --> Tools["Handle each tool request,<br/>in order (next diagram)"]
+    Infer -- "asked for tools" --> Tools["Handle each tool request,<br/>in order (next diagram),<br/>none after an unsettled write"]
     Tools --> Settled{"Is a write<br/>unsettled?"}
     Settled -- yes --> Unsettled(["failed: not known whether<br/>the case was recorded. No reply"])
     Settled -- no --> Limits
@@ -115,6 +121,7 @@ flowchart TD
 | "wrote text", when the text was cut off by the output allowance | `completed`, with the cut-off text as the reply | `stopped`, with no reply |
 | "Turn thinking off" | Uses one of the 6 turns | Does not use a turn |
 | Where the diamonds are evaluated | Inline, in the order drawn | In hooks Strands calls before and after each model call and tool call |
+| "An accepted access token?" and "Does it match the contract?" | `contract/server.ts` | The local edge checks the token, then AWS's SDK app checks the body and `contract/sdk-app.ts` checks the token again. Their 400 answers have the SDK's shapes ([agent-runtime.md](agent-runtime.md)) |
 
 ## Who decides what
 
@@ -127,7 +134,8 @@ flowchart TD
 | Whether a case exists, is a repeat or is complete | The case system | Its own rules, keyed on the message identifier and the sender |
 | What the reply says | Inference | Nothing. The reply is returned as written |
 | How the run ends | Code | The named endings in `run/endings.ts` |
-| Whether a case is approved | A person | The case system records who and when |
+| Whether a case is approved, rejected or sent back for information | A person | The case system records who and when |
+| Whether a request is let in | Code | The access-token check in `shared/access-token.ts`, against the identity provider's keys |
 
 ## Always true, in this view
 
@@ -135,14 +143,15 @@ flowchart TD
 2. State changes in two places only: the run's own state, which is private and discarded, and the case system, which owns its own.
 3. Runs share no state. Two runs of one message meet only at the case system, which opens one case.
 4. Every message has a time limit and a defined result when no answer comes.
-5. The agent does not fail towards its caller. Once a message is accepted, every failure is an outcome with the steps taken.
+5. The agent does not fail towards its caller. Once a message is accepted, every failure is an outcome with the steps taken. The one exception is the hand-written server's 500 when the agent's own response is outside the contract; on the SDK server that is a `failed` outcome too.
 
 ## What happens to each message when no answer comes
 
 | Message | When no answer comes | Sent at most | Sending it twice is safe because |
 |---|---|---|---|
 | Caller to agent | The caller stops waiting at 180 s and records the run as failed | Once for a run. A person may start another run of the same message | The case system recognises the message identifier |
-| Agent to model | A failed connection or a status of 408, 429 or 5xx is sent again. A request that ran out of time is not (hand-written loop) | 3 times for a turn (hand-written loop) | Asking the model changes nothing |
+| Agent to model | Hand-written loop: a failed connection or a status of 408, 429 or 5xx is sent again; a request that ran out of time is not. Strands: the OpenAI client sends it again, timed-out ones included, and Strands asks again on throttling | Hand-written loop: 3 times for a turn. Strands: 3 for each of up to 6 attempts, within the run's time | Asking the model changes nothing |
+| Agent to identity provider | The token cannot be checked: 503, and the request is not handled. The next request asks again | The discovery document and the keys once, then kept; the keys again for a key not yet seen, at most every 30 s | It is a read |
 | Agent to case system, a lookup | The model is told there was no answer | Once | Not applicable |
 | Agent to case system, a write | Repeated once by code. If that also gets no answer, the run fails as not known | Twice | The case system recognises identical content for the same message |
 

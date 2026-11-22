@@ -8,7 +8,7 @@ Amazon Bedrock AgentCore Runtime asks one thing of a container: `POST /invocatio
 | Intake, on Strands | AWS's SDK server: `BedrockAgentCoreApp` from the npm package `bedrock-agentcore` 0.4.6, behind a local edge | AWS's stack as it comes: Strands for the loop, the AgentCore SDK for the contract |
 | Label expert, on Strands | The same as the intake agent on Strands | The same |
 
-The request and the answer are the same for all three: `shared/agent-contract.ts`. Each start-up names its server in `agents/src/run/serve.ts`, and the line it logs at start says which server is running.
+The request and the answer are the same for all three: `shared/agent-contract.ts`. Each agent names its server in the definition it gives the shared start-up, `serveAgent` in `agents/src/run/serve.ts`: the intake agents through `intake/serve.ts`, the label expert in `expert/main.ts`. An agent on the SDK server logs at start that it is on the AgentCore SDK server, where it listens and the value of `LOCAL_RUNTIME_EDGE`; the hand-written agent logs its name and address.
 
 ## Why the SDK server has an edge in front of it
 
@@ -33,7 +33,7 @@ sequenceDiagram
     E->>E: session id: the caller's, or a new UUID (400 if not 33 to 256 characters)
     E->>E: read the body, at most 1,000,000 bytes (400 beyond)
     E->>S: the body, a content length, allowed headers only, a request id
-    S->>S: session id present? body JSON? matches the request schema? (400, 413)
+    S->>S: session id present? body JSON? matches the request schema? (400)
     S->>P: the message, with Authorization among the headers
     P->>P: check the token again, for the caller
     P->>H: the message and the caller
@@ -76,8 +76,10 @@ sequenceDiagram
 | Passes a session id of 33 to 256 characters through, makes a UUID when there is none, answers 400 otherwise | Runtime: `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id`, 33 to 256 characters; AWS's clients make one when the caller gives none |
 | Forwards only the content type, accept, `Authorization`, headers starting `X-Amzn-Bedrock-AgentCore-Runtime-Custom-`, the session id, and a request id it makes (`X-Amzn-Bedrock-AgentCore-Runtime-Request-Id`). Everything else, a cookie or `X-Forwarded-For` included, is dropped | Runtime forwards `Authorization` only when it is in the request header allowlist, and the custom headers |
 | Reads the body itself, at most 1,000,000 bytes, then sends the whole of it with a content length | Runtime's own payload limit |
-| Answers 404 for another path and 405 for another method on `/invocations`, in the hand-written server's shapes; passes `GET /ping` to the SDK app | Runtime calls `/ping` itself |
-| Answers 502 with "The agent's server did not answer." when the SDK app does not answer. It sets no time limit of its own on the answer | Runtime's own handling |
+| Answers 404 for another path and 405 (with `Allow: POST`) for another method on `/invocations`, in the hand-written server's shapes; passes `GET /ping` to the SDK app, with no headers | Runtime calls `/ping` itself |
+| Answers 502 `{"error":"bad_gateway","detail":"The agent's server did not answer."}` when the SDK app does not answer, and closes the connection instead if the answer had already begun. It sets no time limit of its own on the answer | Runtime's own handling |
+| Answers 500 `{"error":"internal_error","detail":"The request could not be handled."}` when the edge itself fails while handling a request | Runtime's own handling |
+| Writes one line to the error output for a 502, naming the connection error's code, and a fixed line for a 500; never a token or a message's text | Runtime's own logs |
 
 ## What the SDK app does
 
@@ -92,7 +94,7 @@ sequenceDiagram
 
 The token is checked a second time in `process`, as the hand-written server does, to get the caller and so one behaviour holds everywhere. The SDK gives `process` no way to answer 401. A request that reaches it with no valid token, which can happen only with the edge off, or on AWS with `Authorization` missing from the allowlist, gets a `failed` answer whose reason says so and says what to change.
 
-## Found by running the SDK
+## What the SDK does on its own
 
 - Fastify's own error messages are fixed strings. For a body that is not JSON, a body that does not match the request schema, and a normal request, the SDK's default logging quoted no body. The logging configuration above is kept for what was not tried.
 - The SDK prints Fastify's deprecation warning FSTDEP023 (`disableRequestLogging`) at every start.
@@ -110,7 +112,7 @@ For the intake agent on Strands and the label expert, compared with the hand-wri
 | `GET /ping` | `{"status":"Healthy"}` | `{"status":"Healthy","time_of_last_update":<seconds>}` | The same |
 | No session id | Not needed | The edge makes one | 400 `{"error":"Missing sessionId. ..."}`, from the SDK |
 | A session id under 33 or over 256 characters | Not read | 400 `bad_request`, from the edge | Passed to the handler's context unchecked |
-| The agent's own code answers outside the contract | 500 `{"error":"internal_error"}` | 200, `outcome: failed`, reason "The agent produced a response outside its contract.", no steps | The same |
+| The agent's own code answers outside the contract | 500 `{"error":"internal_error","detail":"The agent produced a response outside its contract."}` | 200, `outcome: failed`, reason "The agent produced a response outside its contract.", no steps | The same |
 | No valid token | 401 | 401, from the edge | 200, `outcome: failed`, reason "The request reached the agent with no valid access token. ..." |
 | The identity provider cannot be asked | 503 | 503, from the edge | 200, `outcome: failed`, reason "The request reached the agent, and its access token could not be checked: ..." |
 
@@ -125,14 +127,14 @@ With the edge off, the SDK answers 413 from the declared `Content-Length`, befor
 | `LOCAL_RUNTIME_EDGE` | `on` | The edge on `0.0.0.0:8080`, the SDK app on `127.0.0.1:9080` behind it. Set in `agents/compose.yaml` for both Strands agents |
 | | `off` | The SDK app alone on `0.0.0.0:8080`, as it runs on AgentCore Runtime |
 
-It is required and has no default. A missing or other value stops the agent at start (exit 2), naming the variable. The hand-written agent does not read it.
+It is required and has no default. A missing or other value stops the agent at start (exit 2), naming the variable, as a missing setting of any agent does. If `contract/runtime.ts` and the SDK cannot be loaded, the agent stops with exit 1 and says so. The hand-written agent does not read the setting.
 
 ## Always true
 
-- Wherever this repository runs an agent, a request with no valid access token is refused with 401 before its body is read: by the edge, or by the hand-written server. With the edge off, that is AgentCore Runtime's JWT authorizer.
-- A valid request with a valid token always gets an answer inside the contract. Nothing the handler does surfaces as the SDK's 500 with an error's own message.
+- Wherever this repository runs an agent, a request with no valid access token is refused with 401 before its body is read, and one whose token cannot be checked gets 503: by the edge, or by the hand-written server. With the edge off, that is AgentCore Runtime's JWT authorizer.
+- On the SDK server, a valid request with a valid token always gets an answer inside the contract, unless the edge itself answers 502 or 500. Nothing the handler does surfaces as the SDK's 500 with an error's own message. On the hand-written server the same holds, except that an answer of the agent's own outside the contract is 500.
 - No line written by the SDK's logger, the edge or `contract/sdk-app.ts` carries a token, a message's text, or an error's message. The SDK's logger stays on with its request lines; a request is logged as its method and path, an error as its type, code and status, and a line about an error has the error's code as its message. What Strands itself writes to the log is in the [Strands document](intake-agent-strands.md#not-present-in-addition).
-- SIGTERM and SIGINT end the process with exit 0. The SDK registers no handler of its own.
+- On the SDK server, SIGTERM and SIGINT end the process with exit 0. The SDK registers no handler of its own. The hand-written agent closes its server and every open connection on either signal.
 
 ## Not present
 

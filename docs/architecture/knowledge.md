@@ -1,6 +1,6 @@
 # Knowledge
 
-The corpus of the lab's Bedrock Knowledge Bases stand-in: US drug labels from DailyMed, pinned by set id and version, fetched onto disk, counted, parsed into structured documents, and split into chunks. The chunks are indexed in a search engine, and a retrieval service serves keyword search over them to agents as MCP tools. To use it, see [knowledge/README.md](../../knowledge/README.md).
+The corpus of the lab's Bedrock Knowledge Bases stand-in: US drug labels from DailyMed, pinned by set id and version, fetched onto disk, counted, parsed into structured documents, and split into chunks. Each chunk can be given a vector by the embedding server. The chunks, with their vectors, are indexed in a search engine, and a retrieval service serves search over them to agents as MCP tools: by keyword, by vector, or both fused by rank and then reranked, as one setting of the service chooses. To use it, see [knowledge/README.md](../../knowledge/README.md).
 
 ## The corpus as pinned
 
@@ -26,7 +26,7 @@ The corpus holds both prescription and over-the-counter labels. Nothing downstre
 | Benchmark | FDARxBench at one revision: a labels file (set id, drug name, drug id, chunks of text) and a questions file (question, task, source, set id, context passages) |
 | Pin | `knowledge/corpus/benchmark.json`: the benchmark's repository, revision, licence, and each file's path, SHA-256 and size |
 | Manifest | `knowledge/corpus/manifest.json`: per label, set id, version, document id, effective time, published date, document type code, the SHA-256 of the zip and of the XML, the XML's size; and the labels not pinned, each with a reason code |
-| Data folder | `knowledge/data/`: the benchmark files, the label XML files and the reports. Never tracked, never in an image |
+| Data folder | `knowledge/data/`: the benchmark files, the label XML files, the parsed documents, the chunks, the vectors and the reports. Never tracked, never in an image |
 | Download record | `labels/<set id>/<version>.download.json` beside each XML: the SHA-256 of the zip it came from and of the XML |
 | Stand-in | The loopback server the tests use in place of DailyMed and the benchmark's host. It serves synthetic data and marks each response as a stand-in's |
 | Parsed document | `parsed/<set id>/<version>.json`: a label as identity, products and a tree of sections holding blocks (paragraphs, lists, tables, images) and Highlights blocks, with its warnings |
@@ -35,8 +35,12 @@ The corpus holds both prescription and over-the-counter labels. Nothing downstre
 | Chunk | One line of `chunks/<set id>/<version>.jsonl`: a piece of one section's text or of one table, with where it came from and the lines it repeats |
 | Splittable table | A table with a `thead` header, no nested table, no short row, and no wholly bold row below the header except group labels (one filled cell) |
 | Group label | A wholly bold row below the header with exactly one filled cell: it labels the rows under it |
+| Embed report | `embed-report.json`: the embedding identity (model repository, revision, served name, dimensions, document recipe, query instruction), the SHA-256 of the chunk report the vectors were made from, counts, the chunks without a vector, tokens, and the vector files with one SHA-256 over their bytes |
+| Vector file | `vectors/<set id>/<version>.jsonl`: one line per chunk that has a vector, its id and the vector as base64 of little-endian float32 |
+| Embedding identity | Repository, revision, dimensions, recipe, instruction and the vector files' SHA-256, recorded in the index's `_meta`; `null` for an index built without vectors |
 | Search engine | The `search` service: OpenSearch 3.9.0, one node, security plugin off, no published port |
-| Index | `labels-<hash>`: the chunks, one document each, under an explicit mapping. The hash is of the chunk report and the mapping |
+| Index | `labels-<hash>`: the chunks, one document each, under an explicit mapping. The hash is of the chunk report, the embed report when vectors are loaded, and the index definition |
+| Strategy | `SEARCH_STRATEGY`, the service's setting: `keyword`, `vector`, `fused` or `fused_reranked`. It says how `search_label` ranks |
 | Alias | `labels`: the name the retrieval service searches. The index command moves it, and only to a complete index |
 | Retrieval service | The `knowledge` service: MCP tools `find_labels` and `search_label` behind the token check |
 
@@ -75,6 +79,7 @@ flowchart LR
     B -- "census.sh, no network" --> CE(("census"))
     L --> CE
     M --> CE
+    P --> CE
     CE --> C
     L -- "parse.sh, no network" --> PA(("parse"))
     M --> PA
@@ -155,13 +160,13 @@ flowchart LR
     EX -- "writes" --> VK
     CK -- "read-only mount" --> IX
     VK -- "read-only mount" --> IX
-    IX -- "create index, bulk, count, then move alias" --> OS
+    IX -- "create index, bulk, refresh, count, then move alias" --> OS
     AG -- "the caller's Bearer token,<br/>knowledge:8000/mcp" --> RS
     MC -- "Bearer token, 127.0.0.1:8002" --> RS
     RS -- "discovery and keys" --> ID
     RS -- "fetch: mapping, _search, _count" --> OS
     RS -. "vector strategies: the query, the key" .-> EM
-    RS -. "fused_reranked: the query and 20 passages, the key" .-> RR
+    RS -. "fused_reranked: the query and up to 20 passages, the key" .-> RR
     GT -- "sign in as dana.desk" --> ID
     GT -- "MCP with the token" --> RS
     GT -- "alias, count, mapping" --> OS
@@ -186,19 +191,18 @@ Before a vector is used the service reads which index the alias points at and th
 |---|---|
 | The index has no vectors | `vectors_not_built` |
 | The index's vectors were made another way | `vectors_do_not_match` |
-| Embedding server not reached; no answer in 3 s; error status, wrong-length vector or unreadable answer | `embedding_unreachable`, `embedding_timed_out`, `embedding_error` |
-| Reranker not reached; no answer in 5 s; error status or an answer not scoring each passage once | `rerank_unreachable`, `rerank_timed_out`, `rerank_error` |
+| Embedding server not reached; no answer in 3 s; error status, the query refused as too long, a wrong-length vector or an unreadable answer | `embedding_unreachable`, `embedding_timed_out`, `embedding_error` |
+| Reranker not reached; no answer in 5 s; error status, an unreadable answer or one not scoring each passage once | `rerank_unreachable`, `rerank_timed_out`, `rerank_error` |
+| The alias does not exist | `index_not_built` |
+| The alias points at no index or at more than one | `search_unexpected_answer` |
 
-No failure is retried or falls back to a quieter kind of search. The key goes to the two model servers only.
+No failure is retried or falls back to a quieter kind of search. The key goes to the two model servers only. The verdict on an index's embedding identity is kept by index name for the life of the service.
+
+The model servers are reached at `MODEL_EMBED_BASE_URL` and `MODEL_RERANK_BASE_URL` from inside the stack's network. An address of `127.0.0.1` there is the container itself, so servers published on a loopback address of the host are not reached: the embed command exits 2 and a search answers `embedding_unreachable`.
 
 A whole search (`search_label` or `find_labels`) has 8 s from the moment it starts (`SEARCH_LIMIT_MS`, `knowledge/src/search/limits.ts`). Every request it makes gets the smaller of its own limit (engine 5 s, embedding 3 s, reranker 5 s) and what is left; when nothing is left the answer is `search_timed_out`, with a detail naming the step. When a request runs out of time, which limit ran out is decided by what it was given, before it was sent, never by which timer fired first: if it was given what was left of the search (less than its own limit), the search as a whole ran out; otherwise the request's own limit did, and the failure is that request's own (`search_timed_out`, `embedding_timed_out` or `rerank_timed_out`). A search therefore answers inside an agent's 10 s tool limit.
 
-Measured by the planner on 2026-11-22 (real embedding server and reranker, OpenSearch 3.9.0):
-
-- The embedding stage: 154 s for 31,827 chunks; 31,826 vectors and 1 without (the over-length table); 7,281,847 tokens; 170 MB of vector files.
-- The index build with vectors: 18 s; the definition accepted; both counts checked; `_meta` holds the identity; no `embedding` in a fetched document's source.
-- The index on disk: 654 MB before a flush, about 1,000 MB after, against 30 MB without vectors (inferred, not established: mostly the engine's recovery copy of the original documents, which merges may drop).
-- Right section among the first 5, of 200 questions with the label known: `keyword` 159, `vector` 167, `fused` 170, `fused_reranked` 171 and 172 on two runs (the first with one search answering an error whose code was not captured). `search_label` under `fused_reranked`: median 176 ms, 95th percentile 251 ms. The margin with 200 questions is about 6 points either way, so these figures do not separate the strategies.
+The figures measured for the embedding stage, the index build and each strategy are in [knowledge/README.md](../../knowledge/README.md#the-retrieval-service).
 
 | Tool | Returns | Its counterpart in a Bedrock Knowledge Base retrieval result |
 |---|---|---|
@@ -206,7 +210,24 @@ Measured by the planner on 2026-11-22 (real embedding server and reranker, OpenS
 | `search_label` | `score` | Its relevance score |
 | `search_label` | `label.source`, the label's page at DailyMed for this version | Its source location |
 | `search_label` | `chunk_id`, `part`, `type`, `section` (number, title, path), `position`, `label` (set id, version, effective date, kind) | Its metadata, and the document id. Bedrock returns these only as metadata attached at ingestion; here they are fields |
-| `find_labels` | The labels for a drug name, with set id, version, date, kind, format, names, page | No counterpart: a retrieval request there is one search; resolving the drug first is this design's own step |
+| `search_label` | `strategy` for the result; per passage `ranks` and `scores` (keyword, vector, fused, reranked: null where not computed) | No counterpart: Bedrock returns one score |
+| `find_labels` | At most 10 labels for a drug name, newest first, with set id, version, date, kind, format, names, page; `more_matched`; `matched_by` (`exact_name`, `every_word` or `none`) | No counterpart: a retrieval request there is one search; resolving the drug first is this design's own step |
+
+Every tool result is one MCP text item holding JSON: the result, or `{error, detail}` with `isError` set.
+
+The retrieval service's HTTP answers:
+
+| Request | Answer |
+|---|---|
+| `GET /ping` | 200 `{status: "Healthy"}`, with no token |
+| No token, or one that is not valid | 401 `{error: "unauthorized", reason, detail}` with `WWW-Authenticate: Bearer` |
+| The identity provider cannot be asked | 503 `{error: "identity_unavailable", detail}` |
+| A target that is not a path; a body over 100,000 bytes or not JSON | 400 `{error: "bad_request", detail}` |
+| A path other than `/mcp` | 404 `{error: "not_found"}` |
+| `/mcp` with a method other than `POST` | 405 `{error: "method_not_allowed"}`, `Allow: POST`. The MCP endpoint is stateless and answers in JSON |
+| A failure of the service's own | 500 `{error: "internal_error"}` |
+
+A setting missing or malformed stops the service at start with exit 2, naming the setting.
 
 The agent that calls these two tools is the label expert: [expert-agent.md](expert-agent.md).
 
@@ -221,7 +242,8 @@ The agent that calls these two tools is the label expert: [expert-agent.md](expe
 | Each label | Set id, version, document id, and the SHA-256 of its XML | `knowledge/corpus/manifest.json` |
 | The image the commands run in | The `run` stage of `toolchain/Dockerfile`, from the Node image pinned there by digest, with the locked run-time dependencies | `toolchain/Dockerfile`, `package-lock.json` |
 | The zip and XML readers | yauzl 3.4.0, @xmldom/xmldom 0.9.12, exact versions | Root `package.json` |
-| Request settings | Concurrency, attempts, waits, time limit, caps, User-Agent, passed by name | `knowledge/lib.sh` |
+| Request settings | The two hosts, concurrency, workers, attempts, waits, time limit, caps (zip, XML, benchmark file), User-Agent, passed by name | `knowledge/lib.sh` |
+| The retrieval service's numbers | Time limits (`limits.ts`), passages fused and reranked and the reranker's tokens per passage (`tools.ts`), the fusion constant (`fusion.ts`), input limits (`tools.ts`), body limit (`http.ts`) | `knowledge/src/search/` |
 
 ## Always true
 
@@ -231,13 +253,13 @@ The agent that calls these two tools is the label expert: [expert-agent.md](expe
 4. A file name on disk is built only from a manifest's set id, which must be a lowercase GUID, and its version, which must be a positive integer. No name from inside an archive is ever used as a path.
 5. Of each zip, only the one member whose name ends in `.xml` is read. None, or more than one, and the zip is refused.
 6. The XML's size is capped on the bytes the decompressor produces. The size the archive declares is used only to refuse earlier.
-7. The XML reader performs no input or output of its own. A DOCTYPE that declares an entity is refused before the parser's other errors are judged, so the reason names the declaration.
-8. A label is written to the data folder only if its XML's SHA-256 equals the manifest's. A file there that does not match is removed.
+7. The XML reader performs no input or output of its own. A DOCTYPE whose internal subset declares an entity is refused before the parser's non-fatal errors are judged, so the reason names the declaration; a fatal parse error is `xml-not-well-formed` at once.
+8. A label is written to the data folder only if its XML's SHA-256 equals the manifest's. A file there that does not match, or whose download record is missing, unreadable or names another XML SHA-256, is removed and fetched again.
 9. The fetch report and the census describe what is in the data folder, not what one run did. A run on complete data sends no request and changes no file.
-10. Reasons written to any file are codes from one closed list (`knowledge/src/reasons.ts`), never a parser's message.
-11. At most 4 requests to DailyMed are in flight at once. Only no response, 408, 429 and 5xx are retried, 3 attempts in all, with growing waits. A 404 is final.
+10. Reasons written to any file are fixed codes, never a parser's message: those of one closed list (`knowledge/src/reasons.ts`) for refusals, and `missing`, `checksum-mismatch`, `no-parsed-file`, `check-failed` and `other` in the census, parse and chunk reports.
+11. At most 2 requests to DailyMed are in flight at once (`knowledge/lib.sh`); the tool refuses a setting above 4. Only no response, a body cut short or not read in time, 408, 429 and 5xx are retried, 3 attempts in all, with growing waits. A 404, and any other status, is final.
 12. Every request carries the User-Agent `label-corpus-fetch/1.0` and nothing else that identifies who sent it.
-13. A request that fails after every attempt during pinning stops the run, and nothing is written to `knowledge/corpus/`.
+13. A request that fails during pinning fails the run: every set id is still tried, each failure is named, and nothing is written to `knowledge/corpus/` or `knowledge/data/benchmark/`.
 14. The census runs with no network and writes counts and codes only.
 15. Every setting is a named flag of the tool, given by the script. The tool has no defaults and reads no environment variable, with one exception: the embed command reads the embedding server's address, the key and the model's identity from the environment it is given (`model/.env` and `model/retrieval.env`, passed by `--env-file`), so the key is never on a command line. Every other command is run with no variable.
 16. The parser is one pure function from XML bytes to a document and problems: no clock, no randomness, no input or output. The same input gives a byte-identical parsed file and report.
@@ -250,10 +272,10 @@ The agent that calls these two tools is the label expert: [expert-agent.md](expe
 23. For every table row the parsed document records whether it is wholly bold and how many of its cells have text. Which rows are column headings beyond the one inference rule is not decided here.
 24. The splitter is one pure function of a parsed document and two named settings, the text limit and the table limit. The same input gives byte-identical chunk files and report.
 25. Every word of a label's blocks and Highlights is in exactly one chunk's text outside its `repeated` lines, or the label gets no chunk file. The check takes its own walk of the parsed document.
-26. A chunk id is unique within its label and depends only on the set id, version, section and the chunk's position in the section.
-27. A table that is not splittable is one chunk, whatever its size. A split table's chunks each hold the caption, every header row and the group label in force: the first holds the caption and header rows in their place, and each later one repeats them and lists them in `repeated`. No chunk ends on a group label or inside a row span.
-28. A chunk holds text or a table, never both.
-29. The alias `labels` points only at an index into which the engine accepted every item, and whose count of documents equals the number of chunks read. Any failure once the run may have made a new index (a refused item, a count that differs, a create, bulk request, refresh, count or alias move that fails or gets no answer) leaves the alias where it was and removes the new index; if the removal fails, the run names the index left behind. An index the alias points at is never removed.
+26. A chunk id depends only on the set id, version, section, part and the chunk's position in the section and part.
+27. A table that is not splittable is one chunk, whatever its size, and so is a splittable table with fewer than two body rows. A split table's chunks each hold the caption, every header row and the group label in force: the first holds the caption and header rows in their place, and each later one repeats them and lists them in `repeated`. No chunk ends on a group label, unless it is the table's last row, or inside a row span. A chunk of one row may pass the table limit.
+28. A chunk of type `table` or `table-rows` holds one table and no other text. A table inside a list item is written, in plain form, into the list's `text` chunk.
+29. The alias `labels` points only at an index into which the engine accepted every item, and whose count of documents equals the number of chunks read. Any failure once the run may have made a new index (a refused item, a count that differs, a create, bulk request, refresh, count or alias move that fails or gets no answer) leaves the alias where it was and removes the new index; if the removal fails, the run names the index left behind. An index the alias points at is never removed: one with the wrong count stops the run (exit 2). An index with this name, the wrong count and no alias on it is removed and built again.
 30. An index's name is a hash of the chunk report, the embed report when vectors are loaded, and the mapping. The chunk report records the SHA-256 of every chunk file and the embed report that of the vector files, and the index command refuses a file that does not match, so a change to any chunk's or vector's bytes is a new index. Indexing unchanged chunks and vectors changes nothing. An embed report made from other chunks builds nothing.
 31. The search engine publishes no port. Only containers on the stack's network reach it.
 32. Every request to the retrieval service but `GET /ping` needs a valid access token with audience `lab-knowledge`, judged before anything else of the request is read: the target, then the body.
@@ -282,7 +304,7 @@ The agent that calls these two tools is the label expert: [expert-agent.md](expe
 | `search` service | OpenSearch, no capabilities, no new privileges, not read-only (it writes its keystore at start) | The stack's network, no published port | None; a named volume for its data |
 | `knowledge` service | The `run` stage image, read-only, no capabilities | The stack's network; `127.0.0.1:8002` | None |
 | Gate | The same image, on the stack's network, through `knowledge/gate/compose.yaml` | The stack's network | `data/`, `corpus/` and `platform/identity/src/`, read-only |
-| Tests F1 to F13, P1 to P21, U1 to U18, S1 to S28, V01 to V20 | `toolchain/check.sh` | None; the stand-ins listen on loopback | None |
+| Tests F1 to F13, P1 to P21, U1 to U18, S1 to S23 and S25 to S28, V01 to V18 and V20 (V19 is in `agents/test/expert.test.ts`) | `toolchain/check.sh` | None; the stand-ins listen on loopback | None |
 
 ## Parsing: problems and what follows
 
@@ -290,8 +312,8 @@ The agent that calls these two tools is the label expert: [expert-agent.md](expe
 |---|---|---|---|
 | `text-not-conserved` | error | The token collections of side A and side B differ; gives missing and extra | Excluded |
 | `table-not-rectangular` | error | After spans, two cells claim one position, a span passes the last row, or a row has an empty position before a covered one | Excluded |
-| `no-sections` | error | No section of the body has text | Excluded |
-| `unreadable` | error | A step 1 refusal, or the XML is missing or does not match the manifest | Excluded |
+| `no-sections` | error | No section of the body has a title or a block | Excluded |
+| `unreadable` | error | The XML reader refused the file (its reason is a `reasons.ts` code), or the XML is missing (`missing`) or does not match the manifest (`checksum-mismatch`) | Excluded |
 | `section-untitled`, `section-unclassified` | warning | A section with no title; a section coded 42229-5 | Written |
 | `table-header-inferred`, `table-header-none`, `table-caption-inferred`, `table-nested` | warning | How a table's header and caption were found; a table inside a cell | Written |
 | `section-images-only`, `footnote-reference-unmatched`, `element-unknown` | warning | A section of images only; a reference to no footnote; an element not known, by name and count | Written |
@@ -307,9 +329,11 @@ The agent that calls these two tools is the label expert: [expert-agent.md](expe
 | Zip too large, unreadable, with no or several XML members; XML too large, not UTF-8, not well-formed, with DOCTYPE entities, not SPL, or of another set id or version | Listed as not pinned, with the code | Refused, run carries on, exit 1 |
 | XML checksum differs from the manifest | Not applicable | Refused (`xml-checksum-mismatch`), exit 1 |
 | Zip checksum differs, XML matches | Not applicable | Accepted, reported as repackaged |
-| No response, or 408, 429, 5xx, three times | The run stops, nothing written to `corpus/`, exit 1 | Refused (`download-failed`), run carries on, exit 1 |
+| No response, or 408, 429, 5xx, three times; or any other status but 404 once | The run fails after trying every set id, nothing written to `corpus/`, exit 1 | Refused (`download-failed`), run carries on, exit 1 |
+| A benchmark file answers 404, is over 256 MiB, or holds a line that is not a record; a history that cannot be read; a manifest that would fail its schema | The run fails, nothing written to `corpus/`, exit 1 | A benchmark file refused (`download-failed`, `benchmark-checksum-mismatch`), run carries on, exit 1 |
 | A tracked file fails its schema | Not applicable | Nothing fetched, exit 2 |
-| A pinned label is missing from the data folder or does not match | Not applicable | The census lists it as not counted and exits 1 |
+
+In the census, a pinned label that is missing from the data folder or does not match is listed as not counted and the census exits 1; a benchmark file missing or not matching the pin stops it with exit 2.
 
 ## Who owns what
 
@@ -317,7 +341,8 @@ The agent that calls these two tools is the label expert: [expert-agent.md](expe
 |---|---|
 | `knowledge/pin.sh` | The benchmark's repository, revision, licence and file paths |
 | `knowledge/lib.sh` | The image name, the container's isolation, and every request setting |
-| `knowledge/src/` | The tool: the schema, the request client, the archive and XML readers, pinning, fetching, the census |
+| `knowledge/src/` | The tool: the command line (`cli.ts`), the schema, the request client, the archive and XML readers, pinning, fetching, the census |
+| `knowledge/src/references.ts` | The rule that matches a benchmark reference to a section, used by the gate and the evaluation harness |
 | `knowledge/src/parse/` | The parsed document's shape and problem codes (`model.ts`), the parser (`parser.ts`), the check that no text was lost (`conserve.ts`), and the command (`run.ts`) |
 | `knowledge/corpus/` | What the corpus is: written by `pin.sh`, read by everything else |
 | `knowledge/src/chunk/` | What a chunk is (`model.ts`), the splitter (`split.ts`), the check that nothing was lost or doubled (`check.ts`), and the command (`run.ts`) |
@@ -329,7 +354,7 @@ The agent that calls these two tools is the label expert: [expert-agent.md](expe
 | `knowledge/compose.yaml` | The search engine's and the retrieval service's containers: images, settings, hardening, ports |
 | `knowledge/index.sh` | The alias, the largest bulk body and the time limit of indexing |
 | `knowledge/gate.sh`, `knowledge/gate/`, `knowledge/src/gate/` | The gate of the retrieval path |
-| `knowledge/data/` | Local copies; regenerated by `fetch.sh`, `census.sh`, `parse.sh` and `chunk.sh` |
+| `knowledge/data/` | Local copies; regenerated by `fetch.sh`, `census.sh`, `parse.sh`, `chunk.sh` and `embed.sh` |
 | `toolchain/Dockerfile` | The `run` stage the image is built from, and the Node pin |
 
 ## What is not present
@@ -339,12 +364,12 @@ The agent that calls these two tools is the label expert: [expert-agent.md](expe
 - No record of which passages the reranker read only in part (over 7,000 tokens).
 - One passage of the corpus is over the embedding model's limit: it has no vector and is found by keyword only.
 - Vectors are not bit-for-bit repeatable across runs of the embedding stage, which is why the index is named from the vectors it holds.
-- No strategy is shown better than another: the measured differences are within the margin of 200 questions. That is step 7.
-- The code of the one error seen under `fused_reranked` was not captured.
-- The index's size on disk after the engine's merges is not known.
+- No strategy is shown better than another: the measured differences are within the margin of 200 questions.
+- No approximate (HNSW) vector search: each vector search is exact, over the documents of one label.
+- No check of the reranker's repository or revision: the service names the reranker only by its served name.
 - Fusion is not done with OpenSearch's `hybrid` query: without a search pipeline it returns unnormalised results with no error, and gives no sub-query's rank.
 - No removal of old indexes, and no backup of an index: it is rebuilt from the chunks.
-- No size limit on a table that is not splittable; no chunk holding text and a table together.
+- No size limit on a table that is not splittable, or on a split chunk of one row.
 - No decision on which table rows are column headings beyond the one inference rule; no text read from images; no section numbers in old-format labels.
 - No label version beyond the one pinned per set id, and no rule for choosing among several labels of one drug.
 - No label for a set id DailyMed does not serve: the manifest lists it as not pinned.

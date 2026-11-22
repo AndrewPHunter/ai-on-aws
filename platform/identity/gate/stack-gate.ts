@@ -4,8 +4,8 @@
 // the stack's network and is the browser and a stranger at once:
 //   - signs both realm users in through the client and Keycloak's own sign-in page;
 //   - checks the cookies, the session, refused callbacks, a cross-site POST, and sign-out;
-//   - knocks on each agent and on both case-system servers without a token;
-//   - sends an inquiry to each agent as each user, and waits for the run to end inside the agent contract
+//   - knocks on each intake agent and on both case-system servers without a token;
+//   - sends an inquiry to each intake agent as each user, and waits for the run to end inside the agent contract
 //     (it does not depend on a model server: a run may end at the model);
 //   - asks the client to review a case that does not exist, as a non-reviewer and as a reviewer.
 //
