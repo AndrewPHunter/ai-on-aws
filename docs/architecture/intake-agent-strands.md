@@ -1,8 +1,10 @@
 # Intake agent, on Strands
 
-The same agent as the [hand-written one](intake-agent-handwritten.md), with Strands running the loop. It has the same prompt, the same rules, the same limits, the same contract and the same case system. This document covers only what differs. Terms, the untrusted-text flow, the "Always true" list and the "Not present" list are in the hand-written agent's document and apply here unless a section below says otherwise.
+The same agent as the [hand-written one](intake-agent-handwritten.md), with Strands running the loop and AWS's SDK server serving the contract. It has the same prompt, the same rules, the same limits, the same contract and the same case system. This document covers only what differs. Terms, the untrusted-text flow, the "Always true" list and the "Not present" list are in the hand-written agent's document and apply here unless a section below says otherwise.
 
 Strands is `@strands-agents/sdk` 1.25.0, the TypeScript SDK. To run the agent, see [agents/README.md](../../agents/README.md).
+
+The contract is served by `BedrockAgentCoreApp` from `bedrock-agentcore` 0.4.6, behind a local stand-in for AgentCore Runtime's front door; how, and where it answers differently from the hand-written server, is in [agent-runtime.md](agent-runtime.md).
 
 Strands is used the way it comes. Its default model is Amazon Bedrock, which this agent moves to on AWS. Until then the local model server stands in, through Strands' OpenAI model on that model's default API, the Responses API.
 
@@ -13,8 +15,9 @@ Strands is used the way it comes. Its default model is Amazon Bedrock, which thi
 | Prompt and layout of the message | `intake/prompt.ts` | The same file |
 | Rules of a run, its record, its endings | `intake/run.ts` (rules); `run/state.ts`, `run/steps.ts`, `run/turns.ts`, `run/endings.ts` (state, record, endings) | The same files |
 | Limits and sampling settings | `intake/settings.ts` (limits), `run/sampling.ts` (sampling) | The same files |
-| Startup and environment | `intake/serve.ts`, `run/serve.ts` | The same files |
-| HTTP surface, including the access-token check | `contract/server.ts`, `shared/access-token.ts` | The same files |
+| Startup and environment | `intake/serve.ts`, `run/serve.ts` | The same files, plus `LOCAL_RUNTIME_EDGE` |
+| HTTP surface | `contract/server.ts`, written by hand | `BedrockAgentCoreApp` (`contract/sdk-app.ts`), behind the local edge (`contract/edge.ts`), started by `contract/runtime.ts` |
+| The access-token check | `shared/access-token.ts`, in `contract/server.ts` | The same file, in the edge and again in `contract/sdk-app.ts` |
 | Context headers and the caller's token on requests to the case system, reading a case system answer | `tools/case-system.ts` (`caseSystemHeaders`), which reads answers through `tools/mcp-answers.ts` | The same functions |
 | The loop | `intake/handwritten.ts` | Strands' `Agent` |
 | Request to the model | `model/chat.ts`: chat completions, one JSON response | Strands' `OpenAIModel` on its default: the Responses API, streamed |
@@ -30,7 +33,8 @@ flowchart LR
     subgraph Agent["Agent container, port 8080"]
         Main["intake/main-strands.ts<br/>wiring"]
         Serve["intake/serve.ts, settings.ts,<br/>run/serve.ts, sampling.ts<br/>SHARED"]
-        Server["contract/server.ts<br/>SHARED"]
+        Edge["contract/edge.ts<br/>local stand-in for Runtime's front door"]
+        Server["BedrockAgentCoreApp<br/>contract/sdk-app.ts"]
         Ours["intake/strands.ts<br/>builds the Agent, four hooks,<br/>CaseTool, how the run ends"]
         Run["intake/run.ts, run/state.ts,<br/>steps.ts, turns.ts, endings.ts<br/>SHARED: rules, record, endings"]
         Prompt["intake/prompt.ts<br/>SHARED"]
@@ -45,9 +49,10 @@ flowchart LR
     Model["Model server"]
     Cases["Case system"]
 
-    Caller -->|"HTTP, JSON"| Server
+    Caller -->|"HTTP, JSON"| Edge
+    Edge -->|"loopback"| Server
     Main --> Serve
-    Serve -->|"starts"| Server
+    Serve -->|"starts, through contract/runtime.ts"| Server
     Server -->|"Handler"| Ours
     Ours -->|"new Agent per message"| Loop
     Ours --> Prompt
@@ -68,14 +73,14 @@ flowchart LR
 ```mermaid
 sequenceDiagram
     autonumber
-    participant S as contract/server.ts
+    participant S as SDK app, contract/sdk-app.ts
     participant O as intake/strands.ts
     participant A as Strands Agent
     participant R as intake/run.ts and run/
     participant K as Case system
     participant V as Model server
 
-    S->>O: handleInquiry with the caller (token already accepted by contract/server.ts)
+    S->>O: handleInquiry with the caller (token accepted by the edge, and again in contract/sdk-app.ts)
     O->>R: startRun
     O->>K: McpClient connect and listTools, with context headers and the caller's token
     O->>A: new Agent with CaseTools, prompt, hooks
@@ -183,7 +188,7 @@ Everything in the hand-written agent's "Not present" list is also absent here, i
 |---|---|
 | The model's reasoning text in the record | Strands reads it into the message, but this agent records only the reply text, so as in the hand-written agent only its cost appears in `output_tokens`. Strands does not send reasoning back to the model on later turns over the Responses API, and logs a warning each time it leaves it out |
 | Control of what Strands writes to the log | Strands logs its own warnings and errors to the container's output, including a stack trace when tool arguments cannot be parsed |
-| A smaller image | Strands requires the AWS SDK's Bedrock client and the OpenAI client. Both agents run from one image, so both now carry them |
+| A smaller image | Strands requires the AWS SDK's Bedrock client and the OpenAI client, and the AgentCore SDK brings Fastify and more AWS SDK clients. Both agents run from one image, so both now carry them |
 
 ## What was checked
 

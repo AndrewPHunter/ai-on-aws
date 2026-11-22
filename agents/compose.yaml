@@ -1,8 +1,8 @@
 name: ai-on-aws-agents
 
 # What the three agents run with: the two implementations of the intake agent and the label expert. They
-# differ only in the file that starts them, the name they record under, the service they call, and the
-# port published on this machine.
+# differ only in the file that starts them, the name they record under, the service they call, the server
+# that serves their contract, and the port published on this machine.
 x-agent: &agent
   build:
     context: ..
@@ -42,7 +42,7 @@ x-auth: &auth
   AUTH_ROLES_CLAIM: roles
 
 services:
-  # The intake agent with its loop written by hand.
+  # The intake agent with its loop written by hand, served by the hand-written contract server.
   intake-handwritten:
     <<: *agent
     command: ["node", "agents/src/intake/main-handwritten.ts"]
@@ -55,7 +55,8 @@ services:
       # Published on this machine only, for calling the agent directly.
       - "127.0.0.1:8080:8080"
 
-  # The same agent on Strands: same prompt, rules, limits and contract; Strands owns the loop.
+  # The same agent on Strands: same prompt, rules, limits and contract; Strands owns the loop, and AWS's SDK
+  # server serves the contract.
   intake-strands:
     <<: *agent
     command: ["node", "agents/src/intake/main-strands.ts"]
@@ -63,6 +64,10 @@ services:
       <<: *auth
       AGENT_ID: intake-strands
       CASE_MCP_URL: http://case-system:8000/mcp
+      # Served by AWS's SDK server (BedrockAgentCoreApp). on: a local stand-in for AgentCore Runtime's front
+      # door listens on 8080 in the same process, checks the token, gives the request a session id and
+      # forwards only the headers Runtime would. On AgentCore Runtime this is off and Runtime does those things.
+      LOCAL_RUNTIME_EDGE: "on"
     ports:
       - "127.0.0.1:8081:8080"
 
@@ -76,5 +81,7 @@ services:
       AGENT_ID: expert
       # The retrieval service's MCP endpoint, by its service name on the shared network.
       KNOWLEDGE_MCP_URL: http://knowledge:8000/mcp
+      # Served by AWS's SDK server, behind the local stand-in for AgentCore Runtime's front door, as above.
+      LOCAL_RUNTIME_EDGE: "on"
     ports:
       - "127.0.0.1:8082:8080"

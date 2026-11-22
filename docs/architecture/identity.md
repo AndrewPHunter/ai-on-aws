@@ -175,7 +175,7 @@ With less time left the client renews the access token with the refresh token fi
 
 ## The agents
 
-Both intake agents check the access token in `agents/src/contract/server.ts`, with `shared/access-token.ts`, before the request body is read, and pass the accepted token on.
+Every agent checks the access token with `shared/access-token.ts` before the request body is read, and passes the accepted token on: the hand-written intake agent in `agents/src/contract/server.ts`; the intake agent on Strands and the label expert in the local edge, `agents/src/contract/edge.ts`, and again in `agents/src/contract/sdk-app.ts` ([agent-runtime.md](agent-runtime.md)).
 
 | Order | Check | Refused as |
 |---|---|---|

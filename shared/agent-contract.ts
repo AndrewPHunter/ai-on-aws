@@ -1,5 +1,6 @@
 // The contract between whatever sends an inquiry (the client, the evaluation harness) and an agent.
-// An agent serves it at POST /invocations, and answers GET /ping with { "status": "Healthy" }.
+// An agent serves it at POST /invocations, and answers GET /ping with a body whose status is "Healthy"; an agent on
+// AWS's SDK server adds time_of_last_update (docs/architecture/agent-runtime.md).
 // The schemas are the contract: senders validate what an agent returns against them.
 
 import { z } from 'zod';

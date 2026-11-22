@@ -1,6 +1,10 @@
-// Starts an agent on port 8080. Shared by every agent: each says how to read its own settings, the limits it
-// runs with, the line it logs when listening, and how to build its handler; everything else about starting is
-// here.
+// Starts an agent on port 8080. Shared by every agent: each says which server it is served by, how to read its
+// own settings, the limits it runs with, its name for the line it logs at start, and how to build its handler;
+// everything else about starting is here.
+//
+// Two servers serve the same contract:
+//   the hand-written contract server   ../contract/server.ts, written here with nothing from an SDK
+//   the AgentCore SDK server           AWS's BedrockAgentCoreApp, through ../contract/runtime.ts, loaded only for it
 //
 // Reads from the environment object it is given, and nowhere else:
 //   MODEL_BASE_URL         the address of the model server, ending in /v1
@@ -12,11 +16,14 @@
 //   AUTH_ALLOWED_AUDIENCE  a value that must be in the access token's aud
 //   AUTH_ALLOWED_CLIENTS   the client ids an access token may be issued to, separated by commas
 //   AUTH_ROLES_CLAIM       the access-token claim holding the caller's roles
+//   LOCAL_RUNTIME_EDGE     on the AgentCore SDK server only: on or off (see ../contract/runtime-contract.ts)
 // and whatever the agent's own reader reads from the same object.
 
 import { createAccessTokenCheck } from '../../../shared/access-token.ts';
 import type { AccessTokenSettings, Caller } from '../../../shared/access-token.ts';
 import type { InboundMessage, InvocationResponse } from '../../../shared/agent-contract.ts';
+import { runtimeLayoutFrom } from '../contract/runtime-contract.ts';
+import type { RuntimeLayout } from '../contract/runtime-contract.ts';
 import { createContractServer } from '../contract/server.ts';
 import type { AgentIdentity } from '../contract/server.ts';
 import { servedModelId } from '../model/served.ts';
@@ -96,20 +103,25 @@ export function agentSettingsFrom<Own>(env: Environment, limits: Limits, readOwn
   };
 }
 
+export type Server = 'hand-written contract server' | 'AgentCore SDK server';
+
 export type AgentDefinition<Own> = {
   implementation: string;
+  server: Server;
   limits: Limits;
   readOwn: (env: Environment) => Own;
-  // The line logged once the server listens.
-  listening: (host: string, port: number) => string;
+  // The agent's name as the line logged at start gives it, such as "Label expert (Strands)".
+  title: string;
   build: (wiring: BaseWiring, own: Own) => Handler;
 };
 
 export function serveAgent<Own>(definition: AgentDefinition<Own>): void {
   const { implementation, limits } = definition;
   let settings: AgentSettings<Own>;
+  let layout: RuntimeLayout | undefined;
   try {
     settings = agentSettingsFrom(process.env, limits, definition.readOwn);
+    layout = definition.server === 'AgentCore SDK server' ? runtimeLayoutFrom(process.env) : undefined;
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(2);
@@ -142,22 +154,34 @@ export function serveAgent<Own>(definition: AgentDefinition<Own>): void {
     return handler;
   }
 
-  const server = createContractServer(
-    identity,
-    async (message, caller) => {
-      const handle = await ready();
-      if (typeof handle === 'string') {
-        const run = { ...startRunState(identity, now, limits), citations: [], caseActions: [] };
-        recordError(run, handle);
-        return failed(run, handle);
-      }
-      return handle(message, caller);
-    },
-    checkToken,
-  );
+  const respond: Handler = async (message, caller) => {
+    const handle = await ready();
+    if (typeof handle === 'string') {
+      const run = { ...startRunState(identity, now, limits), citations: [], caseActions: [] };
+      recordError(run, handle);
+      return failed(run, handle);
+    }
+    return handle(message, caller);
+  };
+
+  if (layout !== undefined) {
+    // Loaded here only, so the hand-written agent never loads the SDK, Fastify or the AWS clients.
+    const sdkLayout = layout;
+    import('../contract/runtime.ts')
+      .then(({ startOnAgentCoreSdk }) => {
+        startOnAgentCoreSdk({ title: definition.title, identity, handler: respond, checkToken, layout: sdkLayout });
+      })
+      .catch((error: unknown) => {
+        console.error(`The AgentCore SDK server could not be loaded: ${error instanceof Error ? error.message : String(error)}`);
+        process.exit(1);
+      });
+    return;
+  }
+
+  const server = createContractServer(identity, respond, checkToken);
 
   server.listen(PORT, HOST, () => {
-    console.log(definition.listening(HOST, PORT));
+    console.log(`${definition.title} listening on ${HOST}:${PORT}`);
   });
 
   function stop(): void {
