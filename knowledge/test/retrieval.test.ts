@@ -188,7 +188,7 @@ test('knowledge 35. the model servers\' key is sent to the two model servers onl
   const toModels = (sent: { url: string }): boolean => /^http:\/\/(embed|rerank)\.test\/v1\//.test(sent.url);
   const settings = retrievalSettingsFrom({
     SEARCH_URL: 'http://search.test', SEARCH_INDEX: 'labels', SEARCH_STRATEGY: 'fused_reranked', AUTH_DISCOVERY_URL: 'http://identity.test/discovery', AUTH_ISSUER: 'http://identity.test',
-    AUTH_ALLOWED_AUDIENCE: 'lab-knowledge', AUTH_ALLOWED_CLIENTS: 'desk', AUTH_ROLES_CLAIM: 'roles', MODEL_EMBED_BASE_URL: 'http://embed.test/v1', EMBED_MODEL_ID: 'embed-model',
+    AUTH_ALLOWED_AUDIENCE: 'lab-knowledge', AUTH_ALLOWED_CLIENTS: 'desk', AUTH_REQUIRED_SCOPES: 'labels:search', AUTH_ROLES_CLAIM: 'roles', MODEL_EMBED_BASE_URL: 'http://embed.test/v1', EMBED_MODEL_ID: 'embed-model',
     MODEL_API_KEY: KEY, EMBED_MODEL_REPO: 'example/embed', EMBED_MODEL_REVISION: 'r1', EMBED_DIMENSIONS: String(DIMENSIONS), MODEL_RERANK_BASE_URL: 'http://rerank.test/v1', RERANK_MODEL_ID: 'rerank-model',
   });
   for (const [fault, expected] of [['none', 'ok'], ['embed', 'embedding_error'], ['rerank', 'rerank_error']] as const) {

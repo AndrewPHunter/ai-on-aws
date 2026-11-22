@@ -1,5 +1,5 @@
-// The token check's invariants 1 to 4 ("Always true" in shared/README.md), one test each. Invariant 1 is about
-// verifying a signature, so the tokens are really signed, by the stand-in issuer in test-support/.
+// The token check's invariants 1 to 4 and 6 ("Always true" in shared/README.md), one test each. They are about
+// verifying a signed token, so the tokens are really signed, by the stand-in issuer in test-support/.
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -7,20 +7,21 @@ import type { TestContext } from 'node:test';
 
 import { startStandInIssuer } from '../../test-support/issuer.ts';
 import type { MintOptions } from '../../test-support/issuer.ts';
-import { createAccessTokenCheck } from '../access-token.ts';
+import { createAccessTokenCheck, refusalAnswer } from '../access-token.ts';
+import type { RefusalReason } from '../access-token.ts';
 
 const START = new Date('2026-03-01T10:00:00.000Z').getTime();
 const ISSUER = 'http://localhost:8090/realms/lab';
 const MIN_LIFE = 150;
 const WAIT = 30_000;
-const CLAIMS = { aud: ['lab-agents', 'lab-case-system'], client_id: 'desk', sub: 'subject-riley', preferred_username: 'riley', name: 'Riley Reviewer', roles: ['reviewer'] };
+const CLAIMS = { aud: ['lab-agents', 'lab-case-system'], client_id: 'desk', sub: 'subject-riley', preferred_username: 'riley', name: 'Riley Reviewer', roles: ['reviewer'], scope: 'openid agents:intake' };
 
 async function rig(t: TestContext) {
   let at = START;
   const now = (): Date => new Date(at);
   const issuer = await startStandInIssuer({ clientId: 'desk', clientSecret: 'stand-in', redirectUri: 'http://localhost:3000/cb', postLogoutRedirectUri: 'http://localhost:3000/', now, issuer: ISSUER });
   t.after(() => issuer.close());
-  const settings = { discoveryUrl: issuer.discoveryUrl, issuer: ISSUER, audience: 'lab-agents', allowedClients: ['desk'], rolesClaim: 'roles', minRemainingSeconds: MIN_LIFE };
+  const settings = { discoveryUrl: issuer.discoveryUrl, issuer: ISSUER, audience: 'lab-agents', allowedClients: ['desk'], requiredScopes: ['agents:intake', 'agents:expert'], rolesClaim: 'roles', minRemainingSeconds: MIN_LIFE };
   return {
     issuer,
     advance: (ms: number) => (at += ms),
@@ -52,7 +53,7 @@ test('shared 1. a caller only for a token that passes every condition; each fail
   const token = await r.mint();
   assert.deepEqual(await check(`Bearer ${token}`), {
     kind: 'caller',
-    caller: { subject: 'subject-riley', username: 'riley', name: 'Riley Reviewer', clientId: 'desk', roles: ['reviewer'], expiresAt: new Date(START + 600_000), token },
+    caller: { subject: 'subject-riley', username: 'riley', name: 'Riley Reviewer', clientId: 'desk', roles: ['reviewer'], scopes: ['openid', 'agents:intake'], expiresAt: new Date(START + 600_000), token },
   });
   for (const row of REFUSALS) {
     const result = await check(await row.header(r));
@@ -102,4 +103,25 @@ test('shared 4. no refusal sentence contains the token', async (t) => {
     const token = header?.split(' ')[1];
     assert.ok(result.kind === 'refused' && token !== undefined ? !result.detail.includes(token) : result.kind === 'refused', row.name);
   }
+});
+
+test('shared 6. a token needs one of the required scopes; lacking all is 403 naming them, every other refusal 401', async (t) => {
+  const r = await rig(t);
+  const check = r.check();
+  const rows: { name: string; scope: string | undefined; result: string }[] = [
+    { name: 'one required scope held among several', scope: 'openid agents:expert profile', result: 'caller' },
+    { name: 'none held', scope: 'openid profile', result: 'insufficient_scope' },
+    { name: 'no scope claim', scope: undefined, result: 'insufficient_scope' },
+    { name: 'only a substring of a required scope', scope: 'agents:intak', result: 'insufficient_scope' },
+  ];
+  for (const row of rows) {
+    const result = await check(await bearer(r.mint({ claims: { scope: row.scope } })));
+    assert.equal(result.kind === 'refused' ? result.reason : result.kind, row.result, row.name);
+    if (result.kind === 'refused') {
+      const answer = refusalAnswer(result);
+      assert.deepEqual([answer.status, answer.wwwAuthenticate], [403, 'Bearer error="insufficient_scope", scope="agents:intake agents:expert"'], row.name);
+    }
+  }
+  const others: Exclude<RefusalReason, 'insufficient_scope'>[] = ['missing', 'malformed', 'bad_signature', 'wrong_issuer', 'wrong_audience', 'wrong_client', 'expired', 'expires_too_soon'];
+  for (const reason of others) assert.equal(refusalAnswer({ kind: 'refused', reason, detail: 'Refused.' }).status, 401, reason);
 });

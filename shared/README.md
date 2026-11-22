@@ -30,5 +30,7 @@ Three agents in [`agents/`](../agents/README.md) implement the agent contract: t
 3. Keys are fetched once, and again only for an unknown key, at most once per wait.
 4. No refusal sentence contains the token.
 5. A request or a response outside the agent contract's schema is refused, and one inside it is returned unchanged.
+6. A token is accepted only if it carries at least one of the scopes the service requires. One that carries none is refused as `insufficient_scope`, and the answer every front door gives for that refusal is 403 naming the scopes; every other refusal stays 401.
+7. The token exchange returns a token only when the provider granted every scope asked for. A provider's refusal, a grant that leaves a scope out, and a provider that does not answer are three different results, and none of their sentences holds a token or the client secret.
 
-`shared/test/` has one test for each, named `shared` and its number. The first four use real signed tokens from the stand-in issuer in [`test-support/`](../test-support/README.md).
+`shared/test/` has one test for each, named `shared` and its number. Tests 1 to 4 and 6 use real signed tokens from the stand-in issuer in [`test-support/`](../test-support/README.md).

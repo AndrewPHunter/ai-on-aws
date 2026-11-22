@@ -26,6 +26,7 @@ const person = (name: string, roles: string[]): Caller => ({
   name,
   clientId: 'desk',
   roles,
+  scopes: ['cases:write'],
   expiresAt: new Date('2026-01-01T10:00:00.000Z'),
   token: name,
 });
