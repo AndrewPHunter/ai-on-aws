@@ -111,5 +111,5 @@ Every setting is required; the server stops at start-up naming any that is missi
 - **The cookie is not marked `Secure`,** because the lab is served over plain HTTP on this machine.
 - **Inquiries and runs recorded before sign-in existed** show no author.
 - **A run that is in progress when the server stops is marked as failed** when it starts again. The agent may still have acted.
-- **The React app has no automated tests.** It is typechecked, linted and built by the repository check. The screens from before sign-in were looked at by hand; the sign-in screen, the signed-in rail and the reviewer-only decision have not been.
+- **The React app has one test, of its formatting helpers.** It is typechecked, linted and built by the repository check. The screens from before sign-in were looked at by hand; the sign-in screen, the signed-in rail and the reviewer-only decision have not been.
 - **Sign-in has been tested against a stand-in provider only** (`test-support/issuer.ts`), not yet through this server against the lab's Keycloak.
