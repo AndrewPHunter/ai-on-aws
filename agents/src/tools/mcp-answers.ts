@@ -13,8 +13,8 @@ export type ServiceSentences = {
 export function serviceSentences(name: string): ServiceSentences {
   return {
     unreachable: `The ${name} could not be reached.`,
-    refusedToken: `The ${name} refused the caller's token.`,
-    couldNotCheck: `The ${name} could not check the caller's token.`,
+    refusedToken: `The ${name} refused the agent's token.`,
+    couldNotCheck: `The ${name} could not check the agent's token.`,
     notText: `The ${name} answered with something that is not text.`,
   };
 }

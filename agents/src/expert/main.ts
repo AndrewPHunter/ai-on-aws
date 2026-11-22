@@ -13,9 +13,9 @@ serveAgent({
   readOwn: readKnowledgeMcpUrl,
   title: 'Label expert (Strands)',
   // The shared startup gives the shared output allowance; this agent's own is set here.
-  build: ({ identity, now, limits, model }, knowledgeMcpUrl) => (message, caller) =>
+  build: ({ identity, now, limits, model, exchange }, knowledgeMcpUrl) => (message, caller) =>
     handleQuestion(
-      { identity, now, limits, knowledgeMcpUrl, settings: EXPERT_SETTINGS, model: { ...model, maxTokens: OUTPUT_ALLOWANCE } },
+      { identity, now, limits, knowledgeMcpUrl, exchange, settings: EXPERT_SETTINGS, model: { ...model, maxTokens: OUTPUT_ALLOWANCE } },
       message,
       caller,
     ),

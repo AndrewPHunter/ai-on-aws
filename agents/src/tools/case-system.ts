@@ -1,6 +1,6 @@
 // What is particular to the case system, whichever implementation is calling it: the context headers
-// that say which inbound message and which agent a change comes from, which of its tools change a
-// case, how to read its answers, and what they mean for a run's record. Also the hand-written
+// that say which inbound message a change comes from, the tools an intake run needs and which of them
+// change a case, how to read its answers, and what they mean for a run's record. Also the hand-written
 // agent's own connection to its three MCP tools (connectCaseTools); the Strands agent connects with
 // Strands' MCP client and uses everything else here.
 
@@ -16,23 +16,32 @@ import type { Connected, ToolOutcome } from './tool-set.ts';
 // The tools that change a case. A lost reply from one of these leaves the outcome unknown.
 export const WRITING_TOOLS: readonly string[] = ['create_case', 'add_follow_up'];
 
-// The four headers every request to the case system carries for one run. They say which inbound
-// message and which agent a change comes from, and who sent the message. Built here, by code, from
-// the message as it was received: no implementation lets the model supply or change them.
-export function contextHeaders(message: InboundMessage, agentId: string): Record<string, string> {
+// The three tools an intake run needs.
+export const CASE_TOOLS: readonly string[] = ['create_case', 'find_case', 'add_follow_up'];
+
+// Why a run cannot go on with the tools the case system offered, or undefined when all three are there.
+export function missingCaseTools(offered: readonly string[]): string | undefined {
+  const missing = CASE_TOOLS.filter((name) => !offered.includes(name));
+  return missing.length === 0 ? undefined : `The case system does not offer ${missing.join(', ')}.`;
+}
+
+// The three headers every request to the case system carries for one run. They say which inbound
+// message a change comes from, and who sent the message. Built here, by code, from the message as it
+// was received: no implementation lets the model supply or change them. Which agent makes the change
+// the case system reads from the token.
+export function contextHeaders(message: InboundMessage): Record<string, string> {
   return {
     'x-message-id': message.id,
     'x-received-at': message.received_at,
-    'x-agent-id': agentId,
     // Percent-encoded, because a header cannot carry every character a name can contain.
     'x-sender': encodeURIComponent(message.sender),
   };
 }
 
-// Every header a request to the case system carries for one run: the four context headers, and the
-// access token of the caller the run is for, passed on as it was presented.
-export function caseSystemHeaders(message: InboundMessage, agentId: string, callerToken: string): Record<string, string> {
-  return { ...contextHeaders(message, agentId), authorization: `Bearer ${callerToken}` };
+// Every header a request to the case system carries for one run: the three context headers, and the
+// token the agent got for the case system by exchanging the caller's (tool-token.ts).
+export function caseSystemHeaders(message: InboundMessage, caseSystemToken: string): Record<string, string> {
+  return { ...contextHeaders(message), authorization: `Bearer ${caseSystemToken}` };
 }
 
 // Read with the shared reader in mcp-answers.ts, in the case system's name.
@@ -60,12 +69,12 @@ export async function connectCaseTools(
   mcpUrl: string,
   message: InboundMessage,
   agentId: string,
-  callerToken: string,
+  caseSystemToken: string,
   timeoutMs: number,
 ): Promise<Connected> {
   const client = new Client({ name: agentId, version: '1' });
   const transport = new StreamableHTTPClientTransport(new URL(mcpUrl), {
-    requestInit: { headers: caseSystemHeaders(message, agentId, callerToken) },
+    requestInit: { headers: caseSystemHeaders(message, caseSystemToken) },
   });
 
   let definitions: ToolDefinition[];
