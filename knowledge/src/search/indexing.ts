@@ -12,7 +12,13 @@
 //
 // The chunk report records the sha256 of each chunk file, and each file is checked against it before anything is
 // sent. The index name comes from the report's bytes, so it changes whenever any chunk's bytes change.
+//
+// With an embed report (knowledge/embed.sh), it must name this chunk report, or nothing is built (exit 1). The vector
+// files are checked against its hash, each document is loaded with its vector (and hasVector), the index records the
+// embedding identity in _meta, the name covers the embed report's bytes too, and after the load the count of
+// documents with a vector must equal the report's. Bulk requests are cut by size, not by count.
 
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -20,23 +26,30 @@ import { z } from 'zod';
 
 import { chunkPath } from '../chunk/run.ts';
 import { sha256 } from '../files.ts';
+import { decodeVector } from '../vectors/recipe.ts';
+import type { EmbeddingIdentity } from '../vectors/recipe.ts';
 import type { Engine, EngineAnswer } from './engine.ts';
-import { INDEX_DEFINITION, INDEX_PREFIX, indexName } from './mapping.ts';
+import { INDEX_PREFIX, indexDefinition, indexName } from './mapping.ts';
+
+// The embedding stage's report, read here when present. Named here as well as by the stage, so indexing does not
+// depend on the stage's module.
+export const EMBED_REPORT = 'embed-report.json';
 
 export type IndexOptions = {
   engine: Engine;
   dataDir: string;
   alias: string;
-  // Chunks sent in one bulk request.
-  batchSize: number;
+  // The most bytes of body one bulk request carries. A document larger than this is sent alone.
+  batchBytes: number;
   log: (line: string) => void;
 };
 
 export type IndexOutcome = {
   exitCode: 0 | 1;
+  // The index named from what was read; when the embed report names other chunks, the one that would have been built.
   index: string;
   chunks: number;
-  changed: 'nothing' | 'alias-moved' | 'built' | 'count-differed' | 'items-refused';
+  changed: 'nothing' | 'alias-moved' | 'built' | 'count-differed' | 'items-refused' | 'vectors-differed' | 'embed-report-for-other-chunks';
   olderIndexes: string[];
 };
 
@@ -169,6 +182,81 @@ export async function readChunks(dataDir: string): Promise<{ report: Buffer; tot
   return { report, total: parsed.data.chunks.total, chunks };
 }
 
+const embedReportSchema = z.object({
+  model: z.object({ repository: z.string(), revision: z.string(), servedAs: z.string() }),
+  dimensions: z.number().int().positive(),
+  recipe: z.string(),
+  instruction: z.string(),
+  chunkReportSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  counts: z.object({ chunks: z.number().int().nonnegative(), vectors: z.number().int().nonnegative(), withoutVector: z.number().int().nonnegative() }),
+  files: z.array(z.string().regex(/^[0-9a-f-]{36}\/\d+\.jsonl$/)),
+  vectorFilesSha256: z.string().regex(/^[0-9a-f]{64}$/),
+});
+
+export type Embedding = {
+  // The embed report's bytes, part of the index's name.
+  report: Buffer;
+  identity: EmbeddingIdentity;
+  vectorCount: number;
+  // Each vector by chunk id, as float32 (as the server returned it): about 4 KB each.
+  vectors: Map<string, Float32Array>;
+};
+
+const vectorLineSchema = z.object({ id: z.string(), vector: z.string() });
+
+// The embed report and the vectors it describes, or null when there is no embed report. 'other-chunks' when the
+// report names a chunk report other than the one being loaded. The vector files are checked against the report's
+// hash, and each vector against its dimensions, before anything is sent.
+export async function readEmbedding(dataDir: string, chunkReport: Buffer): Promise<Embedding | 'other-chunks' | null> {
+  let report: Buffer;
+  try {
+    report = await readFile(join(dataDir, EMBED_REPORT));
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null;
+    throw new IndexingError(`${EMBED_REPORT} could not be read`);
+  }
+  const parsed = embedReportSchema.safeParse(parseLabelJson(report.toString('utf8'), EMBED_REPORT));
+  if (!parsed.success) throw new IndexingError(`${EMBED_REPORT} is not an embed report: run knowledge/embed.sh`);
+  const embed = parsed.data;
+  if (embed.chunkReportSha256 !== sha256(chunkReport)) return 'other-chunks';
+
+  const vectors = new Map<string, Float32Array>();
+  // The files' bytes are hashed as they are read, in the report's order, so none is held after it is parsed.
+  const hash = createHash('sha256');
+  for (const file of embed.files) {
+    const shown = `vectors/${file}`;
+    const bytes = await readNeeded(join(dataDir, 'vectors', file), shown);
+    hash.update(bytes);
+    for (const [at, line] of bytes.toString('utf8').split('\n').entries()) {
+      if (line === '') continue;
+      const entry = vectorLineSchema.safeParse(parseLabelJson(line, `${shown} line ${at + 1}`));
+      if (!entry.success) throw new IndexingError(`${shown} line ${at + 1} is not a chunk id and a vector: run knowledge/embed.sh`);
+      const values = decodeVector(entry.data.vector);
+      if (values.length !== embed.dimensions) throw new IndexingError(`${shown} line ${at + 1} has a vector of other than ${embed.dimensions} numbers`);
+      vectors.set(entry.data.id, values);
+    }
+  }
+  if (hash.digest('hex') !== embed.vectorFilesSha256) {
+    throw new IndexingError(`the vector files do not match the sha256 in ${EMBED_REPORT}: run knowledge/embed.sh again`);
+  }
+  if (vectors.size !== embed.counts.vectors) {
+    throw new IndexingError(`the vector files hold ${vectors.size} vectors, ${EMBED_REPORT} counts ${embed.counts.vectors}: run knowledge/embed.sh again`);
+  }
+  return {
+    report,
+    identity: {
+      repository: embed.model.repository,
+      revision: embed.model.revision,
+      dimensions: embed.dimensions,
+      recipe: embed.recipe,
+      instruction: embed.instruction,
+      vectorsSha256: embed.vectorFilesSha256,
+    },
+    vectorCount: embed.counts.vectors,
+    vectors,
+  };
+}
+
 // Removes an index this run made, after a failure, and says what became of it. An index the alias points at is never
 // removed: an alias move whose answer was lost may still have been made.
 async function removeAfterFailure(engine: Engine, alias: string, index: string): Promise<string> {
@@ -184,20 +272,40 @@ async function removeAfterFailure(engine: Engine, alias: string, index: string):
   return `${index} could not be removed (${describe(answer)}): ${index} is left behind; ${alias} left as it was`;
 }
 
-type Built = { held: number } | { failed: 'count-differed' | 'items-refused'; detail: string };
+type Built = { held: number } | { failed: 'count-differed' | 'items-refused' | 'vectors-differed'; detail: string };
 
-// Creates the index, sends every chunk once, refreshes and counts. Returns the count, or the outcome that makes the
-// run a failure (exit 1). Throws IndexingError when the engine could not be asked or answered in a way that stops the
-// run. Removes nothing: the caller does.
-async function build(options: IndexOptions, index: string, chunks: readonly { id: string }[]): Promise<Built> {
+// The bulk bodies for these chunks, one at a time: each an action line and a document line per chunk, cut so that no
+// body is over the size given (a single document over it is sent alone). Every chunk is in exactly one body. Made
+// as they are sent, so only one body (about 8 MB) is held at a time.
+export function* bulkBodies(index: string, chunks: readonly { id: string }[], embedding: Embedding | null, maxBytes: number): Generator<string> {
+  let current: string[] = [];
+  let size = 0;
+  for (const chunk of chunks) {
+    const vector = embedding?.vectors.get(chunk.id);
+    const document = embedding === null ? chunk : { ...chunk, hasVector: vector !== undefined, ...(vector === undefined ? {} : { embedding: Array.from(vector) }) };
+    const pair = `${JSON.stringify({ index: { _index: index, _id: chunk.id } })}\n${JSON.stringify(document)}\n`;
+    const bytes = Buffer.byteLength(pair, 'utf8');
+    if (current.length > 0 && size + bytes > maxBytes) {
+      yield current.join('');
+      current = [];
+      size = 0;
+    }
+    current.push(pair);
+    size += bytes;
+  }
+  if (current.length > 0) yield current.join('');
+}
+
+// Creates the index, sends every chunk once, refreshes and counts (and, with vectors, counts the documents that have
+// one). Returns the count, or the outcome that makes the run a failure (exit 1). Throws IndexingError when the engine
+// could not be asked or answered in a way that stops the run. Removes nothing: the caller does.
+async function build(options: IndexOptions, index: string, chunks: readonly { id: string }[], embedding: Embedding | null): Promise<Built> {
   const { engine } = options;
-  await expect(engine, [200], 'PUT', `/${index}`, INDEX_DEFINITION);
+  await expect(engine, [200], 'PUT', `/${index}`, indexDefinition(embedding?.identity ?? null));
   let failedItems = 0;
   let firstErrorType: string | null = null;
-  for (let start = 0; start < chunks.length; start += options.batchSize) {
-    const batch = chunks.slice(start, start + options.batchSize);
-    const lines = batch.flatMap((chunk) => [JSON.stringify({ index: { _index: index, _id: chunk.id } }), JSON.stringify(chunk)]);
-    const answer = bulkSchema.safeParse(await expect(engine, [200], 'POST', '/_bulk', `${lines.join('\n')}\n`, 'application/x-ndjson'));
+  for (const body of bulkBodies(index, chunks, embedding, options.batchBytes)) {
+    const answer = bulkSchema.safeParse(await expect(engine, [200], 'POST', '/_bulk', body, 'application/x-ndjson'));
     if (!answer.success) throw new IndexingError('POST /_bulk: the answer is not a bulk result');
     for (const item of answer.data.items) {
       const error = item.index?.error;
@@ -217,6 +325,14 @@ async function build(options: IndexOptions, index: string, chunks: readonly { id
   await expect(engine, [200], 'POST', `/${index}/_refresh`);
   const held = await count(engine, index);
   if (held !== chunks.length) return { failed: 'count-differed', detail: `the engine holds ${held} documents, ${chunks.length} chunks were read` };
+  if (embedding !== null) {
+    const body = await expect(engine, [200], 'POST', `/${index}/_count`, { query: { term: { hasVector: true } } });
+    const counted = z.object({ count: z.number().int().nonnegative() }).safeParse(body);
+    if (!counted.success) throw new IndexingError(`POST /${index}/_count: the answer has no count`);
+    if (counted.data.count !== embedding.vectorCount) {
+      return { failed: 'vectors-differed', detail: `the engine holds ${counted.data.count} documents with a vector, the embed report counts ${embedding.vectorCount}` };
+    }
+  }
   return { held };
 }
 
@@ -227,8 +343,13 @@ function reasonOf(error: unknown, otherwise: string): string {
 export async function indexChunks(options: IndexOptions): Promise<IndexOutcome> {
   const { engine, alias, log } = options;
   const { report, chunks } = await readChunks(options.dataDir);
-  const index = indexName(report);
-  log(`index ${index} for ${chunks.length} chunks`);
+  const embedding = await readEmbedding(options.dataDir, report);
+  if (embedding === 'other-chunks') {
+    log(`${EMBED_REPORT} was made from other chunks than the chunk report's: run knowledge/embed.sh again. Nothing was built and ${alias} was left as it was`);
+    return { exitCode: 1, index: indexName(report), chunks: chunks.length, changed: 'embed-report-for-other-chunks', olderIndexes: [] };
+  }
+  const index = indexName(report, indexDefinition(embedding?.identity ?? null), embedding?.report ?? null);
+  log(`index ${index} for ${chunks.length} chunks, ${embedding === null ? 'without vectors' : `${embedding.vectorCount} with a vector`}`);
 
   const targets = await aliasTargets(engine, alias);
   if (await exists(engine, index)) {
@@ -250,7 +371,7 @@ export async function indexChunks(options: IndexOptions): Promise<IndexOutcome> 
   // but success removes it.
   let built: Built;
   try {
-    built = await build(options, index, chunks);
+    built = await build(options, index, chunks, embedding);
   } catch (error) {
     throw new IndexingError(`${reasonOf(error, 'the run stopped with an unexpected error')}; ${await removeAfterFailure(engine, alias, index)}`);
   }

@@ -204,6 +204,6 @@ The tests' limits are real time limits, shorter than the agent's own: a model re
 - Which of several matching labels is used is the model's choice. It is visible only in the citation.
 - Whether a message is a report or a question is the model's judgement. A bare report of a side effect is declined as `not_a_label_question` by instruction, not by a check.
 - The reading allowance is counted in characters, not tokens, so it is safe only up to the worst rate measured. A passage denser than that could still overflow the context, and the run would then end `failed` with the model server's status.
-- No vectors, fusion or reranking yet: the retrieval service's keyword search is the only strategy.
+- No choice of how passages are ranked: the retrieval service ranks by its own setting (`SEARCH_STRATEGY`: keyword, vector, fused or fused_reranked; keyword in the lab's compose file), and the retrieval step records the strategy the service reports it ran, with each hit's score as the service returned it.
 - One implementation, on Strands. The two intake agents exist to show what a framework's loop does and what it leaves to the agent's own code, and that comparison is made. This agent's subject is retrieval and what code checks about an answer. Evaluation scores an agent, so a second loop would double what is scored and show nothing new.
 - No hand-off to the intake agent when a message reports an adverse event: it is declined, and the caller must send it to intake.

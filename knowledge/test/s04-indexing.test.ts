@@ -25,7 +25,7 @@ test('S4. indexing: every chunk once, the alias moved, then nothing changed on a
   const fake = fakeEngine();
   standIn.answer(fake.handle);
   const { engine } = testEngine(standIn.url);
-  const run = () => indexChunks({ engine, dataDir: where.dataDir, alias: 'labels', batchSize: 2, log: () => {} });
+  const run = () => indexChunks({ engine, dataDir: where.dataDir, alias: 'labels', batchBytes: 1500, log: () => {} });
 
   const ids = await writeChunks(where.dataDir, 3);
   const first = await run();

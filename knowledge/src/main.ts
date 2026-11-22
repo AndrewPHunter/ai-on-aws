@@ -16,5 +16,7 @@ const code = await runCommand(process.argv.slice(2), {
   warn: (line) => {
     process.stderr.write(`${line}\n`)
   },
+  // Read by the embed command only, for its model settings (passed by --env-file).
+  env: process.env,
 })
 process.exitCode = code

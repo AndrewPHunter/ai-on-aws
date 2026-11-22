@@ -35,7 +35,7 @@ import {
 } from '../src/expert/retrieval.ts';
 import { expertSettingsFrom } from '../src/expert/serve.ts';
 import { EXPERT_SETTINGS } from '../src/expert/settings.ts';
-import { CUT_OFF_AGAIN, RETRIEVAL_STRATEGY, answerNotPassed, endedWithoutFinalTool, handleQuestion } from '../src/expert/strands.ts';
+import { CUT_OFF_AGAIN, answerNotPassed, endedWithoutFinalTool, handleQuestion } from '../src/expert/strands.ts';
 import {
   AGENT_START,
   agentClock,
@@ -157,7 +157,7 @@ test('E01. find, search and an accepted answer: completed, answered, a reply wit
   assert.deepEqual(kinds(response), ['model', 'tool', 'model', 'retrieval', 'model']);
   const retrieval = onlyItem(retrievalSteps(response), 'retrieval step');
   assert.equal(retrieval.query, 'usual dose');
-  assert.equal(retrieval.strategy, RETRIEVAL_STRATEGY);
+  assert.equal(retrieval.strategy, 'keyword');
   assert.deepEqual(
     retrieval.hits.map((hit) => [hit.drug, hit.section, hit.score, hit.excerpt, hit.passage, hit.handle, hit.shown]),
     [
@@ -873,4 +873,36 @@ test('E23. the model asking for two calls in one turn: they run one at a time, i
   const order = r.retrieval.standIn.received.map((request) => (prop(request.body, 'collapse') === undefined ? 'search' : 'find'));
   assert.deepEqual(order, ['find', 'search']);
   assert.equal(response.outcome, 'completed', response.stop_reason ?? '');
+});
+
+test('V19. the retrieval step carries the strategy the service reported, and each hit the score it returned', async (t) => {
+  // The labelled stand-in MCP server answers search_label as a service set to fused_reranked would.
+  const passage = {
+    chunk_id: `${EXAMPLAMAB.setId}/3/sec-1/body/1`,
+    text: 'Examplamab is given at 1,200 mg once a day. Take each dose with food.',
+    score: 0.8125,
+    part: 'body',
+    type: 'text',
+    section: { number: '2.1', title: '2.1 Invented section 1', path: ['2 DOSAGE AND ADMINISTRATION', '2.1 Invented section 1'] },
+    position: { ordinal: 1 },
+    label: { set_id: EXAMPLAMAB.setId, version: 3, effective_date: '20240102', kind: 'prescription', source: EXAMPLAMAB.source },
+    ranks: { keyword: 2, vector: 1, fused: 1, reranked: 1 },
+    scores: { keyword: 7.5, vector: 0.62, fused: 0.0325, reranked: 0.8125 },
+  };
+  const tokens = await startExpertTokens(t);
+  const mcpUrl = await startOddRetrieval(t, {
+    search: { content: [{ type: 'text', text: JSON.stringify({ set_id: EXAMPLAMAB.setId, strategy: 'fused_reranked', passages: [passage] }) }], isError: false },
+  });
+  const model = await startScriptedModel(t, [
+    toolCalls(find('Examplamab')),
+    toolCalls(search(EXAMPLAMAB.setId, 'dose')),
+    toolCalls(answer(statement('Examplamab is given at 1,200 mg once a day.', ['P1'], 'given at 1,200 mg once a day'))),
+  ]);
+
+  const response = await runExpert({ model, mcpUrl, caller: await tokens.caller() }, QUESTION);
+
+  assert.equal(response.outcome, 'completed', response.stop_reason ?? '');
+  const step = onlyItem(retrievalSteps(response), 'retrieval step');
+  assert.equal(step.strategy, 'fused_reranked');
+  assert.deepEqual(step.hits.map((hit) => hit.score), [0.8125]);
 });

@@ -6,10 +6,12 @@ import { createServer } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { TestContext } from 'node:test';
 
-export type SearchRequest = { method: string; path: string; body: unknown; raw: string };
+// headers: every header the request arrived with, so a test can show what was (and was not) sent to the engine.
+export type SearchRequest = { method: string; path: string; body: unknown; raw: string; headers: Record<string, string | string[] | undefined> };
 
 export type SearchReply =
-  | { status: number; body?: unknown }
+  // delayMs: answer only after this long.
+  | { status: number; body?: unknown; delayMs?: number }
   // Answer nothing until the test lets go (the test aborts the client's deadline meanwhile).
   | 'hold'
   // Close the connection without answering.
@@ -46,7 +48,7 @@ export async function startSearchStandIn(t: TestContext): Promise<SearchStandIn>
     request.on('data', (chunk: Buffer) => parts.push(chunk));
     request.on('end', () => {
       const raw = Buffer.concat(parts).toString('utf8');
-      const recorded = { method: request.method ?? '', path: request.url ?? '', body: parse(raw), raw };
+      const recorded = { method: request.method ?? '', path: request.url ?? '', body: parse(raw), raw, headers: { ...request.headers } };
       received.push(recorded);
       const reply = handler(recorded);
       if (reply === 'drop') {
@@ -67,8 +69,13 @@ export async function startSearchStandIn(t: TestContext): Promise<SearchStandIn>
         return;
       }
       const body = reply.body === undefined ? '' : typeof reply.body === 'string' ? reply.body : JSON.stringify(reply.body);
-      response.writeHead(reply.status, { 'content-type': 'application/json', 'x-stand-in': 'test' });
-      response.end(body);
+      const send = (): void => {
+        if (response.destroyed) return;
+        response.writeHead(reply.status, { 'content-type': 'application/json', 'x-stand-in': 'test' });
+        response.end(body);
+      };
+      if (reply.delayMs === undefined) send();
+      else setTimeout(send, reply.delayMs);
     });
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
