@@ -230,10 +230,11 @@ Settings, read by `agentSettingsFrom` in `run/serve.ts` (through `settingsFrom` 
 | 5 | `iss` equals `AUTH_ISSUER` | `wrong_issuer` |
 | 6 | `aud` contains `AUTH_ALLOWED_AUDIENCE` | `wrong_audience` |
 | 7 | `client_id` is in `AUTH_ALLOWED_CLIENTS` | `wrong_client` |
-| 8 | An `exp` claim, with at least 150 s left before it | `malformed` without one, `expires_too_soon` |
-| 9 | `sub`, `preferred_username`, `name` present and not empty; the roles claim a list of names if present | `malformed` |
+| 8 | `scope` holds at least one of `AUTH_REQUIRED_SCOPES` | `insufficient_scope`: 403 with `WWW-Authenticate: Bearer error="insufficient_scope", scope="agents:intake"` and `{"error":"forbidden","reason":"insufficient_scope","detail"}` |
+| 9 | An `exp` claim, with at least 150 s left before it | `malformed` without one, `expires_too_soon` |
+| 10 | `sub`, `preferred_username`, `name` present and not empty; the roles claim a list of names if present | `malformed` |
 
-A refusal is 401 with `WWW-Authenticate: Bearer error="invalid_token"` and `{"error":"unauthorized","reason","detail"}`. The provider's discovery document or keys not fetched within 5 s or not answered with 200, a discovery document naming another issuer or no key set, or a key set the check cannot use, is 503 `identity_unavailable`. Neither calls the handler, and neither answer contains the token. A failed fetch is not kept: the next request asks the provider again.
+A refusal is 401 with `WWW-Authenticate: Bearer error="invalid_token"` and `{"error":"unauthorized","reason","detail"}`, except a token without the scope, which is 403 with `WWW-Authenticate: Bearer error="insufficient_scope", scope="agents:intake"` and `{"error":"forbidden","reason","detail"}`. The provider's discovery document or keys not fetched within 5 s or not answered with 200, a discovery document naming another issuer or no key set, or a key set the check cannot use, is 503 `identity_unavailable`. Neither calls the handler, and neither answer contains the token. A failed fetch is not kept: the next request asks the provider again.
 
 The case system never sees this token. The agent exchanges it for the case-system token (step 5a), which the case system checks with its own settings (`tools/case-system/compose.yaml`). A token the agent accepts whose exchange is refused fails the run before anything is connected, with the reason in step 5a.
 

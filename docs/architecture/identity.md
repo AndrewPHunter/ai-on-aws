@@ -65,7 +65,7 @@ The realm file is read only at start. A running provider keeps the realm it impo
 |---|---|
 | Edits `realm/lab-realm.json` | Nothing, until the provider restarts. `docker compose up -d` does not restart it: the compose configuration has not changed |
 | Restarts the provider: `docker compose restart identity` at the repository root, or `docker compose -f platform/identity/compose.yaml restart identity` when it was started on its own | The edited realm is imported; new signing keys |
-| Then | Every access token issued before the restart is refused (`bad_signature`: its key is no longer published). Every client session ends at its next renewal, which the provider refuses (401 `not_signed_in`); its users sign in again |
+| Then | Every access token issued before the restart is refused (`bad_signature`: its key is no longer published). Every client session ends at its next refresh, which the provider refuses (401 `not_signed_in`); its users sign in again |
 
 A realm file that names a variable the identity secrets lack needs more than a restart. Every compose file that passes a secret requires it (`${NAME:?run platform/identity/setup.sh}`), so `docker compose up` stops before starting anything and names it.
 
@@ -243,7 +243,7 @@ Each request the client makes to the provider waits at most 10 s. The discovery 
 
 | Held | Where | For how long |
 |---|---|---|
-| The refresh and ID tokens; an access token for each scope the session has called with; the scopes granted; the user's subject, name, username and roles | The client's memory, in the session | Until sign-out, a failed refresh, or the client stops |
+| The newest refresh token; an access token for each target scope the session has called with; the scopes granted at sign-in; the user's subject, name, username and roles. Neither the access token nor the ID token from sign-in is kept | The client's memory, in the session | Until sign-out, a failed refresh, or the client stops |
 | Pending sign-ins (state, nonce, verifier, binding) | The client's memory | Until their callback, 10 minutes, or 1000 newer ones |
 | A pending sign-in's binding | The browser that started it, in the `desk_signin` cookie | Until the callback clears it, or 10 minutes |
 | Session identifier | The browser, in the `desk_session` cookie | Until sign-out clears it |
@@ -267,7 +267,15 @@ No token is written to disk or to the store, and no response carries a token, in
 | `cases:read` | Read cases |
 | `cases:review` | Decide a case |
 
-`/api/session` gives `{ user: { name, username, roles }, may: { agents, read_cases, decide_cases } }`, and `/api/agents` lists only the agents the session may run. A call for anything the session may not do is answered 403 `not_allowed` before the provider or the target is asked.
+What may be done is read from the scopes granted at sign-in, which the client keeps on the session. A token response without `scope` is taken as granting nothing.
+
+| Route | Answers |
+|---|---|
+| `GET /api/session` | `{ user: { name, username, roles }, may: { agents, read_cases, decide_cases } }`: the ids of the agents whose scope was granted, and whether `cases:read` and `cases:review` were. No token |
+| `GET /api/agents` | `{ agents: [{ id, name, description }] }`, only the agents whose scope was granted |
+| A call for anything the session may not do | 403 `not_allowed`, before the provider or the target is asked. An agent id that is not configured is 400 `unknown_agent` |
+| `GET /api/inquiries` | Only the inquiries the reader entered, matched by the subject who entered them |
+| Another person's inquiry: reading it, or starting a run on it | 404 `inquiry_not_found`, the answer an inquiry that does not exist gets |
 
 ### What the client sends downstream
 
@@ -285,8 +293,8 @@ A target is a scope. Before a call, the client takes the session's token for the
 | Order | Refreshes of one session run one at a time, in the order asked. Each uses the newest refresh token the provider has returned, which replaces the session's |
 | Two calls for the same scope at once | Share one refresh |
 | Calls for different scopes | Each gets its own token, never another scope's |
-| The provider refuses, or cannot be reached | The session is removed, the request answers 401 `not_signed_in`, and nothing is sent |
-| The provider answers, without the scope asked for | 403 `not_allowed`; the session stays |
+| The provider refuses, or cannot be reached; the session has no refresh token; or the new token lives less than the call needs | The session is removed, the request answers 401 `not_signed_in`, and nothing is sent |
+| The provider answers without the scope asked for, or with no `scope` at all | 403 `not_allowed`; the session stays, and keeps the refresh token that answer returned |
 
 A review is forwarded as `{ decision, note? }`, with no reviewer field; the case system takes the reviewer from the token.
 
@@ -343,10 +351,11 @@ What the provider issues, as the gate states it (G7, G8): `aud` is the one audie
 |---|---|---|
 | The exchange is refused: a 4xx from the provider, a scope asked for left out, or an answer that is not a bearer token | Ends `failed`; nothing is connected | "The agent could not get a token for the case system: " (or "for the retrieval service: ") and the exchange's detail, which holds no token or secret |
 | The exchange cannot be made: no answer in time, the provider not reached, a 5xx, a body that is not JSON | Ends `failed`; nothing is connected | "The agent could not get a token for the case system: the identity provider could not be reached or did not answer in time." (or the retrieval service) |
-| The tool server refuses the exchanged token at connection (401) | Ends `failed` | "The case system refused the agent's token." or "The retrieval service refused the agent's token." |
+| The tool server refuses the exchanged token at connection (401, or 403 for a missing scope) | Ends `failed` | "The case system refused the agent's token." or "The retrieval service refused the agent's token." |
 | The tool server cannot check it (503) | Ends `failed` | "The case system could not check the agent's token." or "The retrieval service could not check the agent's token." |
+| The tool server answers anything else, or not at all | Ends `failed` | "The case system could not be reached." or "The retrieval service could not be reached." |
 
-An exchange is not retried. A tool server's 403 at connection is not told apart: the agent names a refusal only for a 401 body (`"error":"unauthorized"`) and a 503 body (`"error":"identity_unavailable"`), and reads anything else as "The case system could not be reached." (or the retrieval service).
+An exchange is not retried.
 
 | AgentCore Runtime JWT authorizer setting | The agent's setting | Value in the lab |
 |---|---|---|
@@ -440,8 +449,8 @@ sequenceDiagram
 
 | Step | Who | What it holds or checks |
 |---|---|---|
-| 1. Sign-in | The client, with the provider | Access, refresh and ID tokens; the scopes the person's role grants. The ID token is checked; the access token is sent to nobody |
-| 2. Refresh for a target | The client, with the provider | A token for one scope: that scope's audiences, `client_id` `desk`. A scope the role does not grant is left out, and the client answers 403 `not_allowed` |
+| 1. Sign-in | The client, with the provider | Access, refresh and ID tokens; the scopes the person's role grants. The ID token is checked; the client keeps the refresh token and the scopes, and neither keeps nor sends the access token |
+| 2. Refresh for a target | The client, with the provider | Only for a scope granted at sign-in; any other call is 403 `not_allowed` before the provider is asked. A token for one scope: that scope's audiences, `client_id` `desk`. A response without that scope is 403 `not_allowed` too |
 | 3. The agent's check | The agent | Its own id in `aud`, an allowed client, its scope, 150 s left |
 | 4. The exchange | The agent, with the provider | As the agent: a token for the tool server's audience alone, the agent as `client_id`, the person's identity |
 | 5. The tool server's check | The case system or the retrieval service | Its audience, one of its own callers as `client_id`, one of its scopes; then the tool's or route's own scope |
@@ -482,12 +491,22 @@ The realm file holds a `${NAME}` placeholder where each secret goes, and no secr
 | The provider restarted | Tokens issued before are refused as `bad_signature`; client sessions end at their next refresh |
 | A token without the service's audience, or from a client the service does not accept | 401 `wrong_audience` or `wrong_client` |
 | A token with the service's audience but none of its scopes, or without a route's own scope | 403 `insufficient_scope`, naming the scopes |
-| A person's refresh for a scope their role does not grant | The provider answers 200 without it; the client answers 403 `not_allowed` and the session stays |
-| The client's refresh refused, or the provider not reached | The session ends; 401 `not_signed_in` |
+| A person asks the client for something their role does not grant | 403 `not_allowed`, before the provider is asked. A refresh answered without the scope asked for is also 403 `not_allowed`; the session stays |
+| The client's refresh refused, the provider not reached, or a new token too short for the call | The session ends; 401 `not_signed_in` |
 | An agent's exchange refused, or the provider not reached | The run ends `failed` with the reason; nothing is connected; not retried |
 | A machine cannot get a token | The knowledge gate exits 2; the evaluation runner records the question with the reason `no access token could be got` |
 | The provider does not answer on a running project's network, or a statement on this page about its realm or tokens does not hold | The gate exits 1 and names the first statement that does not hold |
 | The gate cannot run: no `platform/identity/.env`, no network for the project, or no report | The gate exits 2 and says why on standard error |
+
+## Measured by the planner, 2026-11-22
+
+On a trial stack built from this repository, run under Docker on an Apple-silicon laptop (arm64), with the chat model served on the GPU machine and the label index built:
+
+| Gate | Command | Result |
+|---|---|---|
+| Identity gate | `platform/identity/gate.sh` | 151 statements held, none failed |
+| Stack gate | `platform/identity/stack-gate.sh` | 102 statements held, none failed, none in `not_checked` |
+| Knowledge gate, with its token as its own client `knowledge-gate` | `knowledge/gate.sh` | 20 statements held |
 
 ## Not present
 
