@@ -1,9 +1,12 @@
 #!/bin/sh
-# Checks a running stack end to end, from inside its network: sign-in of both realm users through the
-# client and Keycloak, the cookies, the session, refused callbacks, a cross-site POST, sign-out; each
-# intake agent's and the case system's refusal of a request without a token; an inquiry to each intake
-# agent as each user, through to the end of its run; the reviewer role enforced on a review. Then, on the Docker host,
-# that the client wrote no revocation failure while the gate ran. See platform/identity/README.md.
+# Checks, from inside a running stack's network, that the realm, the agents, the tool servers and the client
+# agree: each agent's, the case system's and the retrieval service's refusal of a request without a token;
+# sign-in of the four people through the client and Keycloak, the cookies, refused callbacks, what each may
+# do and a cross-site POST; what each may and may not do through the client; an inquiry to each intake agent
+# and a question to the label expert, through each agent's exchange to its tool server and the end of the run;
+# an inquiry kept from anyone but who entered it; tokens the gate gets itself, presented to each service; and
+# sign-out. Then, on the Docker host, that the client wrote no revocation failure while the gate ran. See
+# platform/identity/README.md.
 #
 #   platform/identity/stack-gate.sh <compose-project>
 #
@@ -11,7 +14,8 @@
 # that project's default network, <compose-project>_default.
 #
 # Exit codes: 0 every statement holds, 1 a statement does not hold (the report lists every one that did
-# not), 2 could not run, with the reason on standard error: the project's network is missing, Compose
+# not; a statement the stack could not show, such as one that needs a model server, is listed under
+# not_checked and is neither), 2 could not run, with the reason on standard error: the project's network is missing, Compose
 # failed before a gate program ran, or a program produced no report. A report goes to standard output
 # only with exit 0 or 1, and nothing else ever does.
 set -eu
