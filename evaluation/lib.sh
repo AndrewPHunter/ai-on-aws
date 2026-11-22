@@ -5,7 +5,7 @@
 # with a read-only root filesystem, no capabilities and this user's ids. Mounted from the host: evaluation/ (read-only
 # unless a command records the sample), evaluation/data/ (writable), and read-only the code and data it reads beside
 # its own: knowledge/src (the shared reference rule), knowledge/corpus (the manifest), knowledge/data (the benchmark
-# and the chunks), agents/src (the expert's number rule) and platform/identity/src (sign-in, for the runner).
+# and the chunks) and agents/src (the expert's number rule).
 
 evaluation_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 repo_dir=$(dirname -- "$evaluation_dir")
@@ -46,7 +46,6 @@ run_tool() {
     --mount "type=bind,source=$repo_dir/knowledge/corpus,target=/repo/knowledge/corpus,readonly" \
     --mount "type=bind,source=$repo_dir/knowledge/data,target=/repo/knowledge/data,readonly" \
     --mount "type=bind,source=$repo_dir/agents/src,target=/repo/agents/src,readonly" \
-    --mount "type=bind,source=$repo_dir/platform/identity/src,target=/repo/platform/identity/src,readonly" \
     -w /repo "$EVALUATION_IMAGE" node evaluation/src/main.ts "$@"
 }
 

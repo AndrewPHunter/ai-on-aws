@@ -1,5 +1,5 @@
 // The command line of the evaluation commands, run through evaluation/src/main.ts by the scripts in evaluation/.
-// Every setting is a named flag; nothing has a default. The runner's identity secrets come from the environment it is
+// Every setting is a named flag; nothing has a default. The runner's client secret comes from the environment it is
 // given (platform/identity/.env, passed by Compose). Input and output (the transport, the clock, the environment, the
 // two output streams) are passed in, so the whole command line runs in tests.
 //
@@ -43,7 +43,7 @@ import { drawSample, sampleDifference, sampleSettingsSchema } from './sample.ts'
 import { isRefusal, scoreRun } from './score.ts';
 import type { Scores } from './score.ts';
 import { readSections } from './sections.ts';
-import { SignInFailed, TokenSource, signIn } from './sign-in.ts';
+import { SignInFailed, TokenSource, evaluationToken } from './sign-in.ts';
 import { formatScores } from './table.ts';
 import { REWORDED_FILE, isVariant, readVariant, variantPath } from './variant.ts';
 import type { Variant, VariantSample } from './variant.ts';
@@ -54,7 +54,7 @@ export type CommandIo = {
   log: (line: string) => void;
   warn: (line: string) => void;
   env: Readonly<Record<string, string | undefined>>;
-  // How the runner gets a token; signs in as the gates do unless a test gives its own.
+  // How the runner gets a token; as its own client, `evaluation`, unless a test gives its own.
   signIn?: () => Promise<{ token: string; expiresAt: number }>;
 };
 
@@ -219,10 +219,9 @@ async function run(argv: readonly string[], io: CommandIo): Promise<number> {
     const nowMs = (): number => io.now().getTime();
     let get = io.signIn;
     if (get === undefined) {
-      const secret = io.env.IDENTITY_DESK_CLIENT_SECRET;
-      const password = io.env.IDENTITY_DANA_PASSWORD;
-      if (!secret || !password) throw new UsageError('IDENTITY_DESK_CLIENT_SECRET and IDENTITY_DANA_PASSWORD must be set (evaluation/run.sh passes them)');
-      get = () => signIn(secret, password, nowMs);
+      const secret = io.env.IDENTITY_EVALUATION_CLIENT_SECRET;
+      if (!secret) throw new UsageError('IDENTITY_EVALUATION_CLIENT_SECRET must be set (evaluation/run.sh passes it)');
+      get = () => evaluationToken(secret, { fetch: io.fetch, now: nowMs });
     }
     const tokens = new TokenSource(get, nowMs);
     io.log(`sample variant: ${variant}`);

@@ -167,7 +167,7 @@ flowchart LR
     RS -- "fetch: mapping, _search, _count" --> OS
     RS -. "vector strategies: the query, the key" .-> EM
     RS -. "fused_reranked: the query and up to 20 passages, the key" .-> RR
-    GT -- "sign in as dana.desk" --> ID
+    GT -- "client credentials as knowledge-gate" --> ID
     GT -- "MCP with the token" --> RS
     GT -- "alias, count, mapping" --> OS
 ```
@@ -215,7 +215,7 @@ The figures measured for the embedding stage, the index build and each strategy 
 
 Every tool result is one MCP text item holding JSON: the result, or `{error, detail}` with `isError` set.
 
-The retrieval service's HTTP answers:
+The retrieval service accepts a token for the audience `knowledge`, issued to `expert` (the label expert's token, exchanged from its caller's) or `knowledge-gate` (the gate, by client credentials). Its HTTP answers:
 
 | Request | Answer |
 |---|---|
@@ -303,7 +303,7 @@ The agent that calls these two tools is the label expert: [expert-agent.md](expe
 | `index` | The same image, on the stack's network | The search engine only | `corpus/` and `data/` read-only |
 | `search` service | OpenSearch, no capabilities, no new privileges, not read-only (it writes its keystore at start) | The stack's network, no published port | None; a named volume for its data |
 | `knowledge` service | The `run` stage image, read-only, no capabilities | The stack's network; `127.0.0.1:8002` | None |
-| Gate | The same image, on the stack's network, through `knowledge/gate/compose.yaml` | The stack's network | `data/`, `corpus/` and `platform/identity/src/`, read-only |
+| Gate | The same image, on the stack's network, through `knowledge/gate/compose.yaml` | The stack's network | `data/` and `corpus/`, read-only |
 | Tests `knowledge 2.` to `knowledge 39.`, one per invariant above (none for 1, 31, 40 and 41), and one probe of the index command | `toolchain/check.sh` | None: the stand-ins are in memory, and the retrieval service listens on loopback | None |
 
 ## Parsing: problems and what follows

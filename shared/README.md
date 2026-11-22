@@ -21,6 +21,8 @@ What an answer from drug labels carries:
 
 `access-token.ts` is configured with the values AgentCore Runtime's JWT authorizer takes (a discovery URL, an allowed audience, allowed client IDs read from `client_id`, allowed scopes), and is given its clock and settings rather than reading them. `token-exchange.ts` is given its settings, `fetch`, its clock and its time limit; on AWS, AgentCore Identity takes its place.
 
+[`machine-token.ts`](machine-token.ts) is how a machine gets a token as its own client, by client credentials with its own secret: one request, never retried, the scopes left to the service to check. The evaluation harness and the knowledge gate use it, and their runs against the stack show it.
+
 Three agents in [`agents/`](../agents/README.md) implement the agent contract: the intake agent, built once with a hand-written loop and once on Strands, and the label expert, on Strands. The label expert produces citations, `label_answer` and retrieval steps. Hand-off steps are defined here and no agent produces them.
 
 ## Always true

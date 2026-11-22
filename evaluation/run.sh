@@ -1,6 +1,6 @@
 #!/bin/sh
 # Sends every sampled question to the label expert of a running stack, from a container on its network, as a client
-# does: the agent contract's request with a real access token (dana.desk, signed in as the gates do), at most 4 at
+# does: the agent contract's request with a real access token (got as its own client, evaluation, by client credentials), at most 4 at
 # once. Stores each response whole in evaluation/data/runs/<run-name>/responses.jsonl, and the run file run.json (the
 # sample variant and the SHA-256 of its file among them).
 #
