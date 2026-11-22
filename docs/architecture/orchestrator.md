@@ -75,7 +75,7 @@ sequenceDiagram
 | Whether the message reports an adverse event | The intake agent's own model and rules | Unchanged |
 | Which label questions to ask, and whether to ask again | The orchestrator's model | One tool, `ask_label_expert({ drug, question, replaces })`, in Strands' default loop. Tool calls of one turn run together, which is Strands' default |
 | Whether a question is put | Code | Every number in the question must be in the message (the expert's number rule); at most two questions a round and two rounds; the run must have a sub-agent call's time left |
-| What the model reads back | Code | For each question: whether the expert answered, its stop reason and its reply |
+| What the model reads back | Code | For each question: the expert's label answer, or that it did not complete, its stop reason and its reply |
 | The answer to a label question | The label expert | Unchanged |
 | The reply | Code | A sentence for each case action, each question as it was put with the expert's reply word for word, and a plain sentence for anything unfinished. What the model wrote is in the run's steps |
 | How the run ends | Code | The table under "How it ends" |
@@ -95,9 +95,9 @@ The expert accepts `agents:expert` or `agents:expert:delegated`. So desk staff r
 
 1. Every accepted message is sent to the intake agent once, unchanged and under its own id, by code, whatever the model does or fails to do.
 2. A label question is put to the expert only if every number in it is in the message, it is within two questions a round and two rounds, and the run has a sub-agent call's time left. A question not put is told to the model and named in the reply. Each question put is one call to the expert; the orchestrator sends none again.
-3. The model is shown, for each question, whether the expert answered, its stop reason and its reply, and nothing else of the run: not the intake agent's result.
-4. The reply is written by code. No text from the orchestrator's model is in it, and each expert reply shown is word for word. A question that was replaced is not shown.
-5. Citations are those of the expert replies shown, in that order. Case actions are the intake agent's. `label_answer` is absent.
+3. The model is shown, for each question, the expert's label answer or that it did not complete, its stop reason and its reply, and nothing else of the run: not the intake agent's result.
+4. The reply is written by code. No text from the orchestrator's model is in it, and each expert reply shown is word for word, except that its citation numbers are moved to their place in the combined list. A question that was replaced is not shown.
+5. Citations are those of the expert replies shown, in that order, so that each number in the reply names its own citation. Case actions are the intake agent's. `label_answer` is absent.
 6. A run ends `completed` only when screening completed and every question asked was answered, or replaced by one that was. Each other ending is the row of "How it ends" that describes it.
 7. Each sub-agent is sent a token the orchestrator exchanged for that agent, with its audience and scope, and never the token the orchestrator was called with. An exchange that fails is that call's failure.
 8. Every call to a sub-agent is a `delegation` step holding what was sent, and the sub-agent's whole response or the reason there is none.
@@ -113,7 +113,7 @@ The expert accepts `agents:expert` or `agents:expert:delegated`. So desk staff r
 | Did not complete | A label answer obtained | `stopped` | `adverse_event_screening_incomplete` | "This message has not been screened for an adverse event", why, and "Send it again.", then the label answer |
 | Did not complete | Nothing obtained | `failed` | the reason | The reason |
 
-Screening completed means the intake agent's response has outcome `completed`. The orchestrator sends no failed call again. Sending the same message again is safe: the case system opens one case per message.
+Screening completed means the intake agent's response has outcome `completed`. A question is answered when the expert's response to it has outcome `completed`, whatever its label answer: "no label was found" is an answer. The orchestrator sends no failed call again. Sending the same message again is safe: the case system opens one case per message.
 
 ## How it fails
 
