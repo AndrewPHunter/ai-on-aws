@@ -26,6 +26,8 @@ test('Q13. exit codes, and no question, answer, reply or reason in any output', 
   const knowledge = join(dir, 'knowledge');
   await mkdir(knowledge, { recursive: true });
   await writeFile(join(knowledge, 'chunk-report.json'), JSON.stringify({ labels: [] }));
+  await mkdir(join(knowledge, 'benchmark'), { recursive: true });
+  await writeFile(join(knowledge, 'benchmark', 'qa.jsonl'), `${questions.map(benchmarkLine).join('\n')}\n`);
 
   const outputs: string[] = [];
   const command = async (argv: string[]): Promise<number> => {
@@ -42,21 +44,21 @@ test('Q13. exit codes, and no question, answer, reply or reason in any output', 
   let n = 0;
   const agent = await startAgentStandIn(t, () => (n++ === 0 ? { status: 500, body: { error: 'Zyxreply in an error' } } : { status: 200, body: response({ labelAnswer: 'answered', reply: 'Zyxreply 12 mg. [1]' }) }));
   const runA = join(dir, 'runs', 'a');
-  assert.equal(await command(['run', '--sample', sample, '--run-dir', runA, '--agent-url', agent.url]), 1);
+  assert.equal(await command(['run', '--sample', sample, '--run-dir', runA, '--agent-url', agent.url, '--variant', 'original']), 1);
   // Retried: every question has a response: exit 0.
-  assert.equal(await command(['run', '--sample', sample, '--run-dir', runA, '--agent-url', agent.url, '--retry-failed']), 0);
+  assert.equal(await command(['run', '--sample', sample, '--run-dir', runA, '--agent-url', agent.url, '--variant', 'original', '--retry-failed']), 0);
 
   // Judged by hand-written verdicts that carry the reason text.
   await writeFile(join(runA, 'judgments.jsonl'), `${JSON.stringify({ qid: 'factual-0', ok: true, verdict: 'correct', reason: 'Zyxreason.' })}\n`);
   await writeFile(join(runA, 'judge.json'), '{}');
   assert.equal(await command(['score', '--sample', sample, '--run-dir', runA, '--knowledge-data', knowledge]), 0);
-  assert.equal(await command(['judge-check', '--sample', sample, '--run-dir', runA, '--count', '1']), 0);
+  assert.equal(await command(['judge-check', '--sample', sample, '--run-dir', runA, '--rubric', 'completeness', '--count', '1']), 0);
 
   const runB = join(dir, 'runs', 'b');
-  assert.equal(await command(['run', '--sample', sample, '--run-dir', runB, '--agent-url', agent.url]), 0);
+  assert.equal(await command(['run', '--sample', sample, '--run-dir', runB, '--agent-url', agent.url, '--variant', 'original']), 0);
   assert.equal(await command(['score', '--sample', sample, '--run-dir', runB, '--knowledge-data', knowledge]), 0);
   assert.equal(await command(['compare', '--run-a', runA, '--run-b', runB]), 0);
-  assert.equal(await command(['judge-prepare', '--sample', sample, '--run-dir', runB]), 0);
+  assert.equal(await command(['judge-prepare', '--sample', sample, '--run-dir', runB, '--rubric', 'answers-question']), 0);
 
   // Could not run: an unknown command, a missing flag, a run that does not exist, a sample that is not JSON.
   assert.equal(await command(['nonsense']), 2);
@@ -67,7 +69,7 @@ test('Q13. exit codes, and no question, answer, reply or reason in any output', 
   // The runner with no identity secrets and no injected sign-in.
   const bare = io();
   const { signIn: _unused, ...withoutSignIn } = bare.io;
-  assert.equal(await runCommand(['run', '--sample', sample, '--run-dir', join(dir, 'runs', 'c'), '--agent-url', agent.url], withoutSignIn), 2);
+  assert.equal(await runCommand(['run', '--sample', sample, '--run-dir', join(dir, 'runs', 'c'), '--agent-url', agent.url, '--variant', 'original'], withoutSignIn), 2);
   assert.match(bare.err.join('\n'), /IDENTITY_DESK_CLIENT_SECRET and IDENTITY_DANA_PASSWORD must be set/);
 
   const printed = outputs.join('\n');

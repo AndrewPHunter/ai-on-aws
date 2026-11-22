@@ -20,6 +20,7 @@ const questions = (n: number): Question[] => Array.from({ length: n }, (_, i) =>
 async function options(runDir: string, url: string, overrides: Partial<RunOptions> = {}): Promise<RunOptions> {
   return {
     questions: questions(6),
+    variant: 'original',
     sampleSha256: 'a'.repeat(64),
     runDir,
     agentUrl: url,

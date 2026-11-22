@@ -12,21 +12,42 @@ import { numbersIn } from '../../agents/src/expert/checks.ts';
 import { sectionMatches } from '../../knowledge/src/references.ts';
 import type { Question, QuestionType } from './benchmark.ts';
 import { QUESTION_TYPES } from './benchmark.ts';
+import { THIRD_NAMES, thirdCuts, thirdOf } from './overlap.ts';
+import type { Cuts, Third } from './overlap.ts';
+import { answersUncontradicted } from './rubric.ts';
+import type { AnswersJudgment, Coverage, Judgment, Verdict } from './rubric.ts';
 import type { CallRecord } from './run.ts';
 import { latestByQid } from './run.ts';
 import { percentile, wilson } from './stats.ts';
 import type { Share } from './stats.ts';
+import type { Variant } from './variant.ts';
+
+export { VERDICTS } from './rubric.ts';
+export type { Judgment, Verdict } from './rubric.ts';
 
 export type Section = { number: string | null; title: string | null };
 
-export const VERDICTS = ['correct', 'partly_correct', 'incorrect'] as const;
-export type Verdict = (typeof VERDICTS)[number];
-
-export type Judgment = { qid: string; ok: true; verdict: Verdict; reason: string } | { qid: string; ok: false; failure: string };
-
 // The yes-or-no measures, per question, that compare.sh pairs between two runs. Absent where a measure does not apply.
-export const MEASURES = ['declined_rightly', 'right_label', 'retrieved_any', 'retrieved_first', 'numbers', 'judged_correct'] as const;
+// judged_correct is the completeness rubric's "correct"; answers_uncontradicted the answers-question rubric's
+// "answers the question, uncontradicted".
+export const MEASURES = ['declined_rightly', 'right_label', 'retrieved_any', 'retrieved_first', 'numbers', 'judged_correct', 'answers_uncontradicted'] as const;
 export type Measure = (typeof MEASURES)[number];
+
+// The measures split into thirds of wording overlap, in score.sh and compare.sh.
+export const SPLIT_MEASURES = ['retrieved_first', 'retrieved_any', 'answers_uncontradicted'] as const satisfies readonly Measure[];
+
+export type AnswersShares = { answersUncontradicted: Share; contradicts: Share; coverage: Record<Coverage, Share> };
+
+export type OverlapScores = {
+  // Answerable sampled questions with an overlap, and those with no content words (no overlap, in no third).
+  questions: number;
+  withoutContentWords: number;
+  median: number | null;
+  cuts: Cuts | null;
+  thirds: { third: Third; name: string; questions: number; measures: Record<(typeof SPLIT_MEASURES)[number], Share> }[];
+  // Each answerable question's overlap and third (numbers only).
+  byQid: Record<string, { overlap: number | null; third: Third | null }>;
+};
 
 export type Effort = { count: number; median: number | null; p95: number | null };
 
@@ -59,6 +80,21 @@ export type Scores = {
   };
   // Null when no person has filled in the check file.
   agreement: null | { judgeAndPersonAgree: Share };
+  // The answers-question rubric; null when the run has not been judged under it.
+  answersQuestion: null | {
+    judged: number;
+    failures: number;
+    leftOut: number;
+    byType: Record<string, AnswersShares>;
+    all: AnswersShares;
+  };
+  // The judge and a person agree on "answers the question, uncontradicted"; null when no person has graded.
+  answersAgreement: null | { judgeAndPersonAgree: Share };
+  // The variant the run was made on, and the qids actually reworded (empty for the original variant).
+  variant: Variant;
+  rewordedQids: string[];
+  // Null when no wording overlap was given.
+  overlap: null | OverlapScores;
   perQuestion: Record<string, Partial<Record<Measure, boolean>>>;
 };
 
@@ -70,6 +106,16 @@ export type ScoreInput = {
   judgments: readonly Judgment[] | null;
   // A person's verdicts, by qid, from the filled check file; null when there is none.
   personVerdicts: ReadonlyMap<string, Verdict> | null;
+  // The answers-question rubric's judgments; absent or null when the run has not been judged under it.
+  answersJudgments?: readonly AnswersJudgment[] | null;
+  // A person's answers-question grading, as "answers the question, uncontradicted" by qid; absent or null when none.
+  answersPersonChecks?: ReadonlyMap<string, boolean> | null;
+  // Each answerable question's wording overlap (overlap.ts), null for one with no content words; absent or null when
+  // not computed.
+  overlap?: ReadonlyMap<string, number | null> | null;
+  // The run's variant and the qids actually reworded; absent for the original sample.
+  variant?: Variant;
+  reworded?: ReadonlySet<string> | null;
 };
 
 const effortOf = (values: readonly number[]): Effort => ({ count: values.length, median: percentile(values, 50), p95: percentile(values, 95) });
@@ -247,6 +293,83 @@ export function scoreRun(input: ScoreInput): Scores {
     agreement = { judgeAndPersonAgree: share(pairs) };
   }
 
+  // The answers-question rubric: the same questions are graded and left out as under completeness.
+  let answersQuestion: Scores['answersQuestion'] = null;
+  const answersJudgments = input.answersJudgments ?? null;
+  if (answersJudgments !== null) {
+    const byQid = new Map(answersJudgments.map((judgment) => [judgment.qid, judgment]));
+    const types = new Map(input.questions.filter(judgeable).map((question) => [question.qid, question.question_type]));
+    const graded: { type: QuestionType; uncontradicted: boolean; contradicts: boolean; coverage: Coverage }[] = [];
+    let failures = 0;
+    for (const judgment of byQid.values()) {
+      const type = types.get(judgment.qid);
+      if (type === undefined) continue;
+      if (!judgment.ok) {
+        failures++;
+        continue;
+      }
+      const uncontradicted = answersUncontradicted(judgment);
+      graded.push({ type, uncontradicted, contradicts: judgment.contradicts, coverage: judgment.coverage });
+      const marks = perQuestion[judgment.qid];
+      if (marks !== undefined) marks.answers_uncontradicted = uncontradicted;
+    }
+    const shares = (list: readonly (typeof graded)[number][]): AnswersShares => ({
+      answersUncontradicted: share(list.map((item) => item.uncontradicted)),
+      contradicts: share(list.map((item) => item.contradicts)),
+      coverage: { all: share(list.map((item) => item.coverage === 'all')), some: share(list.map((item) => item.coverage === 'some')), none: share(list.map((item) => item.coverage === 'none')) },
+    });
+    const byType: Record<string, AnswersShares> = {};
+    for (const type of QUESTION_TYPES) {
+      if (type === 'refusal') continue;
+      byType[type] = shares(graded.filter((item) => item.type === type));
+    }
+    answersQuestion = { judged: graded.length, failures, leftOut, byType, all: shares(graded) };
+  }
+
+  let answersAgreement: Scores['answersAgreement'] = null;
+  const answersPerson = input.answersPersonChecks ?? null;
+  if (answersPerson !== null && answersJudgments !== null) {
+    const graded = new Set(input.questions.filter(judgeable).map((question) => question.qid));
+    const judged = new Map(answersJudgments.flatMap((judgment) => (judgment.ok && graded.has(judgment.qid) ? [[judgment.qid, answersUncontradicted(judgment)] as const] : [])));
+    const pairs: boolean[] = [];
+    for (const [qid, person] of answersPerson) {
+      const judge = judged.get(qid);
+      if (judge !== undefined) pairs.push(judge === person);
+    }
+    answersAgreement = { judgeAndPersonAgree: share(pairs) };
+  }
+
+  let overlap: Scores['overlap'] = null;
+  if (input.overlap !== undefined && input.overlap !== null) {
+    const given = input.overlap;
+    const answerable = input.questions.filter((question) => !isRefusal(question));
+    const values = answerable.flatMap((question) => {
+      const value = given.get(question.qid);
+      return value === undefined || value === null ? [] : [value];
+    });
+    const cuts = thirdCuts(values);
+    const byQid: OverlapScores['byQid'] = {};
+    for (const question of answerable) {
+      const value = given.get(question.qid) ?? null;
+      byQid[question.qid] = { overlap: value, third: value === null || cuts === null ? null : thirdOf(value, cuts) };
+    }
+    const thirds = ([1, 2, 3] as const).map((third) => {
+      const members = answerable.filter((question) => byQid[question.qid]?.third === third);
+      const measureShare = (measure: (typeof SPLIT_MEASURES)[number]): Share =>
+        share(members.flatMap((question) => {
+          const mark = perQuestion[question.qid]?.[measure];
+          return mark === undefined ? [] : [mark];
+        }));
+      return {
+        third,
+        name: THIRD_NAMES[third],
+        questions: members.length,
+        measures: { retrieved_first: measureShare('retrieved_first'), retrieved_any: measureShare('retrieved_any'), answers_uncontradicted: measureShare('answers_uncontradicted') },
+      };
+    });
+    overlap = { questions: values.length, withoutContentWords: answerable.length - values.length, median: percentile(values, 50), cuts, thirds, byQid };
+  }
+
   return {
     questions: input.questions.length,
     outcomes,
@@ -270,6 +393,11 @@ export function scoreRun(input: ScoreInput): Scores {
     },
     correctness,
     agreement,
+    answersQuestion,
+    answersAgreement,
+    variant: input.variant ?? 'original',
+    rewordedQids: [...(input.reworded ?? [])].sort(),
+    overlap,
     perQuestion,
   };
 }

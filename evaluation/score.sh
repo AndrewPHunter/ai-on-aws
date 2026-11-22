@@ -1,11 +1,13 @@
 #!/bin/sh
-# Scores one run, in a container with no network: outcomes, declining, the right label, citations and retrieval
-# against the benchmark's references by section, numbers, effort, and (when the run has been judged) answer
-# correctness. Writes evaluation/data/runs/<run-name>/scores.json and prints the table: counts and shares, never text.
+# Scores one run, in a container with no network, against its own sample variant's file: outcomes, declining, the
+# right label, citations and retrieval against the benchmark's references by section, numbers, effort, every judge
+# rubric the run has judgments for, and the retrieval measures and "answers the question, uncontradicted" in thirds of
+# wording overlap. Writes evaluation/data/runs/<run-name>/scores.json and prints the table: counts and shares, never
+# text.
 #
 #   evaluation/score.sh <run-name>
 #
-# Exit codes: 0 scored; 2 could not run.
+# Exit codes: 0 scored; 2 could not run (among others: the run's sample variant file has changed since the run).
 set -eu
 
 . "$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)/lib.sh"

@@ -53,6 +53,38 @@ export function parseQuestions(text: string, shown: string): Question[] {
   return questions;
 }
 
+// What the wording overlap and the rewriter read of a benchmark question beyond the sample's fields: the drug's name
+// and the text of the passages it was written from (every entry of `context`, joined).
+export type BenchmarkExtra = { drugName: string; context: string };
+
+const extraSchema = z.object({
+  qid: z.string().min(1),
+  drug_name: z.string(),
+  context: z.array(z.object({ text: z.string() })),
+});
+
+// The drug's name and context of each qid asked for, from the benchmark file. A qid asked for that the file does not
+// hold stops the command, counted, never quoted.
+export function benchmarkExtras(text: string, shown: string, qids: ReadonlySet<string>): Map<string, BenchmarkExtra> {
+  const extras = new Map<string, BenchmarkExtra>();
+  for (const [at, line] of text.split('\n').entries()) {
+    if (line.trim() === '') continue;
+    let value: unknown;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      throw new InputError(`${shown} line ${at + 1} is not JSON`);
+    }
+    const parsed = extraSchema.safeParse(value);
+    if (!parsed.success) throw new InputError(`${shown} line ${at + 1} has no drug_name or context this harness reads`);
+    if (!qids.has(parsed.data.qid)) continue;
+    extras.set(parsed.data.qid, { drugName: parsed.data.drug_name, context: parsed.data.context.map((entry) => entry.text).join('\n') });
+  }
+  const missing = [...qids].filter((qid) => !extras.has(qid)).length;
+  if (missing > 0) throw new InputError(`${shown} does not hold ${missing} of the sampled qids`);
+  return extras;
+}
+
 export async function readText(path: string, shown: string): Promise<Buffer> {
   try {
     return await readFile(path);

@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "properties": {
+    "answers": { "type": "string", "enum": ["yes", "partly", "no"] },
+    "contradicts": { "type": "boolean" },
+    "coverage": { "type": "string", "enum": ["all", "some", "none"] },
+    "reason": { "type": "string" }
+  },
+  "required": ["answers", "contradicts", "coverage", "reason"],
+  "additionalProperties": false
+}
