@@ -49,6 +49,7 @@ export const CALLER: Caller = {
   name: 'Dana Desk',
   clientId: 'desk',
   roles: ['default-roles-lab'],
+  scopes: ['agents:intake'],
   expiresAt: new Date('2026-03-01T10:10:00.000Z'),
   token: 'token-of-the-test-caller-never-to-be-repeated',
 };

@@ -10,10 +10,16 @@ function withoutTrailingSlash(url: string): string {
 // Identifiers the status report uses for the parts that are not agents.
 const RESERVED_IDS: readonly string[] = ['case-system', 'identity', 'agents', 'knowledge', 'evaluation'];
 
+// The scopes an agent can require of the token it is sent.
+export const AGENT_SCOPES = ['agents:intake', 'agents:expert'] as const;
+export type AgentScope = (typeof AGENT_SCOPES)[number];
+
 const agentSchema = z.object({
   id: z.string().trim().min(1),
   name: z.string().trim().min(1),
   description: z.string(),
+  // The scope a token sent to this agent must hold, and a session must have been granted to run it.
+  scope: z.enum(AGENT_SCOPES),
   // Stored without a trailing slash, so paths are appended the same way whatever was configured.
   url: z.url({ protocol: /^https?$/ }).transform(withoutTrailingSlash),
 });
@@ -55,9 +61,8 @@ export type Config = {
   oidc: OidcConfig;
   // The origin the web app is served from. A POST from any other origin is refused.
   appOrigin: string;
-  // The ID-token claim holding a flat list of role names, and the role a reviewer holds.
+  // The ID-token claim holding a flat list of role names.
   rolesClaim: string;
-  reviewerRole: string;
 };
 
 function required(env: NodeJS.ProcessEnv, name: string, meaning: string): string {
@@ -114,7 +119,7 @@ function agentsFrom(value: string): AgentConfig[] {
   try {
     parsed = JSON.parse(value);
   } catch {
-    throw new Error('AGENTS is not JSON. It must be a JSON array of { id, name, description, url }.');
+    throw new Error('AGENTS is not JSON. It must be a JSON array of { id, name, description, scope, url }.');
   }
   const result = agentsSchema.safeParse(parsed);
   if (!result.success) {
@@ -132,7 +137,7 @@ export function configFrom(env: NodeJS.ProcessEnv): Config {
       'CASE_REVIEW_URL',
       required(env, 'CASE_REVIEW_URL', "the base URL of the case system's review server"),
     ),
-    agents: agentsFrom(required(env, 'AGENTS', 'a JSON array of { id, name, description, url }, possibly empty')),
+    agents: agentsFrom(required(env, 'AGENTS', 'a JSON array of { id, name, description, scope, url }, possibly empty')),
     webRoot: required(env, 'WEB_ROOT', 'the directory holding the built web app'),
     oidc: {
       discoveryUrl: exactHttpUrl(
@@ -164,6 +169,5 @@ export function configFrom(env: NodeJS.ProcessEnv): Config {
     },
     appOrigin: origin('APP_ORIGIN', required(env, 'APP_ORIGIN', 'the origin the web app is served from')),
     rolesClaim: required(env, 'ROLES_CLAIM', 'the ID-token claim holding a flat list of role names'),
-    reviewerRole: required(env, 'REVIEWER_ROLE', 'the role a reviewer holds'),
   };
 }

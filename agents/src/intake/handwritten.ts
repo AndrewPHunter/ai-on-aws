@@ -34,6 +34,7 @@ import { timed } from '../run/record.ts';
 import type { Timed } from '../run/record.ts';
 import { recordError, recordRefusal, recordToolCall, toldAbout } from '../run/steps.ts';
 import { askAgainWithoutThinking } from '../run/turns.ts';
+import { missingCaseTools } from '../tools/case-system.ts';
 import type { Connected, ToolOutcome, ToolSet } from '../tools/tool-set.ts';
 import { SYSTEM_PROMPT, userTurn } from './prompt.ts';
 import { afterCall, refusalBeforeCall, startRun } from './run.ts';
@@ -42,7 +43,8 @@ import type { IntakeRun } from './run.ts';
 export type IntakeDeps = {
   identity: AgentIdentity;
   model: ChatModel;
-  // Connects to the case system for one message, passing on the token of the caller it is for.
+  // Connects to the case system for one message, given the token of the caller it is for. What reaches the
+  // case system is the token exchanged for it (connectWithToolToken in ../tools/tool-token.ts).
   connectTools: (message: InboundMessage, callerToken: string, timeoutMs: number) => Promise<Connected>;
   now: () => Date;
   // Waits between two requests to the model. Given, so a test does not wait in real time.
@@ -162,6 +164,12 @@ export async function handleInquiry(deps: IntakeDeps, message: InboundMessage, c
   if (!connected.ok) {
     recordError(run, connected.reason);
     return failed(run, connected.reason);
+  }
+  const short = missingCaseTools(connected.tools.definitions.map((definition) => definition.function.name));
+  if (short !== undefined) {
+    await connected.tools.close();
+    recordError(run, short);
+    return failed(run, short);
   }
 
   try {

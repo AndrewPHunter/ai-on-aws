@@ -13,7 +13,7 @@ platform/identity/setup.sh
 docker compose up -d --build --wait
 ```
 
-Then open <http://localhost:3000>, by that name and not `127.0.0.1`: the identity provider sends the browser back to `localhost`, and the session cookie belongs to it. Sign in as `riley.reviewer` (a reviewer) or `dana.desk` (not a reviewer); their passwords are `IDENTITY_RILEY_PASSWORD` and `IDENTITY_DANA_PASSWORD` in `platform/identity/.env`, which the first command writes.
+Then open <http://localhost:3000>, by that name and not `127.0.0.1`: the identity provider sends the browser back to `localhost`, and the session cookie belongs to it. Sign in as one of the four people: `dana.desk` (who runs the intake agents), `morgan.medinfo` (who also runs the label expert), `riley.reviewer` (who reads and decides cases) or `avery.auditor` (who reads cases); their passwords are `IDENTITY_DANA_PASSWORD`, `IDENTITY_MORGAN_PASSWORD`, `IDENTITY_RILEY_PASSWORD` and `IDENTITY_AVERY_PASSWORD` in `platform/identity/.env`, which the first command writes. What each person sees is set by the scopes their role is granted; see [what each person sees](#what-each-person-sees).
 
 That starts the client together with the [agents](../agents/README.md), the [case system](../tools/case-system/README.md) and the [identity provider](../platform/identity/README.md), on one network. All are published on this machine only. The agents need the model server, so [set that up](../model/README.md) first.
 
@@ -28,10 +28,23 @@ stops them and keeps the inquiries and cases. Add `-v` to delete them.
 | Screen | What it is for |
 |---|---|
 | Sign in | The only screen without a session: one action, which goes to the identity provider. |
-| Inquiries | Receive a message, from a prepared one or your own, and send it to an agent. Read the reply, the label passages it cites, and any case it opened. Citations are numbered from 1, so a `[2]` in the reply can be found; each gives the drug, the section, the label's version and date, the quote, and a link to that version's page. When the agent answers from labels, one line says whether the label answered the question, and if not why. In the run's steps, each label-search hit shows the name the model was shown it by, and says when it matched but was not shown. Send the same message again, to the same agent or another, and compare the runs. Each inquiry shows who entered it, and each run who started it. |
+| Inquiries | Receive a message, from a prepared one or your own, and send it to an agent you may run. Only the inquiries you entered are listed. Read the reply, the label passages it cites, and any case it opened. Citations are numbered from 1, so a `[2]` in the reply can be found; each gives the drug, the section, the label's version and date, the quote, and a link to that version's page. When the agent answers from labels, one line says whether the label answered the question, and if not why. In the run's steps, each label-search hit shows the name the model was shown it by, and says when it matched but was not shown. Send the same message again, to the same agent or another, and compare the runs. Each inquiry shows who entered it, and each run who started it. |
 | What the agent did | Beside each run: every step in order, with how long it took and what was sent and returned. Model calls, tool calls, label searches and hand-offs between agents each have their own read-out. |
-| Cases | The review queue. A case shows its four parts as a form, every earlier version, and its audit trail; an agent's entry says whom the agent acted for ("Agent intake-strands, for Dana Desk"). A reviewer approves, rejects or asks for information, recorded under the name they signed in with; anyone else sees that only a reviewer can decide. |
+| Cases | The review queue. A case shows its four parts as a form, every earlier version, and its audit trail; an agent's entry says whom the agent acted for ("Agent intake-strands, for Dana Desk"). Someone who may decide cases approves, rejects or asks for information, recorded under the name they signed in with; anyone else who may read cases sees that their account cannot decide them. |
 | System | Each part the desk depends on, and whether it answers right now. |
+
+## What each person sees
+
+`GET /api/session` gives the person signed in and what they may do: `{ user: { name, username, roles }, may: { agents, read_cases, decide_cases } }`. `may` comes only from the scopes the identity provider granted at sign-in; the role names are shown, never compared.
+
+| Granted | The session may | The app shows |
+|---|---|---|
+| An agent's `scope` (`agents:intake`, `agents:expert`) | Send an inquiry, or a new run of one of their own, to that agent | Inquiries, with that agent among those listed |
+| `cases:read` | Read the case list and a case | Cases |
+| `cases:review` | Decide a case | The decision controls on a case |
+| None of these | Nothing that reaches an agent or the case system; `/api/session`, `/api/status`, `/api/samples`, an empty `/api/agents` and an empty list of their own inquiries still answer | A sentence saying the account has nothing to do here |
+
+`/api/agents` lists only the agents the session may run. A call for anything else is answered 403 `not_allowed` before the identity provider or the target is asked. An inquiry, its runs and a new run on it are answered only to the person who entered it; to anyone else, exactly as an inquiry that does not exist (404 `inquiry_not_found`).
 
 ## What works today
 
@@ -45,13 +58,15 @@ stops them and keeps the inquiries and cases. Add `-v` to delete them.
 2. Sending answers at once, and a run always ends as finished or failed, including after a restart.
 3. An agent's answer outside the contract is a failed run with the reason.
 4. Only a sign-in the provider vouched for creates a session, and only in the browser that started it.
-5. Every call to an agent or the case system carries the user's token with enough life left; it is renewed first, and a failed renewal ends the session.
+5. Every call to an agent or the case system carries a token got for that target alone, with enough life left. It is got by a refresh first; refreshes of one session never overlap, and each uses the newest refresh token; a failed one ends the session.
 6. The reviewer of a case is whoever is signed in, never a name the browser sends.
 7. No token reaches the browser.
 8. Signing out removes the session and revokes the refresh token; a failed revocation does not stop it.
 9. A POST from another site is refused.
+10. What a session may do comes from the scopes it was granted at sign-in: which agents it may run, whether it may read cases, whether it may decide one. A call for anything else is answered 403 before the identity provider or the target is asked.
+11. An inquiry and its runs are read, and a run is started on it, only by the person who entered it. To anyone else it is answered as an unknown inquiry is.
 
-The server's tests in `test/` are one per item, named by its number.
+The server's tests in `test/` are one per item, named by its number. They run through the server with scripted agents, a scripted case system and an identity provider whose refresh is a function, except invariant 4 and those beside it in `auth.test.ts`, which use the stand-in provider, and invariant 5's two calls arriving together, which runs on the token function in `src/tokens.ts`.
 
 ## How it is put together
 
@@ -68,8 +83,10 @@ browser ── React app ──> client server ──> agents          POST /inv
 - **What an agent returns is checked against the contract** in [`shared/agent-contract.ts`](../shared/agent-contract.ts). An answer outside it is shown as a failed run with the reason.
 - **The app never talks to an agent or the case system directly.** Only the server does, so the page holds no addresses or credentials.
 - **Signing in is the server's job.** It runs the Authorization Code flow with PKCE against the identity provider, validates the ID token (signature against the provider's published keys, issuer, audience, nonce, expiry), and keeps the user and their tokens in memory under a random session identifier. The browser holds only that identifier, in an `HttpOnly`, `SameSite=Lax` cookie. Sessions end when the server restarts.
-- **Every call to an agent or the case system carries the signed-in user's access token** as `Authorization: Bearer`. Before calling an agent the token must have 180 seconds left, the time the server waits for an agent; before calling the case system, 30. With less, the server renews it first; if renewal fails, the request answers 401, nothing is sent, and the user signs in again. Health checks carry no token. The agents and the case system each check the token and refuse a call without a valid one.
-- **The reviewer of a case is whoever is signed in.** The server forwards a decision as `{ decision, note? }` with the user's token and no reviewer field; the case system takes the reviewer's name and subject from the token. A decision that names its own reviewer is refused here with 400, and one from someone without the `reviewer` role with 403. The case system makes the same two refusals behind it, and its answers are passed back unchanged.
+- **Sign-in asks for the scopes the targets need:** `openid`, each distinct agent `scope` configured, `cases:read` and `cases:review`. The provider leaves out any the person's role does not grant and still signs them in; the scopes it granted, read from the token response's `scope`, are kept on the session. The access token from sign-in is sent to nobody.
+- **Every call to an agent or the case system carries a token got for that target alone,** as `Authorization: Bearer`. A target is a scope: the agent's `scope`, `cases:read` for reading cases, `cases:review` for a decision. The session keeps one token per scope. Before calling an agent the kept token must have 180 seconds left, the time the server waits for an agent; before calling the case system, 30. With less, or none, the server refreshes with `scope=openid <that scope>` and keeps the result under that scope.
+- **Refreshes of one session run one at a time, in the order asked.** Each uses the newest refresh token the provider returned, and looks again for a kept token when its turn comes, so two calls for the same target share one refresh. If a refresh fails, the session ends, the request answers 401, nothing is sent, and the user signs in again. If it succeeds with a token that lacks the scope asked for, the request answers 403 `not_allowed` and the session goes on. Health checks carry no token. The agents and the case system each check the token and refuse a call without a valid one.
+- **The reviewer of a case is whoever is signed in.** The server forwards a decision as `{ decision, note? }` with the token got for `cases:review` and no reviewer field; the case system takes the reviewer's name and subject from the token. A decision that names its own reviewer is refused here with 400, and one from a session not granted `cases:review` with 403. The case system refuses both behind it too, and its answers are passed back unchanged.
 - **No token reaches the browser.** No response body, and no header but `Set-Cookie`, carries an access, refresh or ID token.
 - **Signing out** removes the session, clears the cookie, revokes the refresh token at the revocation endpoint set by `OIDC_REVOCATION_ENDPOINT` (unless that is `none`), and sends the browser to the provider's end-session URL with `client_id` and the post-logout redirect URI, and no token. If the revocation fails, sign-out still ends the session here and the failure is logged.
 - **Only the browser that started a sign-in can complete it.** `/auth/login` sets a second cookie, `desk_signin` (`HttpOnly`, `SameSite=Lax`, `Path=/auth`, 10 minutes), holding a random value kept with the pending sign-in; the callback is refused without it or with another sign-in's, and clears it.
@@ -88,7 +105,7 @@ Set in [`compose.yaml`](compose.yaml).
 
 | Setting | Meaning |
 |---|---|
-| `AGENTS` | The agents an inquiry can be sent to: a JSON list of `{ id, name, description, url }` |
+| `AGENTS` | The agents an inquiry can be sent to: a JSON list of `{ id, name, description, scope, url }`, where `scope` (`agents:intake` or `agents:expert`) is what a token sent to the agent must hold and what a person must be granted to run it |
 | `CASE_REVIEW_URL` | Where the case system's review server is |
 | `CLIENT_DB_PATH` | The SQLite file for inquiries and runs |
 | `WEB_ROOT` | The folder holding the built app |
@@ -100,16 +117,16 @@ Set in [`compose.yaml`](compose.yaml).
 | `OIDC_POST_LOGOUT_REDIRECT_URI` | `http://localhost:3000/` |
 | `OIDC_REVOCATION_ENDPOINT` | Where the refresh token is revoked at sign-out: `http://identity:8080/realms/lab/protocol/openid-connect/revoke`, or `none` for a provider without one. A setting, not taken from the discovery document, because Keycloak names this one endpoint at the browser's address (`localhost:8090`) even when its document is fetched from inside the network, and the server cannot reach that address |
 | `APP_ORIGIN` | The origin the app is served from: `http://localhost:3000` |
-| `ROLES_CLAIM` | The ID-token claim that lists the user's roles: `roles` |
-| `REVIEWER_ROLE` | The role a reviewer holds: `reviewer` |
+| `ROLES_CLAIM` | The ID-token claim that lists the user's roles, shown on the session: `roles` |
 
-Every setting is required; the server stops at start-up naming any that is missing. The identity provider is not asked anything until someone signs in, so the server starts, and answers `/ping` and the app, while it is down.
+The case system's two scopes, `cases:read` and `cases:review`, are fixed in the code. Every setting is required; the server stops at start-up naming any that is missing. The identity provider is not asked anything until someone signs in, so the server starts, and answers `/ping` and the app, while it is down.
 
 ## Known limits
 
-- **Sessions live in the server's memory.** A restart signs everyone out, and a session is only removed by signing out or by a failed renewal.
+- **Sessions live in the server's memory.** A restart signs everyone out, and a session is only removed by signing out or by a failed refresh.
+- **What a session may do is fixed at sign-in.** A change to a person's role takes effect when they sign in again.
 - **The cookie is not marked `Secure`,** because the lab is served over plain HTTP on this machine.
-- **Inquiries and runs recorded before sign-in existed** show no author.
+- **Inquiries recorded before sign-in existed** have no author, so nobody can read them through the desk.
 - **A run that is in progress when the server stops is marked as failed** when it starts again. The agent may still have acted.
-- **The React app has one test, of its formatting helpers.** It is typechecked, linted and built by the repository check. The screens from before sign-in were looked at by hand; the sign-in screen, the signed-in rail and the reviewer-only decision have not been.
+- **The React app has one test, of its formatting helpers.** It is typechecked, linted and built by the repository check. The screens from before sign-in were looked at by hand; the sign-in screen, the signed-in rail, the decision controls and the screen for an account with nothing to do have not been.
 - **Sign-in has been tested against a stand-in provider only** (`test-support/issuer.ts`), not yet through this server against the lab's Keycloak.

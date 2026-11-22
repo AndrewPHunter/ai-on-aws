@@ -131,10 +131,11 @@ It is required and has no default. A missing or other value stops the agent at s
 
 ## Always true
 
-- Wherever this repository runs an agent, a request with no valid access token is refused with 401 before its body is read, and one whose token cannot be checked gets 503: by the edge, or by the hand-written server. With the edge off, that is AgentCore Runtime's JWT authorizer.
+- Wherever this repository runs an agent, a request with no valid access token is refused with 401 before its body is read, one whose token lacks every scope the agent requires gets 403 naming those scopes, and one whose token cannot be checked gets 503: by the edge, or by the hand-written server. The SDK app itself cannot set a status and answers a token without the scope as it answers any refused token, which is why the edge stands in front of it. With the edge off, that is AgentCore Runtime's JWT authorizer.
 - On the SDK server, a valid request with a valid token always gets an answer inside the contract, unless the edge itself answers 502 or 500. Nothing the handler does surfaces as the SDK's 500 with an error's own message. On the hand-written server the same holds, except that an answer of the agent's own outside the contract is 500.
 - No line written by the SDK's logger, the edge or `contract/sdk-app.ts` carries a token, a message's text, or an error's message. The SDK's logger stays on with its request lines; a request is logged as its method and path, an error as its type, code and status, and a line about an error has the error's code as its message. What Strands itself writes to the log is in the [Strands document](intake-agent-strands.md#not-present-in-addition).
 - On the SDK server, SIGTERM and SIGINT end the process with exit 0. The SDK registers no handler of its own. The hand-written agent closes its server and every open connection on either signal.
+- An agent sends a tool server only a token it got for that server: it exchanges the token it was called with, as itself, for one naming that server's audience and scopes, once per run, before it connects. The caller's token goes to the identity provider's token endpoint and nowhere else. An exchange that is refused or cannot be made ends the run failed with the reason: nothing is connected and the model is not asked.
 
 ## Not present
 

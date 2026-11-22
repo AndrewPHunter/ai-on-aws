@@ -4,11 +4,13 @@
 //
 // POST /invocations requires a valid access token, checked before the body is read: the same check
 // AgentCore Runtime's JWT authorizer makes in front of the container, kept here as a second check so one
-// behaviour holds everywhere. GET /ping needs none.
+// behaviour holds everywhere. A token lacking the agent's scope is 403, any other refusal 401. GET /ping
+// needs none.
 
 import { createServer } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 
+import { refusalAnswer } from '../../../shared/access-token.ts';
 import type { AccessTokenCheck, Caller } from '../../../shared/access-token.ts';
 import { invocationRequestSchema, invocationResponseSchema } from '../../../shared/agent-contract.ts';
 import type { InboundMessage, InvocationResponse } from '../../../shared/agent-contract.ts';
@@ -61,8 +63,9 @@ async function invoke(
   // The token first: a request that is not allowed is answered without its body being read.
   const checked = await checkToken(request.headers.authorization);
   if (checked.kind === 'refused') {
-    response.writeHead(401, { 'content-type': 'application/json', 'www-authenticate': 'Bearer error="invalid_token"' });
-    response.end(JSON.stringify({ error: 'unauthorized', reason: checked.reason, detail: checked.detail }));
+    const answer = refusalAnswer(checked);
+    response.writeHead(answer.status, { 'content-type': 'application/json', 'www-authenticate': answer.wwwAuthenticate });
+    response.end(JSON.stringify(answer.body));
     request.resume();
     return;
   }

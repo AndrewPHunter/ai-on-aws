@@ -1,6 +1,6 @@
 #!/bin/sh
 # Writes platform/identity/.env: a random value for every variable named in platform/identity/.env.example
-# (the Keycloak bootstrap administrator, the desk client's secret and each realm user's password).
+# (the Keycloak bootstrap administrator, the secret of each client that holds one, and each realm user's password).
 # The values are made by the pinned Node image on the local Docker daemon, with no network.
 #
 #   platform/identity/setup.sh
@@ -72,8 +72,11 @@ fi
   for name in $names; do
     case $name in
       IDENTITY_ADMIN_USERNAME) value=$(random_hex 4) && value="admin-$value" || value='' ;;
-      IDENTITY_ADMIN_PASSWORD | IDENTITY_RILEY_PASSWORD | IDENTITY_DANA_PASSWORD) value=$(random_hex 24) || value='' ;;
-      IDENTITY_DESK_CLIENT_SECRET) value=$(random_hex 32) || value='' ;;
+      IDENTITY_ADMIN_PASSWORD | IDENTITY_RILEY_PASSWORD | IDENTITY_DANA_PASSWORD | IDENTITY_MORGAN_PASSWORD | \
+        IDENTITY_AVERY_PASSWORD) value=$(random_hex 24) || value='' ;;
+      IDENTITY_DESK_CLIENT_SECRET | IDENTITY_INTAKE_HANDWRITTEN_CLIENT_SECRET | IDENTITY_INTAKE_STRANDS_CLIENT_SECRET | \
+        IDENTITY_EXPERT_CLIENT_SECRET | IDENTITY_EVALUATION_CLIENT_SECRET | IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET)
+        value=$(random_hex 32) || value='' ;;
       *)
         say "setup does not know how to make a value for $name, which platform/identity/.env.example names."
         exit 1

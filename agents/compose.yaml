@@ -33,13 +33,17 @@ x-agent: &agent
 # The access token every POST /invocations must carry: the same values AgentCore Runtime's JWT
 # authorizer is configured with (discovery URL, allowed audience, allowed client ids). The discovery
 # document is fetched by the identity service's name on the shared network; the issuer it and every
-# token name is the browser's address for it.
+# token name is the browser's address for it. Each agent sets its own audience (its AGENT_ID), clients
+# and scope below.
+#
+# Before it connects to its tool server, each agent exchanges the token it was called with, as itself
+# (client id AGENT_ID, with its own secret), for one meant for that server, at the token endpoint here.
+# The secrets come from platform/identity/.env, which the root compose.yaml reads for this file.
 x-auth: &auth
   AUTH_DISCOVERY_URL: http://identity:8080/realms/lab/.well-known/openid-configuration
   AUTH_ISSUER: http://localhost:8090/realms/lab
-  AUTH_ALLOWED_AUDIENCE: lab-agents
-  AUTH_ALLOWED_CLIENTS: desk
   AUTH_ROLES_CLAIM: roles
+  EXCHANGE_TOKEN_ENDPOINT: http://identity:8080/realms/lab/protocol/openid-connect/token
 
 services:
   # The intake agent with its loop written by hand, served by the hand-written contract server.
@@ -49,6 +53,10 @@ services:
     environment:
       <<: *auth
       AGENT_ID: intake-handwritten
+      AUTH_ALLOWED_AUDIENCE: intake-handwritten
+      AUTH_ALLOWED_CLIENTS: desk
+      AUTH_REQUIRED_SCOPES: agents:intake
+      EXCHANGE_CLIENT_SECRET: ${IDENTITY_INTAKE_HANDWRITTEN_CLIENT_SECRET:?run platform/identity/setup.sh}
       # The case system's MCP endpoint, by its service name on the shared network.
       CASE_MCP_URL: http://case-system:8000/mcp
     ports:
@@ -63,6 +71,10 @@ services:
     environment:
       <<: *auth
       AGENT_ID: intake-strands
+      AUTH_ALLOWED_AUDIENCE: intake-strands
+      AUTH_ALLOWED_CLIENTS: desk
+      AUTH_REQUIRED_SCOPES: agents:intake
+      EXCHANGE_CLIENT_SECRET: ${IDENTITY_INTAKE_STRANDS_CLIENT_SECRET:?run platform/identity/setup.sh}
       CASE_MCP_URL: http://case-system:8000/mcp
       # Served by AWS's SDK server (BedrockAgentCoreApp). on: a local stand-in for AgentCore Runtime's front
       # door listens on 8080 in the same process, checks the token, gives the request a session id and
@@ -79,6 +91,11 @@ services:
     environment:
       <<: *auth
       AGENT_ID: expert
+      AUTH_ALLOWED_AUDIENCE: expert
+      # The evaluation harness calls the label expert as its own client.
+      AUTH_ALLOWED_CLIENTS: desk,evaluation
+      AUTH_REQUIRED_SCOPES: agents:expert
+      EXCHANGE_CLIENT_SECRET: ${IDENTITY_EXPERT_CLIENT_SECRET:?run platform/identity/setup.sh}
       # The retrieval service's MCP endpoint, by its service name on the shared network.
       KNOWLEDGE_MCP_URL: http://knowledge:8000/mcp
       # Served by AWS's SDK server, behind the local stand-in for AgentCore Runtime's front door, as above.

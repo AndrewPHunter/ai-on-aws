@@ -53,9 +53,11 @@ export type SampleList = { samples: SampleInquiry[] };
 // Null for rows written before staff signed in.
 export type Author = { name: string };
 
-// GET /api/session: who is signed in. Holds no token of any kind.
-export type SessionUser = { name: string; username: string; roles: string[]; is_reviewer: boolean };
-export type SessionView = { user: SessionUser };
+// GET /api/session: who is signed in, and what the scopes granted at sign-in let them do: the ids of the
+// agents they may run, whether they may read cases, whether they may decide one. Holds no token of any kind.
+export type SessionUser = { name: string; username: string; roles: string[] };
+export type SessionMay = { agents: string[]; read_cases: boolean; decide_cases: boolean };
+export type SessionView = { user: SessionUser; may: SessionMay };
 
 // POST /auth/logout: where to send the browser to end the session at the identity provider too.
 export type SignOutResponse = { sign_out_url: string };
@@ -106,7 +108,7 @@ export type InquirySummary = {
   runs: RunSummary[];
 };
 
-// GET /api/inquiries: newest first.
+// GET /api/inquiries: the ones the reader entered, newest first.
 export type InquiryList = { inquiries: InquirySummary[]; truncated: boolean };
 
 // POST /api/inquiries: receives a new message and starts one run. Answers 202 with the inquiry.

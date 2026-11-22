@@ -7,6 +7,7 @@
 //   CASE_MCP_URL           the address of the case system's MCP endpoint
 
 import type { AccessTokenSettings } from '../../../shared/access-token.ts';
+import type { TokenExchangeSettings } from '../../../shared/token-exchange.ts';
 import { agentSettingsFrom, required, serveAgent } from '../run/serve.ts';
 import type { BaseWiring, Environment, Handler, Server } from '../run/serve.ts';
 import { LIMITS } from './settings.ts';
@@ -23,6 +24,7 @@ export type AgentSettings = {
   agentId: string;
   // A token must still be valid for the run's whole time limit, so it cannot expire during a run.
   auth: AccessTokenSettings;
+  exchange: TokenExchangeSettings;
 };
 
 const readCaseMcpUrl = (env: Environment): string => required(env, 'CASE_MCP_URL', "the address of the case system's MCP endpoint");
@@ -30,8 +32,8 @@ const readCaseMcpUrl = (env: Environment): string => required(env, 'CASE_MCP_URL
 // Every setting the agent starts with, from the environment object given. Throws, naming the variable,
 // when one is missing.
 export function settingsFrom(env: Environment): AgentSettings {
-  const { baseUrl, apiKey, namedModel, agentId, auth, own } = agentSettingsFrom(env, LIMITS, readCaseMcpUrl);
-  return { baseUrl, apiKey, namedModel, caseMcpUrl: own, agentId, auth };
+  const { baseUrl, apiKey, namedModel, agentId, auth, exchange, own } = agentSettingsFrom(env, LIMITS, readCaseMcpUrl);
+  return { baseUrl, apiKey, namedModel, caseMcpUrl: own, agentId, auth, exchange };
 }
 
 // The hand-written agent: served by the hand-written contract server.

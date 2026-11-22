@@ -16,7 +16,8 @@ The same agent also exists on Strands: [intake-agent-strands.md](intake-agent-st
 | Tool set | A list of tool descriptions and a function that calls them. The case system's is the only one |
 | Write | A tool call that changes a case: `create_case` or `add_follow_up` |
 | Step | One entry in the run's record: a model turn, a tool call, or an error |
-| Context headers | `x-message-id`, `x-received-at`, `x-agent-id`, `x-sender`, sent on every request to the case system beside the caller's access token |
+| Context headers | `x-message-id`, `x-received-at`, `x-sender`, sent on every request to the case system beside the case-system token |
+| Case-system token | The token the agent gets for the case system by exchanging the caller's access token, as itself, at the identity provider: audience `case-system`, scopes `cases:write` and `cases:lookup`. The only token the case system sees |
 
 ## Modules and their boundaries
 
@@ -34,17 +35,21 @@ flowchart LR
         Record["run/record.ts<br/>SHARED: step timing, run deadline"]
         ToolSet["tools/tool-set.ts<br/>ToolSet, ToolOutcome"]
         CaseTools["tools/case-system.ts<br/>MCP client, context headers,<br/>meaning of a result"]
+        Exchange["tools/tool-token.ts<br/>SHARED: the exchange for<br/>the case-system token"]
         Chat["model/chat.ts<br/>chat API client"]
     end
 
     Contract["shared/agent-contract.ts<br/>request and response schemas"]
     Model["Model server"]
     Cases["Case system"]
+    Identity["Identity provider"]
 
     Caller -->|"HTTP, JSON"| Server
     Main -->|"names the implementation,<br/>builds the handler"| Serve
     Serve -->|"starts"| Server
     Main -. "gives the loop its model<br/>and its tool connection" .-> Loop
+    Main -. "puts the exchange<br/>before the tool connection" .-> Exchange
+    Exchange -->|"token exchange,<br/>as the agent"| Identity
     Server -->|"Handler"| Loop
     Loop --> Prompt
     Loop -->|"asks before and after each call,<br/>records steps, ends the run"| Run
@@ -67,12 +72,13 @@ flowchart LR
 | `intake/prompt.ts` | What the model is told, and how the message is laid out for it | Everything else |
 | `run/record.ts` | Measuring a step and counting down the run's time | What is being timed |
 | `tools/tool-set.ts` | The shape of any tool set and of what a call can come back as | Any particular tool |
-| `tools/case-system.ts` | The MCP connection, the context headers, which tools write, and what an answer means for the run's record | The model, the loop |
+| `tools/case-system.ts` | The MCP connection, the context headers, the three tools a run needs, which tools write, and what an answer means for the run's record | The model, the loop |
+| `tools/tool-token.ts` (shared with the other two agents) | Exchanging the caller's token for one meant for the tool server, the case system's audience and scopes, and the reason a run ends with when the exchange fails | The model, the loop, MCP |
 | `tools/mcp-answers.ts` (shared with the label expert) | Reading why a connection to an MCP service failed, and the payload of a tool result, in the words of the service named. `tools/case-system.ts` reads through it in the case system's name | Any particular service |
 | `model/chat.ts` | One request to the model server, the reading of its answer, and whether a failure could go differently if the request were sent again. It never sends twice | Tools' meaning, cases, the loop |
 | `intake/serve.ts`, `intake/settings.ts`, `run/serve.ts`, `run/sampling.ts` (shared) | Reading the environment, the limits and sampling settings, asking which model is served, starting the server | The rules of a run, which implementation runs |
 | `model/served.ts` (shared) | The model settings, the question "which model do you serve", and the wording of a model failure | Chat requests |
-| `intake/main-handwritten.ts` | Connecting this implementation's modules | The rules of a run |
+| `intake/main-handwritten.ts` | Connecting this implementation's modules, the exchange before the tool connection among them | The rules of a run |
 
 The loop receives the model, the tool connection, its clock, its way of waiting and its source of randomness as arguments (`IntakeDeps`). It knows nothing about the case system. The shared rules in `intake/run.ts` do: they import `WRITING_TOOLS` and `caseActionFrom` from `tools/case-system.ts`, and they name `create_case` and `add_follow_up`.
 
@@ -84,6 +90,8 @@ sequenceDiagram
     participant C as Caller
     participant S as contract/server.ts
     participant L as intake/handwritten.ts
+    participant X as tools/tool-token.ts
+    participant I as Identity provider
     participant T as tools/case-system.ts
     participant K as Case system
     participant M as model/chat.ts
@@ -93,8 +101,11 @@ sequenceDiagram
     S->>S: access-token check (shared/access-token.ts), before the body is read
     S->>S: readJson, then invocationRequestSchema
     S->>L: handleInquiry with the caller
-    L->>T: connectTools with the caller's token
-    T->>K: initialize and tools/list, with context headers and the token
+    L->>X: connectTools with the caller's token
+    X->>I: token exchange, as the agent, for audience case-system
+    I-->>X: the case-system token
+    X->>T: connectCaseTools with the case-system token
+    T->>K: initialize and tools/list, with context headers and the case-system token
     K-->>T: three tool descriptions
     T-->>L: ToolSet
     loop each turn, at most 6
@@ -105,7 +116,7 @@ sequenceDiagram
         alt the model asked for tools
             L->>L: runToolCall asks refusalBeforeCall (intake/run.ts)
             L->>T: ToolSet.call
-            T->>K: tools/call, with context headers and the token
+            T->>K: tools/call, with context headers and the case-system token
             K-->>T: result or refusal
             T-->>L: ToolOutcome
             L->>L: afterCall (intake/run.ts) records what it means for cases
@@ -127,7 +138,8 @@ The same flow by function:
 | 3 | `invoke` | Checks the body against `invocationRequestSchema`. A body that fails gets 400, and nothing else runs |
 | 4 | Handler in `run/serve.ts` → `ready`, given the caller | On the first request, asks the model server which model it serves (`servedModelId`, `GET /models`, 10 s at most) unless `MODEL_ID` names it, then has `main-handwritten.ts` build the client (`createChatModel`) and the handler. If the model server cannot say, the request ends `failed` with an error step, and the next request asks again |
 | 5 | `handleInquiry` in `intake/handwritten.ts` → `startRun` in `intake/run.ts` | Starts the run: its `Deadline`, and empty lists of steps and case actions |
-| 6 | `connectCaseTools` in `tools/case-system.ts` | Opens the MCP connection with the four context headers, taken from the message and the agent's name, and `Authorization: Bearer` with the caller's token as it was presented, on every request. Connecting and listing the tools each have the tool limit, or what the run has left. Each tool becomes a tool description for the model |
+| 5a | `connectWithToolToken` in `tools/tool-token.ts`, as `main-handwritten.ts` wires it in front of `connectCaseTools` | Exchanges the caller's token, once, as the agent, for the case-system token, within the tool limit or what the run has left, which it shares with the connection in step 6: the connection gets what the exchange left of it, measured on the agent's clock. A refused exchange ends the run `failed` with "The agent could not get a token for the case system: " and the identity provider's refusal; one that cannot be made, with "The agent could not get a token for the case system: the identity provider could not be reached or did not answer in time.", which names no address. Either way nothing is connected and the model is not asked. It is not retried |
+| 6 | `connectCaseTools` in `tools/case-system.ts` | Opens the MCP connection with the three context headers, taken from the message, and `Authorization: Bearer` with the case-system token, on every request. Connecting and listing the tools each have what the exchange left of the limit in step 5a, never more than the run has left. Each tool becomes a tool description for the model. If fewer than the three tools are offered, `handleInquiry` ends the run `failed`, naming the missing ones, before the model is asked |
 | 7 | `loop` | Starts the conversation: `SYSTEM_PROMPT`, then `userTurn(message)` |
 | 8 | `loop` → `askModel` → `ChatModel.complete` in `model/chat.ts` | Sends the conversation and the tool descriptions. The time allowed is the smaller of the model limit and what the run has left. A request that fails may be sent again (see "A failed request to the model") |
 | 9 | `loop` | Records a model step. If the model asked for no tools, the run ends here (see "How a run ends") |
@@ -193,7 +205,7 @@ The wait and the randomness are given to the loop (`sleep` and `random` in `Inta
 | `stopped` | The run's time is used up when a turn is about to start | `loop` | Empty |
 | `stopped` | The turn limit is reached | `loop` | Empty |
 | `stopped` | The model asks for no tools and writes nothing | `loop` | Empty |
-| `failed` | At the start, the case system cannot be reached, refuses the caller's token, or cannot check it | `handleInquiry` | Empty |
+| `failed` | At the start, the caller's token cannot be exchanged for the case-system token, or the case system cannot be reached, refuses the token, cannot check it, or offers fewer than the three tools | `connectWithToolToken`, `handleInquiry` | Empty |
 | `failed` | A request to the model still fails after being sent three times, or fails in a way that sending again would not change | `askModel`, then `loop` | Empty |
 | `failed` | A write got no answer twice | `runToolCall`, then `loop` | Empty |
 | `failed` | `MODEL_ID` is unset and the model server could not say which one model it serves: not reached, not in time, another status, or not exactly one model | Handler in `run/serve.ts` | Empty |
@@ -207,7 +219,7 @@ These answers are not outcomes of a run: 401 for a refused token, 503 when the t
 
 ## The caller's token
 
-Settings, read by `agentSettingsFrom` in `run/serve.ts` (through `settingsFrom` in `intake/serve.ts`): `AUTH_DISCOVERY_URL`, `AUTH_ISSUER`, `AUTH_ALLOWED_AUDIENCE` (`lab-agents`), `AUTH_ALLOWED_CLIENTS` (`desk`), `AUTH_ROLES_CLAIM` (`roles`). The minimum remaining life is the run's time limit, 150 s.
+Settings, read by `agentSettingsFrom` in `run/serve.ts` (through `settingsFrom` in `intake/serve.ts`): `AUTH_DISCOVERY_URL`, `AUTH_ISSUER`, `AUTH_ALLOWED_AUDIENCE` (`intake-handwritten`, the agent's own id), `AUTH_ALLOWED_CLIENTS` (`desk`), `AUTH_REQUIRED_SCOPES` (`agents:intake`), `AUTH_ROLES_CLAIM` (`roles`). The minimum remaining life is the run's time limit, 150 s. For the exchange: `EXCHANGE_TOKEN_ENDPOINT` and `EXCHANGE_CLIENT_SECRET`, with `AGENT_ID` as the client id; the secret is in no line the agent writes.
 
 | Order | Check | Refused as |
 |---|---|---|
@@ -218,20 +230,21 @@ Settings, read by `agentSettingsFrom` in `run/serve.ts` (through `settingsFrom` 
 | 5 | `iss` equals `AUTH_ISSUER` | `wrong_issuer` |
 | 6 | `aud` contains `AUTH_ALLOWED_AUDIENCE` | `wrong_audience` |
 | 7 | `client_id` is in `AUTH_ALLOWED_CLIENTS` | `wrong_client` |
-| 8 | An `exp` claim, with at least 150 s left before it | `malformed` without one, `expires_too_soon` |
-| 9 | `sub`, `preferred_username`, `name` present and not empty; the roles claim a list of names if present | `malformed` |
+| 8 | `scope` holds at least one of `AUTH_REQUIRED_SCOPES` | `insufficient_scope`: 403 with `WWW-Authenticate: Bearer error="insufficient_scope", scope="agents:intake"` and `{"error":"forbidden","reason":"insufficient_scope","detail"}` |
+| 9 | An `exp` claim, with at least 150 s left before it | `malformed` without one, `expires_too_soon` |
+| 10 | `sub`, `preferred_username`, `name` present and not empty; the roles claim a list of names if present | `malformed` |
 
-A refusal is 401 with `WWW-Authenticate: Bearer error="invalid_token"` and `{"error":"unauthorized","reason","detail"}`. The provider's discovery document or keys not fetched within 5 s or not answered with 200, a discovery document naming another issuer or no key set, or a key set the check cannot use, is 503 `identity_unavailable`. Neither calls the handler, and neither answer contains the token. A failed fetch is not kept: the next request asks the provider again.
+A refusal is 401 with `WWW-Authenticate: Bearer error="invalid_token"` and `{"error":"unauthorized","reason","detail"}`, except a token without the scope, which is 403 with `WWW-Authenticate: Bearer error="insufficient_scope", scope="agents:intake"` and `{"error":"forbidden","reason","detail"}`. The provider's discovery document or keys not fetched within 5 s or not answered with 200, a discovery document naming another issuer or no key set, or a key set the check cannot use, is 503 `identity_unavailable`. Neither calls the handler, and neither answer contains the token. A failed fetch is not kept: the next request asks the provider again.
 
-The case system checks the same token again, with its own audience: `lab-case-system` (`tools/case-system/compose.yaml`), the same issuer and client, and no minimum remaining life. A token the agent accepts that lacks that audience fails the run at connection with "The case system refused the caller's token."
+The case system never sees this token. The agent exchanges it for the case-system token (step 5a), which the case system checks with its own settings (`tools/case-system/compose.yaml`). A token the agent accepts whose exchange is refused fails the run before anything is connected, with the reason in step 5a.
 
 ## Always true
 
 1. A request that matches the contract, with an accepted token, gets 200 with an outcome and every step taken, whatever went wrong after it was accepted. The one exception is a response of the agent's own outside the contract, which is 500.
 2. The model makes no call. A call the agent's rules refuse never reaches the case system, and the model is told it was refused. Every call that does reach it is one the model asked for, or the one repeat the agent's code makes itself.
-3. The message identifier, the receipt time, the sender and the agent's name reach the case system as headers set by code when the connection is opened, with the caller's access token beside them. None is in the tool descriptions, so the model cannot supply them.
+3. The message identifier, the receipt time and the sender reach the case system as headers set by code when the connection is opened, beside the token the agent got for the case system. None is in the tool descriptions, so the model cannot supply them. The agent's own name is not sent: the case system takes it from that token.
 3a. No handler runs, and no body is read, for a request without an accepted access token. A token is accepted only if it has at least the run's 150 s left, so it cannot expire during the run it starts.
-3b. The case system checks the token the agent passes on, before it reads the request. A refusal when the agent connects fails the run with "The case system refused the caller's token."; a case system that cannot check tokens, with "The case system could not check the caller's token." The model is not asked in either case.
+3b. The case system checks the token the agent sends, before it reads the request. A refusal when the agent connects fails the run with "The case system refused the agent's token."; a case system that cannot check tokens, with "The case system could not check the agent's token."; a case system that offers fewer than the agent's three tools, with the tools that are missing. The model is not asked in any of these cases.
 4. A run opens or finds at most one case for its message and adds no version to that case.
 5. A lookup returns only cases the message's sender has reported on, and a follow-up is accepted only on such a case. The case system enforces both from the sender header. A case from another sender is answered exactly as a case that does not exist.
 6. A write that got no answer is repeated at most once, by code, with identical content. The model is not asked to repeat it.
@@ -269,11 +282,10 @@ Each row is a control this agent does not have, where it would sit in the flow, 
 |---|---|---|
 | Proof of who sent the message | The request | `sender` is free text from the caller. The reporter recorded in a case is whatever was typed. The limit on lookups and follow-ups rests on this text: a caller that supplies another sender's exact text can find and add to that sender's cases |
 | A check of the identifier and receipt time | `invoke` | Both are forwarded as given. A second identifier for the same message opens a second case. A receipt time in the past is accepted, so the start of the reporting clock can be set by the caller |
-| Proof of which agent is calling | The case system's MCP endpoint | The case system checks the caller's token, but the agent's name (`x-agent-id`) is still a header it claims: anything holding a valid token can claim to be any agent |
-| A narrower token for the case system | `connectCaseTools` | The caller's token is passed on unchanged, not exchanged for one limited to this agent and this run, so the case system accepts it for anything that user may do there |
+| A token limited to one run | `connectWithToolToken` | The case-system token is limited to this agent and its two scopes, not to the run or the message: until it expires it is good for any run of this agent for that user |
 | Special handling of a token refused mid-run | `ToolSet.call` | A tool call the case system refuses (401) or cannot check (503) after the connection was accepted falls under the rules for a call that got no answer (see "One tool call") |
 | A check of the caller's roles | `invoke` | Any accepted token may submit a message; the roles are given to the handler and not used |
-| Encryption between the pieces | Every hop: the caller, the model server, the case system, the identity provider | Plain HTTP. The model server's key and the caller's token cross the local network unencrypted |
+| Encryption between the pieces | Every hop: the caller, the model server, the case system, the identity provider | Plain HTTP. The model server's key, the agent's client secret and both tokens cross the local network unencrypted |
 | Rotation of the model server's key | `run/serve.ts` | One long-lived key, read from a file into an environment variable |
 
 ### What goes into the model
@@ -323,7 +335,8 @@ Each row is a control this agent does not have, where it would sit in the flow, 
 | Requests for one turn | 3 at most | `MODEL_RETRY` in `intake/handwritten.ts` |
 | Wait before a further request | 250 to 500 ms, then 500 to 1,000 ms | `waitBeforeRequest` in `intake/handwritten.ts` |
 | Time for one tool call | 10 s, or what the run has left | `intake/settings.ts`, `Deadline.within` |
-| Time to connect to the case system, and to list its tools | 10 s each, or what the run has left | `intake/settings.ts`, `Deadline.within` |
+| Time to exchange the caller's token | 10 s, or what the run has left, shared with connecting | `intake/settings.ts`, `Deadline.within` |
+| Time to connect to the case system, and to list its tools | What the exchange left of that limit, each | `connectWithToolToken` in `tools/tool-token.ts` |
 | Time to ask the model server which model it serves | 10 s | `run/serve.ts` |
 | Time for one request to the identity provider | 5 s | `run/serve.ts` |
 | Request body | 1,000,000 bytes | `contract/server.ts` |
@@ -335,6 +348,7 @@ Each row is a control this agent does not have, where it would sit in the flow, 
 | Case system address | `CASE_MCP_URL` | `agents/compose.yaml` |
 | Agent's name | `AGENT_ID` | `agents/compose.yaml` |
 | Access-token check | `AUTH_DISCOVERY_URL`, `AUTH_ISSUER`, `AUTH_ALLOWED_AUDIENCE`, `AUTH_ALLOWED_CLIENTS`, `AUTH_ROLES_CLAIM` | `agents/compose.yaml` |
+| Token exchange | `EXCHANGE_TOKEN_ENDPOINT`, `EXCHANGE_CLIENT_SECRET`; the client id is `AGENT_ID` | `agents/compose.yaml`; the secret from `platform/identity/.env` |
 | Minimum life left on a token | 150 s, the run's time limit | `agentSettingsFrom` in `run/serve.ts`, with the limits from `intake/settings.ts` |
 | Wait before fetching the keys again | 30 s | `run/serve.ts` |
 
@@ -344,7 +358,7 @@ Each row is a control this agent does not have, where it would sit in the flow, 
 |---|---|
 | `shared/agent-contract.ts` | The shape of a request and a response |
 | The caller | The message's identifier, receipt time and sender, its access token, and keeping the response |
-| The identity provider | Who the caller is: the access token's claims and the keys that sign it |
+| The identity provider | Who the caller is: the access token's claims and the keys that sign it. Whether the agent gets a case-system token for the caller, and with which scopes |
 | The agent | The order of work, the rules of a tool call, and the run's record |
 | The case system | Whether a case exists, whether it is complete, its versions and its audit trail, the one-case-per-message rule, and which sender may see or add to a case |
 | The model server | Which model answers |

@@ -2,8 +2,12 @@
 // requests on behalf of a signed-in member of staff: the agents, the case system and the retrieval service.
 //
 // It is configured by the same values as AgentCore Runtime's JWT authorizer (a discovery URL, an allowed
-// audience, allowed client IDs read from the `client_id` claim), so the check made by a container
-// locally is the one made in front of it on AWS.
+// audience, allowed client IDs read from the `client_id` claim, and allowedScopes, of which the token's
+// `scope` claim must hold at least one), so the check made by a container locally is the one made in
+// front of it on AWS.
+//
+// The checks are made in this order, and a token with more than one fault is refused for the first:
+// signature and expiry, issuer, audience, client, scope, remaining life, then the identity claims and roles.
 //
 // Everything it depends on is passed in: the settings, the clock, how long it waits before fetching the
 // keys again, and how long it waits for the provider. It reads no environment variable and not the real
@@ -22,6 +26,9 @@ export type AccessTokenSettings = {
   audience: string;
   // The token's client_id must be one of these.
   allowedClients: readonly string[];
+  // The token's scope claim (scope names separated by single spaces) must hold at least one of these, by
+  // whole name. Must not be empty: createAccessTokenCheck throws if it is.
+  requiredScopes: readonly string[];
   // The claim that holds the caller's roles as a flat list of names.
   rolesClaim: string;
   // How long, in seconds, a token must still be valid for.
@@ -43,8 +50,10 @@ export type Caller = {
   name: string;
   clientId: string;
   roles: string[];
+  // Every scope in the token's scope claim, in the token's order.
+  scopes: string[];
   expiresAt: Date;
-  // The token as presented, to pass on to the services this caller's request reaches.
+  // The token as presented: what an agent exchanges for a token meant for the service it calls.
   token: string;
 };
 
@@ -56,12 +65,18 @@ export type RefusalReason =
   | 'wrong_audience'
   | 'wrong_client'
   | 'expired'
+  | 'insufficient_scope'
   | 'expires_too_soon';
+
+// The token is refused. The detail is a sentence for a person and never contains the token. A token
+// lacking every required scope carries the required scopes, so a front door can name them in its answer.
+export type Refusal =
+  | { kind: 'refused'; reason: Exclude<RefusalReason, 'insufficient_scope'>; detail: string }
+  | { kind: 'refused'; reason: 'insufficient_scope'; detail: string; scopes: string[] };
 
 export type TokenCheck =
   | { kind: 'caller'; caller: Caller }
-  // The token is refused. The detail is a sentence for a person and never contains the token.
-  | { kind: 'refused'; reason: RefusalReason; detail: string }
+  | Refusal
   // The token could not be checked: the provider's document or keys could not be had, or the document
   // names another issuer. Not a judgement on the token.
   | { kind: 'unavailable'; detail: string };
@@ -70,8 +85,36 @@ export type AccessTokenCheck = (authorization: string | undefined) => Promise<To
 
 class Unavailable extends Error {}
 
-function refused(reason: RefusalReason, detail: string): TokenCheck {
+function refused(reason: Exclude<RefusalReason, 'insufficient_scope'>, detail: string): TokenCheck {
   return { kind: 'refused', reason, detail };
+}
+
+// How every front door answers a refusal over HTTP: 403 for a token lacking a required scope (RFC 6750
+// section 3.1), 401 for every other refusal. The body never contains the token.
+export type RefusalAnswer = {
+  status: 401 | 403;
+  wwwAuthenticate: string;
+  body: { error: 'unauthorized' | 'forbidden'; reason: RefusalReason; detail: string };
+};
+
+export function refusalAnswer(refusal: Refusal): RefusalAnswer {
+  if (refusal.reason === 'insufficient_scope') {
+    return {
+      status: 403,
+      wwwAuthenticate: `Bearer error="insufficient_scope", scope="${refusal.scopes.join(' ')}"`,
+      body: { error: 'forbidden', reason: refusal.reason, detail: refusal.detail },
+    };
+  }
+  return {
+    status: 401,
+    wwwAuthenticate: 'Bearer error="invalid_token"',
+    body: { error: 'unauthorized', reason: refusal.reason, detail: refusal.detail },
+  };
+}
+
+function scopesOf(claims: Record<string, unknown>): string[] {
+  const value = claims.scope;
+  return typeof value === 'string' ? value.split(' ').filter((name) => name !== '') : [];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -108,6 +151,10 @@ function nonEmpty(claims: Record<string, unknown>, name: string): string | undef
 }
 
 export function createAccessTokenCheck(settings: AccessTokenSettings, options: AccessTokenOptions): AccessTokenCheck {
+  if (settings.requiredScopes.length === 0) {
+    throw new Error('The access-token check needs at least one required scope.');
+  }
+  const requiredScopes = [...settings.requiredScopes];
   // Kept once fetched. A failed fetch leaves nothing behind, so the next check tries again.
   let jwksUri: Promise<string> | undefined;
   let keys: { set: ReturnType<typeof createLocalJWKSet>; fetchedAt: number } | undefined;
@@ -255,6 +302,15 @@ export function createAccessTokenCheck(settings: AccessTokenSettings, options: A
           : 'The access token names no client_id.',
       );
     }
+    const scopes = scopesOf(claims);
+    if (!requiredScopes.some((name) => scopes.includes(name))) {
+      return {
+        kind: 'refused',
+        reason: 'insufficient_scope',
+        detail: `The access token carries none of the scopes this service requires: ${requiredScopes.join(', ')}.`,
+        scopes: [...requiredScopes],
+      };
+    }
     const exp = claims.exp;
     if (typeof exp !== 'number') {
       return refused('malformed', 'The access token has no expiry.');
@@ -284,6 +340,7 @@ export function createAccessTokenCheck(settings: AccessTokenSettings, options: A
         name,
         clientId,
         roles: listed === undefined ? [] : [...(listed as string[])],
+        scopes,
         expiresAt: new Date(exp * 1000),
         token,
       },

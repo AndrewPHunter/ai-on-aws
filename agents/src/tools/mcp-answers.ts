@@ -13,8 +13,8 @@ export type ServiceSentences = {
 export function serviceSentences(name: string): ServiceSentences {
   return {
     unreachable: `The ${name} could not be reached.`,
-    refusedToken: `The ${name} refused the caller's token.`,
-    couldNotCheck: `The ${name} could not check the caller's token.`,
+    refusedToken: `The ${name} refused the agent's token.`,
+    couldNotCheck: `The ${name} could not check the agent's token.`,
     notText: `The ${name} answered with something that is not text.`,
   };
 }
@@ -44,12 +44,13 @@ function textsOf(error: unknown): string[] {
 }
 
 // Why connecting to a service failed, as a run's reason. The lab's services answer a refused token with 401
-// and {"error":"unauthorized"}, and a token they cannot check with 503 and {"error":"identity_unavailable"}.
+// and {"error":"unauthorized"}, or with 403 and {"error":"forbidden"} when it lacks the scope they require, and
+// a token they cannot check with 503 and {"error":"identity_unavailable"}.
 // The hand-written agent's MCP client puts that body in its error's message; the one inside Strands keeps it
 // in the error's data. Anything else is a service not reached.
 export function connectionFailure(error: unknown, sentences: ServiceSentences): string {
   const messages = errorsIn(error).flatMap(textsOf);
-  if (messages.some((message) => message.includes('"error":"unauthorized"'))) {
+  if (messages.some((message) => message.includes('"error":"unauthorized"') || message.includes('"error":"forbidden"'))) {
     return sentences.refusedToken;
   }
   if (messages.some((message) => message.includes('"error":"identity_unavailable"'))) {

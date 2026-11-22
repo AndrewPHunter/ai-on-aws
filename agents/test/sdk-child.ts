@@ -24,7 +24,7 @@ const checkToken: AccessTokenCheck = (authorization) => {
   if (token === 'unavailable') return Promise.resolve({ kind: 'unavailable', detail: 'Not checked, by the test.' });
   return Promise.resolve({
     kind: 'caller',
-    caller: { subject: 's', username: 'u', name: 'n', clientId: 'desk', roles: [], expiresAt: new Date('2026-03-01T10:10:00.000Z'), token },
+    caller: { subject: 's', username: 'u', name: 'n', clientId: 'desk', roles: [], scopes: ['agents:intake'], expiresAt: new Date('2026-03-01T10:10:00.000Z'), token },
   });
 };
 

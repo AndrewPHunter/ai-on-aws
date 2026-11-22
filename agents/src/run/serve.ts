@@ -10,18 +10,23 @@
 //   MODEL_BASE_URL         the address of the model server, ending in /v1
 //   MODEL_API_KEY          the key the model server expects
 //   MODEL_ID               optional; the model server is asked which model it serves when this is unset
-//   AGENT_ID               the name this agent records its changes under
+//   AGENT_ID               the name this agent records its changes under, and its client id at the identity provider
 //   AUTH_DISCOVERY_URL     where to fetch the identity provider's discovery document
 //   AUTH_ISSUER            the issuer that document and every access token must name
 //   AUTH_ALLOWED_AUDIENCE  a value that must be in the access token's aud
 //   AUTH_ALLOWED_CLIENTS   the client ids an access token may be issued to, separated by commas
+//   AUTH_REQUIRED_SCOPES   the scopes an access token must hold at least one of, separated by commas
 //   AUTH_ROLES_CLAIM       the access-token claim holding the caller's roles
+//   EXCHANGE_TOKEN_ENDPOINT  the identity provider's token endpoint, where the caller's token is exchanged
+//   EXCHANGE_CLIENT_SECRET   this agent's client secret at the identity provider, for the exchange
 //   LOCAL_RUNTIME_EDGE     on the AgentCore SDK server only: on or off (see ../contract/runtime-contract.ts)
 // and whatever the agent's own reader reads from the same object.
 
 import { createAccessTokenCheck } from '../../../shared/access-token.ts';
 import type { AccessTokenSettings, Caller } from '../../../shared/access-token.ts';
 import type { InboundMessage, InvocationResponse } from '../../../shared/agent-contract.ts';
+import { createTokenExchange } from '../../../shared/token-exchange.ts';
+import type { TokenExchange, TokenExchangeSettings } from '../../../shared/token-exchange.ts';
 import { runtimeLayoutFrom } from '../contract/runtime-contract.ts';
 import type { RuntimeLayout } from '../contract/runtime-contract.ts';
 import { createContractServer } from '../contract/server.ts';
@@ -49,6 +54,8 @@ export type BaseWiring = {
   now: () => Date;
   limits: Limits;
   model: ModelSettings;
+  // Exchanges the token the agent was called with for one meant for its tool server. One per process.
+  exchange: TokenExchange;
 };
 
 export type Handler = (message: InboundMessage, caller: Caller) => Promise<InvocationResponse>;
@@ -60,6 +67,8 @@ export type AgentSettings<Own> = {
   agentId: string;
   // A token must still be valid for the run's whole time limit, so it cannot expire during a run.
   auth: AccessTokenSettings;
+  // The client id is AGENT_ID. The secret is written in no line the agent logs.
+  exchange: TokenExchangeSettings;
   own: Own;
 };
 
@@ -72,8 +81,8 @@ export function required(env: Environment, name: string, meaning: string): strin
 }
 
 // Every setting an agent starts with, from the environment object given. Throws, naming the variable, when
-// one is missing. The agent's own settings are read after the model's and before AGENT_ID, so when several
-// are missing the one named first is always the same.
+// one is missing. The agent's own settings are read after the model's and before AGENT_ID, and the exchange's
+// after AGENT_ID, so when several are missing the one named first is always the same.
 export function agentSettingsFrom<Own>(env: Environment, limits: Limits, readOwn: (env: Environment) => Own): AgentSettings<Own> {
   const clients = required(env, 'AUTH_ALLOWED_CLIENTS', 'the client ids an access token may be issued to, separated by commas')
     .split(',')
@@ -82,23 +91,38 @@ export function agentSettingsFrom<Own>(env: Environment, limits: Limits, readOwn
   if (clients.length === 0) {
     throw new Error('AUTH_ALLOWED_CLIENTS names no client id.');
   }
+  const scopes = required(env, 'AUTH_REQUIRED_SCOPES', 'the scopes an access token must hold at least one of, separated by commas')
+    .split(',')
+    .map((scope) => scope.trim())
+    .filter((scope) => scope !== '');
+  if (scopes.length === 0) {
+    throw new Error('AUTH_REQUIRED_SCOPES names no scope.');
+  }
   const namedModel = env['MODEL_ID']?.trim();
   const baseUrl = required(env, 'MODEL_BASE_URL', 'the address of the model server, ending in /v1').replace(/\/+$/, '');
   const apiKey = required(env, 'MODEL_API_KEY', 'the key the model server expects');
   const own = readOwn(env);
+  const agentId = required(env, 'AGENT_ID', 'the name this agent records its changes under, and its client id at the identity provider');
+  const exchange: TokenExchangeSettings = {
+    tokenEndpoint: required(env, 'EXCHANGE_TOKEN_ENDPOINT', "the identity provider's token endpoint, where the caller's token is exchanged"),
+    clientId: agentId,
+    clientSecret: required(env, 'EXCHANGE_CLIENT_SECRET', "this agent's client secret at the identity provider"),
+  };
   return {
     baseUrl,
     apiKey,
     namedModel: namedModel === '' ? undefined : namedModel,
-    agentId: required(env, 'AGENT_ID', 'the name this agent records its changes under'),
+    agentId,
     auth: {
       discoveryUrl: required(env, 'AUTH_DISCOVERY_URL', "where to fetch the identity provider's discovery document"),
       issuer: required(env, 'AUTH_ISSUER', 'the issuer the discovery document and every access token must name'),
       audience: required(env, 'AUTH_ALLOWED_AUDIENCE', "a value that must be in the access token's aud"),
       allowedClients: clients,
+      requiredScopes: scopes,
       rolesClaim: required(env, 'AUTH_ROLES_CLAIM', "the access-token claim holding the caller's roles"),
       minRemainingSeconds: limits.runMs / 1000,
     },
+    exchange,
     own,
   };
 }
@@ -135,6 +159,7 @@ export function serveAgent<Own>(definition: AgentDefinition<Own>): void {
     keyRefetchWaitMs: KEY_REFETCH_WAIT_MS,
     timeoutMs: IDENTITY_TIMEOUT_MS,
   });
+  const exchange = createTokenExchange(settings.exchange, { fetch, now });
 
   // The model's name is asked of the server once, on first use, unless MODEL_ID names it.
   let handler: Handler | undefined;
@@ -150,7 +175,7 @@ export function serveAgent<Own>(definition: AgentDefinition<Own>): void {
       }
       modelId = served.id;
     }
-    handler = definition.build({ identity, now, limits, model: { baseUrl, apiKey, modelId, ...SAMPLING } }, own);
+    handler = definition.build({ identity, now, limits, model: { baseUrl, apiKey, modelId, ...SAMPLING }, exchange }, own);
     return handler;
   }
 

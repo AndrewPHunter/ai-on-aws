@@ -27,8 +27,15 @@ services:
       KC_LOG_LEVEL: info
       # Read by the realm import, which replaces each placeholder in realm/lab-realm.json with the value here.
       IDENTITY_DESK_CLIENT_SECRET: ${IDENTITY_DESK_CLIENT_SECRET:?run platform/identity/setup.sh}
+      IDENTITY_INTAKE_HANDWRITTEN_CLIENT_SECRET: ${IDENTITY_INTAKE_HANDWRITTEN_CLIENT_SECRET:?run platform/identity/setup.sh}
+      IDENTITY_INTAKE_STRANDS_CLIENT_SECRET: ${IDENTITY_INTAKE_STRANDS_CLIENT_SECRET:?run platform/identity/setup.sh}
+      IDENTITY_EXPERT_CLIENT_SECRET: ${IDENTITY_EXPERT_CLIENT_SECRET:?run platform/identity/setup.sh}
+      IDENTITY_EVALUATION_CLIENT_SECRET: ${IDENTITY_EVALUATION_CLIENT_SECRET:?run platform/identity/setup.sh}
+      IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET: ${IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET:?run platform/identity/setup.sh}
       IDENTITY_RILEY_PASSWORD: ${IDENTITY_RILEY_PASSWORD:?run platform/identity/setup.sh}
       IDENTITY_DANA_PASSWORD: ${IDENTITY_DANA_PASSWORD:?run platform/identity/setup.sh}
+      IDENTITY_MORGAN_PASSWORD: ${IDENTITY_MORGAN_PASSWORD:?run platform/identity/setup.sh}
+      IDENTITY_AVERY_PASSWORD: ${IDENTITY_AVERY_PASSWORD:?run platform/identity/setup.sh}
     ports:
       # Published on this machine only.
       - "127.0.0.1:8090:8080"

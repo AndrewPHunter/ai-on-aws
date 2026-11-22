@@ -18,7 +18,8 @@ Strands is used the way it comes. Its default model is Amazon Bedrock; here the 
 | Startup and environment | `intake/serve.ts`, `run/serve.ts` | The same files, plus `LOCAL_RUNTIME_EDGE` |
 | HTTP surface | `contract/server.ts`, written by hand | `BedrockAgentCoreApp` (`contract/sdk-app.ts`), behind the local edge (`contract/edge.ts`), started by `contract/runtime.ts` |
 | The access-token check | `shared/access-token.ts`, in `contract/server.ts` | The same file, in the edge and again in `contract/sdk-app.ts` |
-| Context headers and the caller's token on requests to the case system, reading a case system answer | `tools/case-system.ts` (`caseSystemHeaders`), which reads answers through `tools/mcp-answers.ts` | The same functions |
+| Exchanging the caller's token for the case-system token | `tools/tool-token.ts` (`connectWithToolToken`, wired in `intake/main-handwritten.ts`) | `tools/tool-token.ts` (`toolToken`), called in `handleInquiry`, with the exchange given in `StrandsDeps` |
+| Context headers and the case-system token on requests to the case system, the three tools a run needs, reading a case system answer | `tools/case-system.ts` (`caseSystemHeaders`, `missingCaseTools`), which reads answers through `tools/mcp-answers.ts` | The same functions |
 | The loop | `intake/handwritten.ts` | Strands' `Agent` |
 | Request to the model | `model/chat.ts`: chat completions, one JSON response | Strands' `OpenAIModel` on its default: the Responses API, streamed |
 | Connection to the case system | `@modelcontextprotocol/sdk` 1.32.2 client | Strands' `McpClient`, on `@modelcontextprotocol/client` 2.4.0 |
@@ -39,6 +40,7 @@ flowchart LR
         Run["intake/run.ts, run/state.ts,<br/>steps.ts, turns.ts, endings.ts<br/>SHARED: rules, record, endings"]
         Prompt["intake/prompt.ts<br/>SHARED"]
         CaseFns["tools/case-system.ts<br/>SHARED: context headers,<br/>meaning of a result"]
+        Exchange["tools/tool-token.ts<br/>SHARED: the exchange for<br/>the case-system token"]
         subgraph SDK["Strands SDK"]
             Loop["Agent<br/>the loop"]
             OAI["OpenAIModel<br/>Responses API, streamed"]
@@ -48,6 +50,7 @@ flowchart LR
 
     Model["Model server"]
     Cases["Case system"]
+    Identity["Identity provider"]
 
     Caller -->|"HTTP, JSON"| Edge
     Edge -->|"loopback"| Server
@@ -55,6 +58,8 @@ flowchart LR
     Serve -->|"starts, through contract/runtime.ts"| Server
     Server -->|"Handler"| Ours
     Ours -->|"new Agent per message"| Loop
+    Ours -->|"once, before connecting"| Exchange
+    Exchange -->|"token exchange,<br/>as the agent"| Identity
     Ours --> Prompt
     Loop -. "calls the hooks" .-> Ours
     Ours -->|"asks before and after each call,<br/>records steps, ends the run"| Run
@@ -68,7 +73,7 @@ flowchart LR
 
 `intake/strands.ts` is the only file of the intake agent that imports Strands. The label expert's `expert/strands.ts` is the only other.
 
-Connecting to the case system and listing its tools share one time limit: the tool limit, 10 s, or what the run has left. A connection that fails or runs out of time ends the run `failed`, with the same three reasons as the hand-written agent: not reached, the caller's token refused, or the token not checkable.
+Before anything is connected, `handleInquiry` exchanges the caller's token for the case-system token, within the tool limit, 10 s, or what the run has left. A refused exchange, or one that cannot be made, ends the run `failed` with the same reasons as the hand-written agent: no MCP client is made and the model is not asked. Connecting to the case system and listing its tools then share one time limit of their own, asked of the run's deadline again after the exchange: the tool limit, or what the run has left by then. The hand-written agent differs here: its exchange and its connection share one tool limit. A connection that fails or runs out of time ends the run `failed`, with the same three reasons as the hand-written agent: not reached, the token refused, or the token not checkable. A case system that offers fewer than the three tools ends it `failed`, naming the missing ones.
 
 ## One request, end to end
 
@@ -79,12 +84,15 @@ sequenceDiagram
     participant O as intake/strands.ts
     participant A as Strands Agent
     participant R as intake/run.ts and run/
+    participant I as Identity provider
     participant K as Case system
     participant V as Model server
 
     S->>O: handleInquiry with the caller (token accepted by the edge, and again in contract/sdk-app.ts)
     O->>R: startRun
-    O->>K: McpClient connect and listTools, with context headers and the caller's token
+    O->>I: token exchange, as the agent, for audience case-system (tools/tool-token.ts)
+    I-->>O: the case-system token
+    O->>K: McpClient connect and listTools, with context headers and the case-system token
     O->>A: new Agent with CaseTools, prompt, hooks
     O->>A: invoke with the user turn, a cancel signal, a turn limit
     loop each turn, at most 6
@@ -128,7 +136,7 @@ The rule is one function in `intake/run.ts` or `run/turns.ts` in both agents. Th
 
 ## What Strands does differently
 
-The rules are tested once, on the hand-written agent, in [`agents/test/intake.test.ts`](../../agents/test/intake.test.ts). [`agents/test/intake-strands.test.ts`](../../agents/test/intake-strands.test.ts) has five tests that this agent's hooks are wired to them: a case action from the tool's answer, a refused call that does not reach the case system, a write repeated once by code, the turn limit, and a model server that fails. The differences below are read from the code and from the source of Strands; no test asserts them.
+The rules are tested once, on the hand-written agent, in [`agents/test/intake.test.ts`](../../agents/test/intake.test.ts). [`agents/test/intake-strands.test.ts`](../../agents/test/intake-strands.test.ts) has five tests that this agent's hooks are wired to them: a case action from the tool's answer (with the exchanged token, and only that one, on every request to the case system), a refused call that does not reach the case system, a write repeated once by code, the turn limit, and a model server that fails. The differences below are read from the code and from the source of Strands; no test asserts them.
 
 | Situation | Hand-written loop | Strands | What this file does about it |
 |---|---|---|---|
@@ -202,4 +210,4 @@ Everything in the hand-written agent's "Not present" list is also absent here, i
 - With a bare Strands `Agent` against the 9B model, before this agent was written this way: a turn with a sentence and two tool calls came through whole; a turn cut off by its output allowance raised `MaxTokensError` carrying what had been written; asking again with `reasoning.effort: 'none'` gave an answer with no thinking; a tool result marked as an error was understood by the model.
 - The output is not repeatable on this model server, with the same seed and a temperature of 0, even between two runs of one agent.
 
-Not established: how either retry layer behaves against a model server that fails some of the time (the closed address above only); whether the thinking retry fires in this agent against the real model (the bare `Agent` above only); how this agent behaves when the real model makes two tool calls in one turn (strands 2 against the scripted model, and the bare `Agent` above); what either agent does with a response that starts and then breaks off (from the code, the hand-written loop sends the request again and Strands does not); whether the context headers and the caller's token pass through AgentCore Runtime or Gateway.
+Not established: how either retry layer behaves against a model server that fails some of the time (the closed address above only); whether the thinking retry fires in this agent against the real model (the bare `Agent` above only); how this agent behaves when the real model makes two tool calls in one turn (strands 2 against the scripted model, and the bare `Agent` above); what either agent does with a response that starts and then breaks off (from the code, the hand-written loop sends the request again and Strands does not); whether the context headers and the case-system token pass through AgentCore Runtime or Gateway.

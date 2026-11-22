@@ -16,8 +16,11 @@ async function main(): Promise<number> {
   for await (const chunk of process.stdin) {
     if (Buffer.isBuffer(chunk)) chunks.push(chunk);
   }
-  const report = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { passed: boolean; failed: string[]; held: string[] };
-  if (!Array.isArray(report.failed) || !Array.isArray(report.held)) throw new Error('the report has no held or failed list');
+  // not_checked: the statements the stack could not show, each with why. Kept as it is: neither held nor failed.
+  const report = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { passed: boolean; failed: string[]; not_checked: string[]; held: string[] };
+  if (!Array.isArray(report.failed) || !Array.isArray(report.not_checked) || !Array.isArray(report.held)) {
+    throw new Error('the report has no held, failed or not_checked list');
+  }
   if (found === '0') {
     report.held.push(STATEMENT);
   } else if (found === 'unreadable') {

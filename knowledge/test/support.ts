@@ -393,6 +393,6 @@ export const GOOD_TOKEN = 'token-of-the-test-caller';
 export const tokenCheck: AccessTokenCheck = (authorization) =>
   Promise.resolve(
     authorization === `Bearer ${GOOD_TOKEN}`
-      ? { kind: 'caller', caller: { subject: 's', username: 'dana.desk', name: 'Dana Desk', clientId: 'desk', roles: [], expiresAt: new Date(0), token: GOOD_TOKEN } }
+      ? { kind: 'caller', caller: { subject: 's', username: 'dana.desk', name: 'Dana Desk', clientId: 'desk', roles: [], scopes: ['labels:search'], expiresAt: new Date(0), token: GOOD_TOKEN } }
       : { kind: 'refused', reason: authorization === undefined ? 'missing' : 'bad_signature', detail: 'The token is not valid.' },
   );

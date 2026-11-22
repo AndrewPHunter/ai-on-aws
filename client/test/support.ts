@@ -1,16 +1,17 @@
 // What the client's tests share. An agent and the case system are, to the client, HTTP servers that answer, so
 // each is a scripted server on loopback that records what it was sent. The client runs with an in-memory store, a
 // clock that moves only when a test moves it, and seeded randomness. Outside auth.test.ts the identity provider is
-// an IdentityProvider whose refresh is a function of the refresh token: no token is signed, nothing is fetched.
+// an IdentityProvider whose refresh is a function of the refresh token and the scope: no token is signed, nothing is
+// fetched.
 
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import type { IncomingMessage, Server } from 'node:http';
 
 import type { InvocationResponse } from '../../shared/agent-contract.ts';
-import type { AgentConfig, Config } from '../src/config.ts';
+import type { AgentConfig, AgentScope, Config } from '../src/config.ts';
 import { IdentityProvider, SignInRefused } from '../src/identity.ts';
-import type { SignedInUser, TokenSet } from '../src/identity.ts';
+import type { Refreshed, SignedInUser } from '../src/identity.ts';
 import { SESSION_COOKIE, createClientServer } from '../src/server.ts';
 import { SessionStore } from '../src/sessions.ts';
 import { InquiryStore } from '../src/store.ts';
@@ -88,31 +89,34 @@ export function seeded(seed: string): (size: number) => Uint8Array {
   return (size) => createHash('sha256').update(`${seed}:${n++}`).digest().subarray(0, size);
 }
 
-// Renews a refresh token r to the access token "renewed-r", with ten minutes to live; refuses the refresh token
-// "refuse" as the provider would. Records each refresh token it was given.
+// Refreshes a refresh token r for a scope s to the access token "s for r", holding s, with ten minutes to live, and
+// returns no new refresh token; refuses the refresh token "refuse" as the provider would. Records each refresh token
+// it was given.
 export class ScriptedRenewal extends IdentityProvider {
   readonly renewed: string[] = [];
   private readonly clockNow: () => Date;
 
   constructor(config: Config, now: () => Date) {
-    super(config.oidc, { claim: config.rolesClaim, reviewerRole: config.reviewerRole }, now);
+    super(config.oidc, config.rolesClaim, now);
     this.clockNow = now;
   }
 
-  override refresh(tokens: TokenSet): Promise<TokenSet> {
-    const refreshToken = tokens.refreshToken ?? '';
+  override refresh(refreshToken: string, scope: string): Promise<Refreshed> {
     this.renewed.push(refreshToken);
     if (refreshToken === 'refuse') return Promise.reject(new SignInRefused('The provider refused to renew.'));
-    return Promise.resolve({ ...tokens, accessToken: `renewed-${refreshToken}`, accessExpiresAt: this.clockNow().getTime() + 600_000 });
+    return Promise.resolve({ accessToken: `${scope} for ${refreshToken}`, accessExpiresAt: this.clockNow().getTime() + 600_000, granted: ['openid', scope], refreshToken: null });
   }
 }
 
-export function deskConfig(options: { agents: AgentConfig[]; caseReviewUrl: string; webRoot?: string; discoveryUrl?: string; issuer?: string; revocationEndpoint?: string }): Config {
+// An agent for deskConfig; its scope is agents:intake unless given.
+export type TestAgent = Omit<AgentConfig, 'scope'> & { scope?: AgentScope };
+
+export function deskConfig(options: { agents: TestAgent[]; caseReviewUrl: string; webRoot?: string; discoveryUrl?: string; issuer?: string; revocationEndpoint?: string }): Config {
   const unused = 'http://127.0.0.1:1/not-used';
   return {
     dbPath: ':memory:',
     caseReviewUrl: options.caseReviewUrl,
-    agents: options.agents,
+    agents: options.agents.map((agent) => ({ ...agent, scope: agent.scope ?? 'agents:intake' })),
     webRoot: options.webRoot ?? '/nonexistent-web-root',
     oidc: {
       discoveryUrl: options.discoveryUrl ?? unused,
@@ -125,7 +129,6 @@ export function deskConfig(options: { agents: AgentConfig[]; caseReviewUrl: stri
     },
     appOrigin: APP_ORIGIN,
     rolesClaim: 'roles',
-    reviewerRole: 'reviewer',
   };
 }
 
@@ -153,13 +156,19 @@ export async function startDesk(t: Hooks, config: Config, time: Clock, identity?
   return { url, store, sessions, clock: time };
 }
 
-export const RILEY: SignedInUser = { sub: 'sub-riley', name: 'Riley Reviewer', username: 'riley.reviewer', roles: ['reviewer'], isReviewer: true };
-export const DANA: SignedInUser = { sub: 'sub-dana', name: 'Dana Desk', username: 'dana.desk', roles: [], isReviewer: false };
+// A person and the scopes their sign-in was granted.
+export type Person = SignedInUser & { granted: string[] };
 
-// A session made directly in the store, as a completed sign-in makes one. Returns the cookie a browser would send.
-export function signedIn(desk: Desk, user: SignedInUser, access: string, lifeMs: number, refresh: string): string {
-  const tokens = { accessToken: access, accessExpiresAt: desk.clock.now().getTime() + lifeMs, refreshToken: refresh, idToken: `id-${access}` };
-  return `${SESSION_COOKIE}=${desk.sessions.create(user, tokens).id}`;
+export const RILEY: Person = { sub: 'sub-riley', name: 'Riley Reviewer', username: 'riley.reviewer', roles: ['reviewer'], granted: ['openid', 'agents:intake', 'cases:read', 'cases:review'] };
+export const DANA: Person = { sub: 'sub-dana', name: 'Dana Desk', username: 'dana.desk', roles: [], granted: ['openid', 'agents:intake', 'cases:read'] };
+
+// A session made directly in the store, as a completed sign-in makes one, that has already got an access token for
+// each scope it was granted, "<access>:<scope>", with lifeMs to live. Returns the cookie a browser would send.
+export function signedIn(desk: Desk, person: Person, access: string, lifeMs: number, refresh: string): string {
+  const { granted, ...user } = person;
+  const session = desk.sessions.create({ user, granted, refreshToken: refresh });
+  for (const scope of granted) session.tokens.set(scope, { accessToken: `${access}:${scope}`, expiresAt: desk.clock.now().getTime() + lifeMs });
+  return `${SESSION_COOKIE}=${session.id}`;
 }
 
 export type Reply = { status: number; body: unknown };

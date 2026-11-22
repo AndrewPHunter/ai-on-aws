@@ -1,6 +1,7 @@
-// The front doors' invariants ("Always true" in docs/architecture/agent-runtime.md), and the one probe of the
-// hand-written agent's model client. The token check is a plain function that refuses, cannot check, or accepts a
-// fixed caller: no token is signed. The SDK app cannot be closed, so it runs in a child process (sdk-child.ts),
+// The front doors' invariants ("Always true" in docs/architecture/agent-runtime.md), the one probe of the
+// hand-written agent's model client (runtime P1, a probe that matches no invariant), and the token an agent
+// sends its tool server (runtime 5). The token check and the token exchange are plain functions that answer as each row says: no token
+// is signed. The SDK app cannot be closed, so it runs in a child process (sdk-child.ts),
 // behind the edge, on loopback ports picked here; a port taken in the moment between being picked and the child
 // listening makes the child exit and the test fail.
 
@@ -14,10 +15,12 @@ import type { TestContext } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import type { AccessTokenCheck } from '../../shared/access-token.ts';
+import type { TokenExchangeRequest, TokenExchangeResult } from '../../shared/token-exchange.ts';
 import { invocationResponseSchema } from '../../shared/agent-contract.ts';
 import { createLocalEdge } from '../src/contract/edge.ts';
 import { createContractServer } from '../src/contract/server.ts';
 import { createChatModel } from '../src/model/chat.ts';
+import { CASE_SYSTEM, connectWithToolToken } from '../src/tools/tool-token.ts';
 import { ask, listen, message, say, startModel, stop } from './support.ts';
 
 const IDENTITY = { id: 'runtime-test-agent', implementation: 'none' };
@@ -73,12 +76,12 @@ async function invoke(url: string, token: string, id: string): Promise<{ status:
   return { status: response.status, text: await response.text() };
 }
 
-// The status of a POST whose headers are sent and whose body never ends.
-function statusBeforeBody(url: string): Promise<number> {
+// The status and WWW-Authenticate of a POST whose headers are sent and whose body never ends.
+function answerBeforeBody(url: string): Promise<{ status: number; wwwAuthenticate: string | undefined }> {
   return new Promise((resolve, reject) => {
     const target = new URL(`${url}/invocations`);
     const sent = request({ host: target.hostname, port: target.port, path: target.pathname, method: 'POST', headers: { 'content-length': '1000' } }, (response) => {
-      resolve(response.statusCode ?? 0);
+      resolve({ status: response.statusCode ?? 0, wwwAuthenticate: response.headers['www-authenticate'] });
       response.resume();
       sent.destroy();
     });
@@ -87,10 +90,11 @@ function statusBeforeBody(url: string): Promise<number> {
   });
 }
 
-test('runtime 1. a request with no accepted token is answered 401 before its body is read, and 503 when the token cannot be checked', { timeout: 30_000 }, async (t) => {
+test('runtime 1. a request with no accepted token is answered 401 before its body is read, 403 naming the scopes when it lacks them, and 503 when the token cannot be checked', { timeout: 30_000 }, async (t) => {
   const handled: string[] = [];
-  const rows: Array<{ check: AccessTokenCheck; status: number }> = [
+  const rows: Array<{ check: AccessTokenCheck; status: number; scopes?: string }> = [
     { check: () => Promise.resolve({ kind: 'refused', reason: 'missing', detail: 'No token.' }), status: 401 },
+    { check: () => Promise.resolve({ kind: 'refused', reason: 'insufficient_scope', detail: 'No scope.', scopes: ['agents:intake'] }), status: 403, scopes: 'agents:intake' },
     { check: () => Promise.resolve({ kind: 'unavailable', detail: 'The provider could not be asked.' }), status: 503 },
   ];
   for (const row of rows) {
@@ -110,7 +114,11 @@ test('runtime 1. a request with no accepted token is answered 401 before its bod
       stop(edge);
     });
     const doors: Array<[string, string]> = [['contract server', contractUrl], ['edge', edgeUrl]];
-    for (const [door, url] of doors) assert.equal(await statusBeforeBody(url), row.status, door);
+    for (const [door, url] of doors) {
+      const answer = await answerBeforeBody(url);
+      assert.equal(answer.status, row.status, door);
+      if (row.scopes !== undefined) assert.ok(answer.wwwAuthenticate?.includes(`scope="${row.scopes}"`), `${door}: the scopes are not named`);
+    }
   }
   assert.deepEqual(handled, []);
 });
@@ -146,7 +154,7 @@ test('runtime 4. on the SDK server SIGTERM and SIGINT end the process with exit 
   }
 });
 
-test('runtime 5. the hand-written agent\'s model client reaches a model server and reads back a text answer and a tool call', async (t) => {
+test('runtime P1. the hand-written agent\'s model client reaches a model server and reads back a text answer and a tool call', async (t) => {
   const model = await startModel(t, (_request, nth) => (nth === 0 ? say('Hello.') : ask(['find_case', { patient: 'JD' }])));
   const client = createChatModel(model.settings);
   const asked = (): ReturnType<typeof client.complete> => client.complete([{ role: 'user', content: 'Hi' }], [], { timeoutMs: 30_000, thinking: true });
@@ -158,4 +166,45 @@ test('runtime 5. the hand-written agent\'s model client reaches a model server a
     second.completion.toolCalls.map((c) => c.function),
     [{ name: 'find_case', arguments: '{"patient":"JD"}' }],
   );
+});
+
+test('runtime 5. an agent connects to its tool server only with a token it got for that server by one exchange of the caller\'s, and a refused or unavailable exchange connects nothing', async () => {
+  const callerToken = 'token-the-agent-was-called-with';
+  const inbound = message('msg-runtime-5', 'Patient JD had a rash after Examplamab.');
+  const rows: Array<{ name: string; answer: TokenExchangeResult; connected: string[] }> = [
+    { name: 'granted', answer: { kind: 'token', token: 'token-for-the-case-system', expiresAt: new Date('2026-03-01T10:05:00.000Z'), scopes: ['cases:write', 'cases:lookup'] }, connected: ['token-for-the-case-system'] },
+    { name: 'refused', answer: { kind: 'refused', reason: 'provider_refused', detail: 'Detail-of-the-refused-exchange.' }, connected: [] },
+    { name: 'unavailable', answer: { kind: 'unavailable', detail: 'the token exchange could not reach the identity provider: fetch failed (getaddrinfo ENOTFOUND identity.example:8080).' }, connected: [] },
+  ];
+  for (const row of rows) {
+    const asked: TokenExchangeRequest[] = [];
+    const connected: string[] = [];
+    const limits: number[] = [];
+    // The exchange takes 4 s on this clock, so the connection is left 6 s of the 10 s given.
+    let at = new Date('2026-03-01T10:00:00.000Z').getTime();
+    const connect = connectWithToolToken(
+      (request) => {
+        asked.push(request);
+        at += 4_000;
+        return Promise.resolve(row.answer);
+      },
+      CASE_SYSTEM,
+      (_message, token, timeoutMs) => {
+        connected.push(token);
+        limits.push(timeoutMs);
+        return Promise.resolve({ ok: true, tools: { definitions: [], call: () => Promise.resolve({ kind: 'no_answer', reason: 'Not called.' }), close: () => Promise.resolve() } });
+      },
+      () => new Date(at),
+    );
+    const result = await connect(inbound, callerToken, 10_000);
+    assert.deepEqual(
+      asked.map(({ subjectToken, audience, scopes }) => ({ subjectToken, audience, scopes: [...scopes] })),
+      [{ subjectToken: callerToken, audience: 'case-system', scopes: ['cases:write', 'cases:lookup'] }],
+      `${row.name}: the exchange was not asked once, for the case system`,
+    );
+    assert.deepEqual(connected, row.connected, `${row.name}: what was connected with`);
+    if (row.answer.kind === 'token') assert.deepEqual(limits, [6_000], `${row.name}: the connection was not given what the exchange left`);
+    if (row.answer.kind === 'refused') assert.ok(!result.ok && result.reason.includes(row.answer.detail), `${row.name}: the reason does not carry the detail`);
+    if (row.answer.kind === 'unavailable') assert.ok(!result.ok && !result.reason.includes(row.answer.detail) && !result.reason.includes('identity.example'), `${row.name}: the reason carries the detail or its address`);
+  }
 });

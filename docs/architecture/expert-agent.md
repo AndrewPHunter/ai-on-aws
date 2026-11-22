@@ -30,6 +30,7 @@ It serves the same contract as the intake agents, through the same startup (`run
 | `expert/strands.ts` | The run: the four tools, the hooks, which calls are made, what the model is shown, how the run ends, the reply | HTTP, the token check, the search engine |
 | `expert/checks.ts` | Whether a final tool is accepted, and the reply it gives. Pure functions | Strands, the retrieval service, the clock |
 | `expert/retrieval.ts` | How an answer of the retrieval service is read, the sentence for each way it fails, how a section is named | The model, the loop |
+| `tools/tool-token.ts` (shared with the intake agents) | Exchanging the caller's token for one meant for the tool server, the retrieval service's audience and scope, and the reason a run ends with when the exchange fails | The model, the loop, MCP |
 | `tools/mcp-answers.ts` (shared with the intake agents) | Reading why connecting to an MCP service failed and the payload of a tool result, in the words of the service named | Which service, the model, the loop |
 | `run/*`, `contract/sdk-app.ts`, `contract/edge.ts`, `contract/runtime.ts`, `contract/runtime-contract.ts`, `model/served.ts` (shared) | The state every run keeps, the record, the shared endings, startup, the HTTP contract on the SDK server, the wording of a model failure | This agent |
 
@@ -41,7 +42,10 @@ A six-sided box is decided by inference. A diamond is decided by code. A slanted
 
 ```mermaid
 flowchart TD
-    Arrive(["A question arrives,<br/>with an accepted token"]) --> Connect[/"Connect to the retrieval service<br/>with the caller's token; list its tools"/]
+    Arrive(["A question arrives,<br/>with an accepted token"]) --> Exchange[/"Exchange the caller's token, as the agent,<br/>for one meant for the retrieval service"/]
+    Exchange --> Granted{"Granted?"}
+    Granted -- no --> FailedExchange(["failed: the exchange's<br/>reason is named"])
+    Granted -- yes --> Connect[/"Connect to the retrieval service<br/>with that token; list its tools"/]
     Connect --> Reached{"Reached, token accepted,<br/>both tools offered?"}
     Reached -- no --> FailedStart(["failed: the reason is named"])
     Reached -- yes --> Limits{"Any turns and<br/>time left?"}
@@ -75,7 +79,7 @@ flowchart TD
 
 Two calls asked for in one turn are run one at a time, in order, so a search on a label the same turn's `find_labels` returned is made after it. Once a final tool is accepted, a search fails, or a final tool fails after the last correction, the run is stopped through a cancel signal: anything else asked for in that turn is not called and the model is not asked again. A tool asked for when the run's time is already used up calls nothing and ends the run at its time limit.
 
-Connecting to the retrieval service and listing its tools share one time limit: the tool limit, or what the run has left. Every request to the retrieval service carries `Authorization: Bearer` with the caller's token as presented, and no other header of this agent's: no context headers. The retrieval service checks that token again with its own audience, `lab-knowledge` (`knowledge/compose.yaml`), and no minimum remaining life; a token without it fails the run at connection.
+Before anything is connected, the agent exchanges the caller's token, once, as itself (`tools/tool-token.ts`), for one with audience `knowledge` and scope `labels:search`, within the tool limit or what the run has left. A refused exchange, or one that cannot be made, ends the run `failed`: a refusal with the identity provider's words, an exchange that cannot be made with a fixed sentence that names no address; nothing is connected and the model is not asked. It is not retried. Connecting to the retrieval service and listing its tools then share one time limit of their own, asked of the run's deadline again after the exchange: the tool limit, or what the run has left by then. Every request to the retrieval service carries `Authorization: Bearer` with the exchanged token, and no other header of this agent's: no context headers. The retrieval service never sees the caller's token; it checks the exchanged one with its own settings (`knowledge/compose.yaml`).
 
 What the model is told when code refuses a call, each recorded as a tool step with `is_error` and the refusal as its result:
 
@@ -148,7 +152,7 @@ Readings chosen where the rules leave a choice. They are details of the code, re
 2. Text the model writes reaches the reply only as statements that passed every check. No other sentence of the reply carries model text: each is written by code, from what the retrieval service returned at most (a label's names, version and date), and so is every stop reason. What the model searched for is in its tool and retrieval steps.
 3. Every citation names the passage the quote was found in, and that passage's label, version, date and page, as the retrieval service returned them.
 4. A search that could not be made is never told to the model and never repeated. An unknown error code, or an error the agent cannot read, counts as one.
-5. The caller's token goes to the retrieval service on every request of the run, and nothing else of the message. The model is given the message's text only: not the sender, not the receipt time.
+5. The token the agent got for the retrieval service goes to it on every request of the run. The caller's token does not, and nothing else of the message does. The model is given the message's text only: not the sender, not the receipt time.
 6. No passage is cut. A passage is shown whole or named as not shown.
 7. Runs share no state. A new Agent and a new MCP client are made for every message.
 8. Whatever goes wrong, a run ends with an outcome inside the contract, and nothing the model wrote that did not pass the checks is in the reply.
@@ -164,7 +168,9 @@ Readings chosen where the rules leave a choice. They are details of the code, re
 | `stopped` | The model ended its turn with text and no final tool | Names the finish reason; the text stays in the model step |
 | `stopped` | A turn cut off at the output allowance after the one retry with thinking off | Says so; nothing written is returned |
 | `failed` | The model could not be asked | The same sentences as the intake agents |
-| `failed` | The retrieval service could not be reached, refused the caller's token, could not check it, or does not offer both tools | One sentence each |
+| `failed` | The identity provider refused to exchange the caller's token for one meant for the retrieval service | "The agent could not get a token for the retrieval service: " and the provider's refusal |
+| `failed` | The exchange could not be made: no answer in time, the provider not reached, or an answer it cannot read | "The agent could not get a token for the retrieval service: the identity provider could not be reached or did not answer in time." |
+| `failed` | The retrieval service could not be reached, refused the token, could not check it, or does not offer both tools | One sentence each |
 | `failed` | `find_labels` or `search_label` answered `index_not_built`, `search_timed_out`, `search_unreachable`, `search_error` or `search_unexpected_answer` | One sentence each |
 | `failed` | Either tool answered an error code no list names | "The label search answered with an error this agent does not know: " and the code |
 | `failed` | Either tool answered an error that is not `{ error, detail }`, or a success of a shape the agent does not expect | One sentence each |
@@ -181,7 +187,7 @@ A `stopped` or `failed` run has no reply, no citations and no `label_answer`.
 | Model turns in a run | 8. A turn asked again with thinking off is not counted, as in the intake agent on Strands | `EXPERT_LIMITS`, `expert/settings.ts` |
 | Time for a run | 150 s | `EXPERT_LIMITS` |
 | Time for one model request | 90 s | `EXPERT_LIMITS` |
-| Time for one tool call, and for connecting and listing the tools | 10 s, or what the run has left | `EXPERT_LIMITS` |
+| Time for one tool call, for the token exchange, and for connecting and listing the tools | 10 s each, or what the run has left when each starts | `EXPERT_LIMITS` |
 | Output allowance | 4,096 tokens | `OUTPUT_ALLOWANCE`, `expert/settings.ts`; applied in `expert/main.ts` |
 | Temperature and seed | shared | `run/sampling.ts` |
 | Searches in a run | 4 | `EXPERT_SETTINGS.search`, `expert/settings.ts` |
@@ -209,7 +215,7 @@ Passage text costs a median of 0.24, a 99th percentile of 0.59, and at most 0.75
 
 ## How it is tested
 
-`agents/test/expert.test.ts`: one test for each line of "Always true" (expert 1 to 7), and one (expert 8) that a run with no final tool, a model server that fails, or an answer that never passes ends inside the contract with no unchecked model text in the reply. Each calls the handler with the caller as a value, through the real Strands loop and its MCP client, against a scripted model server and a scripted retrieval service on loopback; no token is signed, and every response is checked against the contract schema. Whether this agent and the real retrieval service agree is not checked here. The SDK server and the edge are tested in `agents/test/runtime.test.ts` with a handler written for the tests, not this agent's.
+`agents/test/expert.test.ts`: one test for each line of "Always true" (expert 1 to 7), and one (expert 8) that a refused token exchange, a run with no final tool, a model server that fails, or an answer that never passes ends inside the contract with no unchecked model text in the reply. Each calls the handler with the caller and a scripted token exchange as values, through the real Strands loop and its MCP client, against a scripted model server and a scripted retrieval service on loopback; no token is signed, and every response is checked against the contract schema. Whether this agent and the real retrieval service agree is not checked here. The SDK server and the edge are tested in `agents/test/runtime.test.ts` with a handler written for the tests, not this agent's.
 
 The model's and the tools' time limits are kept in real time by their clients. The tests set limits no busy machine reaches, and no test's subject is a time limit.
 

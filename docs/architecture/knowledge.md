@@ -167,7 +167,7 @@ flowchart LR
     RS -- "fetch: mapping, _search, _count" --> OS
     RS -. "vector strategies: the query, the key" .-> EM
     RS -. "fused_reranked: the query and up to 20 passages, the key" .-> RR
-    GT -- "sign in as dana.desk" --> ID
+    GT -- "client credentials as knowledge-gate" --> ID
     GT -- "MCP with the token" --> RS
     GT -- "alias, count, mapping" --> OS
 ```
@@ -215,7 +215,7 @@ The figures measured for the embedding stage, the index build and each strategy 
 
 Every tool result is one MCP text item holding JSON: the result, or `{error, detail}` with `isError` set.
 
-The retrieval service's HTTP answers:
+The retrieval service accepts a token for the audience `knowledge`, issued to `expert` (the label expert's token, exchanged from its caller's) or `knowledge-gate` (the gate, by client credentials). Its HTTP answers:
 
 | Request | Answer |
 |---|---|
@@ -278,7 +278,7 @@ The agent that calls these two tools is the label expert: [expert-agent.md](expe
 29. The alias `labels` points only at an index into which the engine accepted every item, and whose count of documents equals the number of chunks read. Any failure once the run may have made a new index (a refused item, a count that differs, a create, bulk request, refresh, count or alias move that fails or gets no answer) leaves the alias where it was and removes the new index; if the removal fails, the run names the index left behind. An index the alias points at is never removed: one with the wrong count stops the run (exit 2). An index with this name, the wrong count and no alias on it is removed and built again.
 30. An index's name is a hash of the chunk report, the embed report when vectors are loaded, and the mapping. The chunk report records the SHA-256 of every chunk file and the embed report that of the vector files, and the index command refuses a file that does not match, so a change to any chunk's or vector's bytes is a new index. Indexing unchanged chunks and vectors changes nothing. An embed report made from other chunks builds nothing.
 31. The search engine publishes no port. Only containers on the stack's network reach it.
-32. Every request to the retrieval service but `GET /ping` needs a valid access token with audience `lab-knowledge`, judged before anything else of the request is read: the target, then the body.
+32. Every request to the retrieval service but `GET /ping` needs a valid access token with audience `knowledge` and the scope `labels:search`, judged before anything else of the request is read: the target, then the body.
 33. `search_label` searches one label only. The set id filter is set by code and is exact, and the query goes only into a full-text match, never a query language. Input outside the limits (a query over 1,000 characters, a drug name over 200, `max_results` outside 1 to 10, an unknown part, a set id that is not a lowercase GUID) is refused with `invalid_input` before anything is sent. A request body over 100 kB is refused with 400.
 34. The strategy is the service's setting, never the caller's or the model's: no tool argument names it. Every strategy searches under the same filters set in code. A failure of the embedding server, the reranker or the engine is an error result naming it, never a search by another strategy. A vector is used only from an index whose recorded embedding identity matches the service's, and both legs of a search run against that one index.
 35. The model servers' key is sent to the two model servers only, and appears in no result, error or output line.
@@ -303,7 +303,7 @@ The agent that calls these two tools is the label expert: [expert-agent.md](expe
 | `index` | The same image, on the stack's network | The search engine only | `corpus/` and `data/` read-only |
 | `search` service | OpenSearch, no capabilities, no new privileges, not read-only (it writes its keystore at start) | The stack's network, no published port | None; a named volume for its data |
 | `knowledge` service | The `run` stage image, read-only, no capabilities | The stack's network; `127.0.0.1:8002` | None |
-| Gate | The same image, on the stack's network, through `knowledge/gate/compose.yaml` | The stack's network | `data/`, `corpus/` and `platform/identity/src/`, read-only |
+| Gate | The same image, on the stack's network, through `knowledge/gate/compose.yaml` | The stack's network | `data/` and `corpus/`, read-only |
 | Tests `knowledge 2.` to `knowledge 39.`, one per invariant above (none for 1, 31, 40 and 41), and one probe of the index command | `toolchain/check.sh` | None: the stand-ins are in memory, and the retrieval service listens on loopback | None |
 
 ## Parsing: problems and what follows

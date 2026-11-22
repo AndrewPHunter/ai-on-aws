@@ -40,7 +40,7 @@ export type AuditView = {
   at: string;
   actor: string;
   actor_kind: 'agent' | 'reviewer';
-  // On an agent's entry: the signed-in user the agent acted for, from the access token it passed on.
+  // On an agent's entry: the signed-in user the agent acted for, from the access token the agent sent.
   // Null on a reviewer's entry, and on entries recorded before tokens were checked.
   acting_for: { name: string; subject: string } | null;
   // On a reviewer's entry: the reviewer's subject at the identity provider; actor is their name. Null on

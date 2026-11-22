@@ -6,6 +6,7 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 
+import { refusalAnswer } from '../../../shared/access-token.ts';
 import type { AccessTokenCheck } from '../../../shared/access-token.ts';
 import type { Engine } from './engine.ts';
 import { buildMcpServer } from './mcp.ts';
@@ -71,8 +72,9 @@ export function createRetrievalServer(engine: Engine, index: string, checkToken:
     const checked = await checkToken(request.headers.authorization);
     if (checked.kind !== 'caller') {
       if (checked.kind === 'refused') {
-        response.writeHead(401, { 'content-type': 'application/json', 'www-authenticate': 'Bearer error="invalid_token"' });
-        response.end(JSON.stringify({ error: 'unauthorized', reason: checked.reason, detail: checked.detail }));
+        const answer = refusalAnswer(checked);
+        response.writeHead(answer.status, { 'content-type': 'application/json', 'www-authenticate': answer.wwwAuthenticate });
+        response.end(JSON.stringify(answer.body));
       } else {
         sendJson(response, 503, { error: 'identity_unavailable', detail: checked.detail });
       }

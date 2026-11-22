@@ -20,16 +20,20 @@ const RIVERA = 'Dr A. Rivera, a.rivera@example.org';
 const KATO = 'Dr M. Kato, m.kato@example.org';
 const COMPLETE = { patient: 'JD, 54, male', reporter: RIVERA, suspect_drug: 'examplamab', event: 'muscle pain' };
 
-const person = (name: string, roles: string[]): Caller => ({
+const person = (name: string, clientId: string, scopes: string[]): Caller => ({
   subject: `subject-${name}`,
   username: name,
   name,
-  clientId: 'desk',
-  roles,
+  clientId,
+  roles: [],
+  scopes,
   expiresAt: new Date('2026-01-01T10:00:00.000Z'),
   token: name,
 });
-const CALLERS: Record<string, Caller> = { 'Bearer dana': person('dana', []), 'Bearer riley': person('riley', ['reviewer']) };
+const CALLERS: Record<string, Caller> = {
+  'Bearer dana': person('dana', 'intake-handwritten', ['cases:write', 'cases:lookup']),
+  'Bearer riley': person('riley', 'desk', ['cases:read', 'cases:review']),
+};
 
 const checkToken: AccessTokenCheck = (authorization) => {
   if (authorization === 'Bearer down') return Promise.resolve({ kind: 'unavailable', detail: 'The provider is down.' });
@@ -46,7 +50,7 @@ async function listen(server: Server): Promise<string> {
 
 async function start(t: TestContext): Promise<{ store: CaseStore; agent: string; review: string }> {
   const store = new CaseStore(':memory:', () => NOW);
-  const servers = [createAgentServer(store, () => NOW, checkToken), createReviewServer(store, checkToken, 'reviewer')];
+  const servers = [createAgentServer(store, () => NOW, checkToken), createReviewServer(store, checkToken)];
   t.after(() => {
     for (const server of servers) {
       server.closeAllConnections();
@@ -62,7 +66,8 @@ async function start(t: TestContext): Promise<{ store: CaseStore; agent: string;
 const headersFor = (messageId: string, sender: string): Record<string, string> => ({
   [CONTEXT_HEADERS.messageId]: messageId,
   [CONTEXT_HEADERS.receivedAt]: '2026-01-01T08:00:00.000Z',
-  [CONTEXT_HEADERS.agentId]: 'intake-agent',
+  // Not read: the agent is the token's client.
+  'x-agent-id': 'someone-else',
   [CONTEXT_HEADERS.sender]: encodeURIComponent(sender),
 });
 
@@ -109,28 +114,29 @@ test('case-system 8. no call is accepted without knowing who is calling, and the
   assert.deepEqual([store.find({}).cases.length, store.getCase(id)?.status, store.auditTrail(id).length], [1, 'awaiting_review', 1]);
 });
 
-test("case-system P1. over MCP the agent is offered exactly the three tools, and a create is recorded against the headers and the token's caller", async (t) => {
+test("case-system P1. over MCP the agent is offered exactly the three tools, and a create is recorded against the headers and the token's client and user", async (t) => {
   const { store, agent } = await start(t);
   const client = await connect(t, agent, headersFor('m1', RIVERA));
   assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name).sort(), ['add_follow_up', 'create_case', 'find_case']);
   assert.equal((await call(client, 'create_case', COMPLETE)).payload['outcome'], 'created');
   const [entry] = store.auditTrail('AE-000001');
-  assert.deepEqual([entry?.actor, entry?.acting_for, entry?.detail], ['intake-agent', { name: 'dana', subject: 'subject-dana' }, { message_id: 'm1', missing: [] }]);
+  assert.deepEqual([entry?.actor, entry?.acting_for, entry?.detail], ['intake-handwritten', { name: 'dana', subject: 'subject-dana' }, { message_id: 'm1', missing: [] }]);
   assert.equal(store.versions('AE-000001')[0]?.sender, RIVERA);
 });
 
-test("case-system P2. a decision through the review route is recorded under the token's caller; a named reviewer or a caller without the role is refused", async (t) => {
+test("case-system P2. a decision through the review route is recorded under the token's caller; a named reviewer or a token without cases:review is refused", async (t) => {
   const { store, review } = await start(t);
   const id = store.createCase(context('m1', RIVERA), COMPLETE).case.case_id;
-  const decide = async (authorization: string, body: unknown): Promise<number> => {
+  // The status, and the scope the answer names when it is refused for one.
+  const decide = async (authorization: string, body: unknown): Promise<[number, string | undefined]> => {
     const response = await fetch(`${review}/cases/${id}/review`, { method: 'POST', headers: { authorization, 'content-type': 'application/json' }, body: JSON.stringify(body) });
     await response.body?.cancel();
-    return response.status;
+    return [response.status, /scope="([^"]*)"/.exec(response.headers.get('www-authenticate') ?? '')?.[1]];
   };
-  assert.equal(await decide('Bearer dana', { decision: 'approve' }), 403);
-  assert.equal(await decide('Bearer riley', { decision: 'approve', reviewer: 'Someone Else' }), 400);
+  assert.deepEqual(await decide('Bearer dana', { decision: 'approve' }), [403, 'cases:review']);
+  assert.deepEqual(await decide('Bearer riley', { decision: 'approve', reviewer: 'Someone Else' }), [400, undefined]);
   assert.equal(store.getCase(id)?.status, 'awaiting_review');
-  assert.equal(await decide('Bearer riley', { decision: 'approve' }), 200);
+  assert.deepEqual(await decide('Bearer riley', { decision: 'approve' }), [200, undefined]);
   const last = store.auditTrail(id).at(-1);
   assert.deepEqual([store.getCase(id)?.status, last?.actor, last?.actor_subject], ['approved', 'riley', 'subject-riley']);
 });

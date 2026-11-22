@@ -4,9 +4,10 @@
 // returns it. Strands owns the loop: it sends the conversation and four tools to the model, runs the tools one at
 // a time and stops. This file's code owns everything a reply is made of:
 //
-//   - find_labels and search_label call the retrieval service with the caller's token. A search is not made on a
-//     label find_labels did not return in this run, or after the run's searches are used up. Each passage is
-//     given a short handle (P1, P2, ...), and passages are shown whole while they fit the reading allowance.
+//   - find_labels and search_label call the retrieval service with the token the agent got for it by exchanging
+//     the caller's, once, before connecting (../tools/tool-token.ts). A search is not made on a label find_labels
+//     did not return in this run, or after the run's searches are used up. Each passage is given a short handle
+//     (P1, P2, ...), and passages are shown whole while they fit the reading allowance.
 //   - answer and cannot_answer are checked in code (checks.ts). An accepted one ends the run through a cancel
 //     signal this file owns, so the model is not asked again. A refused one is told to the model, up to the
 //     number of corrections allowed; one more ends the run.
@@ -42,6 +43,7 @@ import type { z } from 'zod';
 
 import type { Caller } from '../../../shared/access-token.ts';
 import type { Citation, InboundMessage, InvocationResponse, LabelAnswer } from '../../../shared/agent-contract.ts';
+import type { TokenExchange } from '../../../shared/token-exchange.ts';
 import type { AgentIdentity } from '../contract/server.ts';
 import { MODEL_UNREACHABLE, modelAnsweredWithStatus, modelDidNotAnswerWithin } from '../model/served.ts';
 import type { ModelSettings } from '../model/served.ts';
@@ -50,6 +52,7 @@ import type { EndableRun } from '../run/endings.ts';
 import type { Limits } from '../run/limits.ts';
 import { startRunState } from '../run/state.ts';
 import { recordError, recordNotCalled } from '../run/steps.ts';
+import { KNOWLEDGE, toolToken } from '../tools/tool-token.ts';
 import { ANSWER_CORRECTION_CLOSING, checkAnswer, checkCannotAnswer, replyFor } from './checks.ts';
 import type { CheckedStatement, ShownPassage } from './checks.ts';
 import { SYSTEM_PROMPT, userTurn } from './prompt.ts';
@@ -71,6 +74,8 @@ export type ExpertDeps = {
   identity: AgentIdentity;
   model: ModelSettings;
   knowledgeMcpUrl: string;
+  // Exchanges the caller's token for one meant for the retrieval service.
+  exchange: TokenExchange;
   now: () => Date;
   limits: Limits;
   settings: ExpertSettings;
@@ -599,10 +604,16 @@ function citationOf(statement: CheckedStatement): Citation {
 
 export async function handleQuestion(deps: ExpertDeps, message: InboundMessage, caller: Caller): Promise<InvocationResponse> {
   const run = startRun(deps);
+  // The caller's token is exchanged, once, for one meant for the retrieval service, before anything is connected.
+  const got = await toolToken(deps.exchange, KNOWLEDGE, caller.token, run.deadline.within(deps.limits.toolMs));
+  if (!got.ok) {
+    recordError(run, got.reason);
+    return failed(run, got.reason);
+  }
   const mcp = new McpClient({
     url: deps.knowledgeMcpUrl,
-    // The caller's token, on every request this client makes.
-    headers: { authorization: `Bearer ${caller.token}` },
+    // The token for the retrieval service, on every request this client makes.
+    headers: { authorization: `Bearer ${got.token}` },
     applicationName: deps.identity.id,
   });
 

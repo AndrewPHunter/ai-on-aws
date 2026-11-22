@@ -5,7 +5,7 @@
 // only an allowlist of headers is forwarded. Locally nothing does that, so this listener does, in the agent's
 // own process, in front of the SDK app (./sdk-app.ts), which then listens on loopback only.
 //
-//   POST /invocations  the token first, with the shared check, body unread: 401 or 503 exactly as
+//   POST /invocations  the token first, with the shared check, body unread: 401, 403 or 503 exactly as
 //                      contract/server.ts answers them. Then the session id: the caller's when it is 33 to 256
 //                      characters, a new UUID when there is none, 400 otherwise. Then the body, read here, up to
 //                      1,000,000 bytes (400 beyond, as contract/server.ts answers). Then the request goes to the
@@ -20,6 +20,7 @@
 import { createServer, Agent, request as httpRequest } from 'node:http';
 import type { IncomingHttpHeaders, IncomingMessage, OutgoingHttpHeaders, Server, ServerResponse } from 'node:http';
 
+import { refusalAnswer } from '../../../shared/access-token.ts';
 import type { AccessTokenCheck } from '../../../shared/access-token.ts';
 import { CUSTOM_HEADER_PREFIX, REQUEST_ID_HEADER, SESSION_ID_HEADER } from './runtime-contract.ts';
 import type { Address } from './runtime-contract.ts';
@@ -138,7 +139,8 @@ export function createLocalEdge(options: EdgeOptions): Server {
     // The token first: a request that is not allowed is answered without its body being read.
     const checked = await options.checkToken(request.headers.authorization);
     if (checked.kind === 'refused') {
-      sendJson(response, 401, { error: 'unauthorized', reason: checked.reason, detail: checked.detail }, { 'www-authenticate': 'Bearer error="invalid_token"' });
+      const answer = refusalAnswer(checked);
+      sendJson(response, answer.status, answer.body, { 'www-authenticate': answer.wwwAuthenticate });
       request.resume();
       return;
     }

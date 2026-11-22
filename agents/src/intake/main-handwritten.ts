@@ -4,17 +4,25 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 import { createChatModel } from '../model/chat.ts';
 import { connectCaseTools } from '../tools/case-system.ts';
+import { CASE_SYSTEM, connectWithToolToken } from '../tools/tool-token.ts';
 import { handleInquiry } from './handwritten.ts';
 import { serveIntakeAgent } from './serve.ts';
 
-serveIntakeAgent('hand-written loop', ({ identity, now, limits, model, caseMcpUrl }) => {
+serveIntakeAgent('hand-written loop', ({ identity, now, limits, model, exchange, caseMcpUrl }) => {
   const chat = createChatModel(model);
+  // The caller's token is exchanged for one meant for the case system, and only that one is connected with.
+  const connectTools = connectWithToolToken(
+    exchange,
+    CASE_SYSTEM,
+    (inbound, token, timeoutMs) => connectCaseTools(caseMcpUrl, inbound, identity.id, token, timeoutMs),
+    now,
+  );
   return (message, caller) =>
     handleInquiry(
       {
         identity,
         model: chat,
-        connectTools: (inbound, token, timeoutMs) => connectCaseTools(caseMcpUrl, inbound, identity.id, token, timeoutMs),
+        connectTools,
         now,
         sleep: (ms) => sleep(ms),
         random: Math.random,

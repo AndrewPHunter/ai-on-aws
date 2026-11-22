@@ -11,6 +11,7 @@ import { z } from 'zod';
 
 import { invocationResponseSchema } from '../../shared/agent-contract.ts';
 import type { InvocationResponse } from '../../shared/agent-contract.ts';
+import type { TokenExchange } from '../../shared/token-exchange.ts';
 import { handleInquiry } from '../src/intake/strands.ts';
 import { CALLER, ask, clock, message, result, say, startMcp, startModel } from './support.ts';
 import type { ModelAnswer, ModelRequest, ToolAnswer } from './support.ts';
@@ -19,6 +20,7 @@ import type { ModelAnswer, ModelRequest, ToolAnswer } from './support.ts';
 const LIMITS = { maxTurns: 6, runMs: 60_000, modelMs: 30_000, toolMs: 20_000 };
 const optional = z.string().optional();
 const CASE_FIELDS = { case_id: optional, patient: optional, suspect_drug: optional, event: optional };
+const exchange: TokenExchange = () => Promise.resolve({ kind: 'token', token: 'token-for-the-case-system', expiresAt: new Date('2026-03-01T10:05:00.000Z'), scopes: ['cases:write', 'cases:lookup'] });
 const createdAs = (caseId: string): ToolAnswer => result({ outcome: 'created', case: { case_id: caseId, status: 'incomplete' } });
 
 async function rig(t: TestContext, script: (request: ModelRequest, nth: number) => ModelAnswer, create: (nth: number) => ToolAnswer = () => createdAs('C-7')) {
@@ -31,7 +33,7 @@ async function rig(t: TestContext, script: (request: ModelRequest, nth: number) 
   const run = async (limits: Partial<typeof LIMITS> = {}): Promise<InvocationResponse> =>
     invocationResponseSchema.parse(
       await handleInquiry(
-        { identity: { id: 'intake-strands-test', implementation: 'Strands' }, model: model.settings, caseMcpUrl: cases.url, now: clock().now, limits: { ...LIMITS, ...limits } },
+        { identity: { id: 'intake-strands-test', implementation: 'Strands' }, model: model.settings, caseMcpUrl: cases.url, exchange, now: clock().now, limits: { ...LIMITS, ...limits } },
         message('msg-1', 'Patient JD had a rash after Examplamab.'),
         CALLER,
       ),
@@ -42,13 +44,18 @@ async function rig(t: TestContext, script: (request: ModelRequest, nth: number) 
 const creates = (calls: Array<{ tool: string }>): number => calls.filter((c) => c.tool === 'create_case').length;
 
 test('strands 1. an inquiry through the Strands loop and its MCP client: a case action from the tool\'s answer, and its steps', async (t) => {
-  const { run } = await rig(t, (_request, nth) => (nth === 0 ? ask(['create_case', { event: 'rash' }]) : say('Recorded as case C-MODEL.')));
+  const { cases, run } = await rig(t, (_request, nth) => (nth === 0 ? ask(['create_case', { event: 'rash' }]) : say('Recorded as case C-MODEL.')));
   const response = await run();
   assert.equal(response.outcome, 'completed');
   assert.deepEqual(response.case_actions, [{ kind: 'case_opened', case_id: 'C-7', status: 'incomplete' }]);
   assert.deepEqual(
     response.steps.map((s) => s.kind),
     ['model', 'tool', 'model'],
+  );
+  assert.deepEqual(
+    [...new Set(cases.requests.map((r) => r.headers.authorization))],
+    ['Bearer token-for-the-case-system'],
+    'a request to the case system carried another token than the exchanged one',
   );
 });
 

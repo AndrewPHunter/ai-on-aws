@@ -11,17 +11,15 @@ services:
     env_file:
       - ../../model/retrieval.env
     environment:
-      # The gate signs in as dana.desk through the desk client, as the identity gate does.
-      IDENTITY_DESK_CLIENT_SECRET: ${IDENTITY_DESK_CLIENT_SECRET:?run platform/identity/setup.sh}
-      IDENTITY_DANA_PASSWORD: ${IDENTITY_DANA_PASSWORD:?run platform/identity/setup.sh}
+      # The gate gets its token as its own client, knowledge-gate, by client credentials.
+      IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET: ${IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET:?run platform/identity/setup.sh}
     command: ["node", "knowledge/src/gate/gate.ts"]
     working_dir: /repo
     volumes:
       # The data it compares with what the service answers (the manifest, the chunk report and chunks, the
-      # benchmark's questions), and the sign-in helpers the identity gate uses.
+      # benchmark's questions).
       - ../data:/data:ro
       - ../corpus:/corpus:ro
-      - ../../platform/identity/src:/repo/platform/identity/src:ro
     networks:
       - stack
     read_only: true
