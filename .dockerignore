@@ -11,3 +11,5 @@
 model/gate-report.json
 # Label data fetched by knowledge/fetch.sh: never enters an image.
 knowledge/data
+# Evaluation runs and samples: never enter an image.
+evaluation/data

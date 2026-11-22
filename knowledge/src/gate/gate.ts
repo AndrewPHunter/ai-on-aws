@@ -16,6 +16,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 
 import { signInFormAction } from '../../../platform/identity/src/login-form.ts';
 import { codeChallengeS256, codeVerifier } from '../../../platform/identity/src/pkce.ts';
+import { sectionMatches } from '../references.ts';
 import { CouldNotRun, readData, readQuestions } from './data.ts';
 import type { Question } from './data.ts';
 import { call as callTool, errorCode, errorSummary, refusedByService } from './service.ts';
@@ -181,7 +182,6 @@ const percentile = (values: number[], p: number): number => {
   return sorted.length === 0 ? 0 : Math.round(sorted[Math.max(0, Math.ceil((p / 100) * sorted.length) - 1)] ?? 0);
 };
 
-const normalise = (text: string): string => text.toLowerCase().replace(/\s+/g, ' ').trim();
 
 async function main(): Promise<number> {
   const data = readData(DATA, CORPUS);
@@ -331,13 +331,8 @@ async function main(): Promise<number> {
       continue;
     }
     returned.push(...passagesOf(reply));
-    const references = (q.references as string[]).map(normalise);
-    const numbers = references.map((r) => /^(\d+(?:\.\d+)*)\b/.exec(r)?.[1]).filter((n): n is string => n !== undefined);
-    const hit = passagesOf(reply).some((passage) => {
-      const number = typeof passage.section.number === 'string' ? passage.section.number : null;
-      const title = typeof passage.section.title === 'string' ? normalise(passage.section.title) : null;
-      return (number !== null && numbers.includes(number)) || (title !== null && references.includes(title));
-    });
+    // The shared rule (knowledge/src/references.ts), which the evaluation harness scores by too.
+    const hit = passagesOf(reply).some((passage) => sectionMatches(passage.section, q.references as string[]));
     if (hit) hits++;
   }
   statement(
