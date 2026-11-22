@@ -98,7 +98,7 @@ The token is checked a second time in `process`, as the hand-written server does
 
 - Fastify's own error messages are fixed strings. For a body that is not JSON, a body that does not match the request schema, and a normal request, the SDK's default logging quoted no body. The logging configuration above is kept for what was not tried.
 - The SDK prints Fastify's deprecation warning FSTDEP023 (`disableRequestLogging`) at every start.
-- The SDK is loaded only on the SDK path: `run/serve.ts` imports `contract/runtime.ts` only for an agent on the SDK server, and what the edge, the start-up and the tests share is in `contract/runtime-contract.ts`, which loads nothing of the SDK. Importing the agents' start-up code therefore stays cheap, and the hand-written agent never loads the SDK.
+- The SDK is loaded only on the SDK path: `run/serve.ts` imports `contract/runtime.ts` only for an agent on the SDK server, and what the edge and the start-up share is in `contract/runtime-contract.ts`, which loads nothing of the SDK. Importing the agents' start-up code therefore stays cheap, and the hand-written agent never loads the SDK.
 
 ## Where the two servers differ
 
@@ -118,7 +118,7 @@ For the intake agent on Strands and the label expert, compared with the hand-wri
 
 The same in all three: a handler that throws gives 200 with `outcome: failed` and "The agent failed unexpectedly.", and a valid request with a valid token gets the handler's answer.
 
-With the edge off, the SDK answers 413 from the declared `Content-Length`, before it reads the body, and then closes the connection. So what a client sends over the limit decides what it sees. A client that waits for the answer before sending the body, or sends none, reads the 413. A client that is still sending the body when the connection closes can instead see the connection fail (in Node's `fetch`, "fetch failed"), and which one it sees depends on timing. The test (R08) declares a length over the limit and sends no body, so it always reads the 413.
+With the edge off, the SDK answers 413 from the declared `Content-Length`, before it reads the body, and then closes the connection. So what a client sends over the limit decides what it sees. A client that waits for the answer before sending the body, or sends none, reads the 413. A client that is still sending the body when the connection closes can instead see the connection fail (in Node's `fetch`, "fetch failed"), and which one it sees depends on timing. No test covers it.
 
 ## The setting
 

@@ -128,7 +128,7 @@ The rule is one function in `intake/run.ts` or `run/turns.ts` in both agents. Th
 
 ## What Strands does differently
 
-[`agents/test/intake.test.ts`](../../agents/test/intake.test.ts) runs one table of 33 behaviours against both agents. 22 are asserted identically for both. The other 11 each assert one of the differences below, through the implementation's own entry (`Implementation` in [`agents/test/helpers.ts`](../../agents/test/helpers.ts)).
+The rules are tested once, on the hand-written agent, in [`agents/test/intake.test.ts`](../../agents/test/intake.test.ts). [`agents/test/intake-strands.test.ts`](../../agents/test/intake-strands.test.ts) has five tests that this agent's hooks are wired to them: a case action from the tool's answer, a refused call that does not reach the case system, a write repeated once by code, the turn limit, and a model server that fails. The differences below are read from the code and from the source of Strands; no test asserts them.
 
 | Situation | Hand-written loop | Strands | What this file does about it |
 |---|---|---|---|
@@ -167,7 +167,7 @@ What follows:
 - **A model that never answers holds the run for all of its 150 s.** The first request times out at 90 s, the client sends it again, and the run's time limit cuts the second one short. The hand-written agent does not send a timed-out request again, so its run fails at 90 s.
 - **Only a failure that reaches Strands** is seen by this file's hooks and recorded.
 
-The numbers are read from the source of Strands 1.25.0 and OpenAI client 6.49.0. The tests pin three requests for a model that answers 500, one request for a 400, a fourth request after three 429s, and two requests to a model that never answers when the run has time for two and a half. No test reaches Strands' third attempt. The later attempts of Strands' six were not run.
+The numbers are read from the source of Strands 1.25.0 and OpenAI client 6.49.0. No test sends a failed request again in either layer: the tests' failing model server answers 400, which neither sends again.
 
 ### A known defect on the path not taken
 
@@ -196,10 +196,10 @@ Everything in the hand-written agent's "Not present" list is also absent here, i
 
 ## What was checked
 
-- 66 of the tests are the 33 rows of the shared table, run once for each agent.
+- Five tests (strands 1 to 5 in `agents/test/intake-strands.test.ts`) show this agent's hooks are wired to the shared rules, which are tested on the hand-written agent.
 - Against the 9B model, before the retries were turned on, the Strands agent was sent the seven prepared inquiries on an empty store. It gave the expected result for all seven and left three cases: one awaiting review at version 2, one incomplete, one awaiting review. The prompt was tuned on these seven with the hand-written agent, so this is not a held-out set.
 - With the retries on, each agent answered one inquiry against the 9B model, and each was run once with a model address where nothing listens. Both failed the run with "The model could not be reached." after about 1.4 s. The hand-written agent recorded three error steps, the Strands agent one.
 - With a bare Strands `Agent` against the 9B model, before this agent was written this way: a turn with a sentence and two tool calls came through whole; a turn cut off by its output allowance raised `MaxTokensError` carrying what had been written; asking again with `reasoning.effort: 'none'` gave an answer with no thinking; a tool result marked as an error was understood by the model.
 - The output is not repeatable on this model server, with the same seed and a temperature of 0, even between two runs of one agent.
 
-Not established: how either retry layer behaves against a model server that fails some of the time (tests only, and the closed address above); whether the thinking retry fires in this agent against the real model (tests, and the bare `Agent` above); how this agent behaves when the real model makes two tool calls in one turn (tests, and the bare `Agent` above); what either agent does with a response that starts and then breaks off (from the code, the hand-written loop sends the request again and Strands does not); whether the context headers and the caller's token pass through AgentCore Runtime or Gateway.
+Not established: how either retry layer behaves against a model server that fails some of the time (the closed address above only); whether the thinking retry fires in this agent against the real model (the bare `Agent` above only); how this agent behaves when the real model makes two tool calls in one turn (strands 2 against the scripted model, and the bare `Agent` above); what either agent does with a response that starts and then breaks off (from the code, the hand-written loop sends the request again and Strands does not); whether the context headers and the caller's token pass through AgentCore Runtime or Gateway.
