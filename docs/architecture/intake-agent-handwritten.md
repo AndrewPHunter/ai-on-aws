@@ -27,7 +27,7 @@ flowchart LR
     subgraph Agent["Agent container, port 8080"]
         Main["intake/main-handwritten.ts<br/>wiring"]
         Serve["intake/serve.ts, settings.ts,<br/>run/serve.ts, sampling.ts<br/>SHARED: startup, limits, sampling"]
-        Server["contract/server.ts<br/>SHARED: POST /invocations, GET /ping"]
+        Server["contract/server.ts<br/>this agent's own: POST /invocations, GET /ping"]
         Loop["intake/handwritten.ts<br/>the loop"]
         Run["intake/run.ts, run/state.ts,<br/>steps.ts, turns.ts, endings.ts<br/>SHARED: rules of a run,<br/>its record, how it ends"]
         Prompt["intake/prompt.ts<br/>SHARED: system prompt, user turn"]
@@ -60,7 +60,7 @@ flowchart LR
 
 | Module | Owns | Knows nothing about |
 |---|---|---|
-| `contract/server.ts` | The HTTP surface. That a valid request always gets an answer inside the contract | The model, tools, cases, what the handler does |
+| `contract/server.ts` | The HTTP surface, written by hand and used by this agent alone (the agents on Strands are served by AWS's SDK server, see [agent-runtime.md](agent-runtime.md)). That a valid request always gets an answer inside the contract | The model, tools, cases, what the handler does |
 | `intake/handwritten.ts` | The order of work in a run: when the model is asked, when a tool is called, when each rule is applied. Three rules of its own: an unknown tool, arguments that are not JSON, and when a failed request to the model is sent again | HTTP, MCP, the model server's address, how a tool is reached |
 | `intake/run.ts` (shared) | The rules both implementations apply (one case per run, the repeat of a lost write, an unsettled write) and the state they keep | Who is looping, the model, how a tool is reached |
 | `run/state.ts`, `run/steps.ts`, `run/turns.ts`, `run/endings.ts` (shared) | The state every run keeps, the run's record, the turn lost to thinking, and the wording of every ending | Who is looping, the model, how a tool is reached |
@@ -121,7 +121,7 @@ The same flow by function:
 
 | # | Where | What happens |
 |---|---|---|
-| 1 | `createContractServer` in `contract/server.ts` | Routes `POST /invocations` to `invoke`. `GET /ping` answers `Healthy`, needs no token, and does not check the model or the case system |
+| 1 | `createContractServer` in `contract/server.ts`, this agent's own server | Routes `POST /invocations` to `invoke`. `GET /ping` answers `Healthy`, needs no token, and does not check the model or the case system |
 | 1a | `invoke` → the access-token check | Checks the `Authorization` header before the body is read (see "The caller's token"). A refused token gets 401 and a check that cannot be made gets 503; nothing else runs |
 | 2 | `invoke` → `readJson` | Reads the body, at most 1 MB, as JSON |
 | 3 | `invoke` | Checks the body against `invocationRequestSchema`. A body that fails gets 400, and nothing else runs |

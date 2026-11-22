@@ -20,10 +20,12 @@ FROM deps AS check
 COPY . .
 CMD ["npm", "run", "check"]
 
-# What a piece runs with: the dependencies it needs at run time, without the check's tools.
+# What a piece runs with: the dependencies it needs at run time, without the check's tools. Optional packages are
+# left out too: the only ones in the lockfile are also dev (a test in toolchain/test/ holds that), such as React,
+# which bedrock-agentcore names as an optional peer.
 FROM base AS run-deps
 COPY --chown=node:node package.json package-lock.json ./
-RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+RUN npm ci --omit=dev --omit=optional --ignore-scripts --no-audit --no-fund
 
 # One piece, ready to run. PIECE is the piece's folder, relative to the repository root.
 # The image gets that piece's src/ and the source files at the top of shared/ (shared/*.ts, not its tests), and

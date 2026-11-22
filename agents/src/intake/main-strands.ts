@@ -1,8 +1,8 @@
-// Starts the intake agent on Strands.
+// Starts the intake agent on Strands, served by the AgentCore SDK server.
 
-import { serveIntakeAgent } from './serve.ts';
+import { serveIntakeAgentOnSdk } from './serve.ts';
 import { handleInquiry } from './strands.ts';
 
-serveIntakeAgent('Strands', ({ identity, now, limits, model, caseMcpUrl }) => (message, caller) =>
+serveIntakeAgentOnSdk('Strands', ({ identity, now, limits, model, caseMcpUrl }) => (message, caller) =>
   handleInquiry({ identity, model, caseMcpUrl, now, limits }, message, caller),
 );

@@ -1,8 +1,8 @@
 # Agents
 
-The agents that handle inquiries. Each runs as its own container from one image, and each serves the same HTTP contract, the one Amazon Bedrock AgentCore Runtime asks of a container: `POST /invocations` and `GET /ping` on port 8080.
+The agents that handle inquiries. Each runs as its own container from one image, and each serves the same HTTP contract, the one Amazon Bedrock AgentCore Runtime asks of a container: `POST /invocations` and `GET /ping` on port 8080. The hand-written agent serves it with a server written by hand; the two agents on Strands serve it with AWS's SDK server (`BedrockAgentCoreApp`), behind a local stand-in for AgentCore Runtime's front door. [docs/architecture/agent-runtime.md](../docs/architecture/agent-runtime.md) describes both, and where their answers differ.
 
-`POST /invocations` requires an access token from the lab's [identity provider](../platform/identity/README.md), as `Authorization: Bearer`, checked before anything else: the check AgentCore Runtime's JWT authorizer makes in front of the container, made here too. The agent passes the caller's token on to the case system on every request. `GET /ping` needs none.
+`POST /invocations` requires an access token from the lab's [identity provider](../platform/identity/README.md), as `Authorization: Bearer`, checked before anything else: the check AgentCore Runtime's JWT authorizer makes in front of the container, made here by the hand-written server or by the local edge. The agent passes the caller's token on to the case system on every request. `GET /ping` needs none.
 
 Every command on this page is run from the root of the repository.
 
@@ -43,9 +43,9 @@ The label expert, on port 8082, is described in [docs/architecture/expert-agent.
 The intake agent is built twice. Everything that makes it this agent is one copy that both use. Each then has its own loop.
 
 ```
-                                        ┌─> hand-written loop ─> chat client ──────────┐
-POST /invocations ─> contract server ───┤        both ask the shared rules             ├─> model server
-                                        └─> Strands Agent ─────> Strands OpenAI model ─┘
+POST /invocations ─> hand-written contract server ─> hand-written loop ─> chat client ──────────┐
+                                                        both ask the shared rules             ├─> model server
+POST /invocations ─> local edge ─> SDK app ─────────> Strands Agent ─────> Strands OpenAI model ─┘
                                                  └── either ──> case system      three MCP tools, with context headers
 ```
 
@@ -56,11 +56,12 @@ The flows, the rules of a tool call, and the controls neither has are in two doc
 
 | File | Holds | Used by |
 |---|---|---|
-| [`src/contract/server.ts`](src/contract/server.ts) | `/invocations` and `/ping`, written by hand | Both |
+| [`src/contract/server.ts`](src/contract/server.ts) | `/invocations` and `/ping`, written by hand | Hand-written |
+| [`src/contract/sdk-app.ts`](src/contract/sdk-app.ts), [`src/contract/edge.ts`](src/contract/edge.ts), [`src/contract/runtime.ts`](src/contract/runtime.ts), [`src/contract/runtime-contract.ts`](src/contract/runtime-contract.ts) | `/invocations` and `/ping` through AWS's `BedrockAgentCoreApp`, the local stand-in for AgentCore Runtime's front door, starting both, and `LOCAL_RUNTIME_EDGE` with the headers and sentences they share | Strands, and the label expert |
 | [`src/intake/prompt.ts`](src/intake/prompt.ts) | What the agent is told | Both |
 | [`src/intake/run.ts`](src/intake/run.ts) | The rules of a run and the state they keep | Both |
 | [`src/intake/settings.ts`](src/intake/settings.ts) | The limits | Both |
-| [`src/intake/serve.ts`](src/intake/serve.ts) | Startup particular to intake: `CASE_MCP_URL`, the limits, the listening line | Both |
+| [`src/intake/serve.ts`](src/intake/serve.ts) | Startup particular to intake: `CASE_MCP_URL`, the limits, the name in the start-up line, which server | Both |
 | [`src/run/serve.ts`](src/run/serve.ts) | Startup: the environment, which model is served, the server | Both |
 | [`src/run/sampling.ts`](src/run/sampling.ts) | The sampling settings | Both |
 | [`src/run/state.ts`](src/run/state.ts), [`src/run/limits.ts`](src/run/limits.ts) | The state every run keeps, and the shape of its limits | Both |
@@ -132,8 +133,9 @@ Set in [`compose.yaml`](compose.yaml), for each agent. The limits are in [`src/i
 | `AUTH_ALLOWED_AUDIENCE` | A value the token's `aud` must contain: `lab-agents` |
 | `AUTH_ALLOWED_CLIENTS` | The `client_id` values accepted, separated by commas: `desk` |
 | `AUTH_ROLES_CLAIM` | The claim holding the caller's roles: `roles` |
+| `LOCAL_RUNTIME_EDGE` | The two agents on Strands only: `on` runs the local stand-in for AgentCore Runtime's front door in front of the SDK app; `off` serves as on AgentCore Runtime. Set to `on` here |
 
-Every setting but `MODEL_ID` is required; the agent stops at start-up naming any that is missing. A token must have at least the run's time limit (150 s) left. The keys are fetched again, at most every 30 s, when a token names one not yet seen.
+Every setting but `MODEL_ID` is required; the agent stops at start-up naming any that is missing, or a `LOCAL_RUNTIME_EDGE` other than `on` or `off`. A token must have at least the run's time limit (150 s) left. The keys are fetched again, at most every 30 s, when a token names one not yet seen.
 
 ## What was measured
 
@@ -156,5 +158,5 @@ Against the local model (Qwen3.5-9B on vLLM), through the client, on the seven p
 - **A follow-up can replace detailed values with vaguer ones.** In one run the patient "JD, a 54-year-old man" became "JD", the dose was dropped, and the original description of the event was replaced by the new information alone. The earlier version keeps the originals.
 - **The retry without thinking has run only in tests,** against a scripted stand-in for the model. In the runs made after it was added, the model answered without it.
 - **Sending a failed model request again has run in tests, and once for each agent against an address where nothing listens.** It has not run against a model server that fails some of the time. The hand-written loop does not read a `Retry-After` header.
-- **Both agents run from one image,** so the hand-written agent's image also holds Strands, the OpenAI client and the AWS SDK's Bedrock client, which it does not use.
+- **Both agents run from one image,** so the hand-written agent's image also holds Strands, the OpenAI client, the AWS SDK's Bedrock client and the AgentCore SDK with Fastify, which it does not use.
 - **Not run on AgentCore Runtime.**
