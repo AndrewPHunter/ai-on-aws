@@ -202,7 +202,11 @@ function behaviour(impl: Implementation): void {
       drop: (tool, nth) => tool === 'create_case' && nth === 1,
     });
 
-    const response = await impl.run({ model: r.model.settings, mcpUrl: r.proxy.mcpUrl, caller: r.cases.caller }, message('msg-1', REPORT_TEXT));
+    // The lost reply is never sent, so the tool limit's expiry is the point: 3 s, its own.
+    const response = await impl.run(
+      { model: r.model.settings, mcpUrl: r.proxy.mcpUrl, caller: r.cases.caller, limits: { toolMs: 3000 } },
+      message('msg-1', REPORT_TEXT),
+    );
 
     assert.equal(r.proxy.dropped(), 1);
     assert.equal(r.proxy.calls('create_case'), 2);
@@ -229,7 +233,11 @@ function behaviour(impl: Implementation): void {
       drop: (tool) => tool === 'create_case',
     });
 
-    const response = await impl.run({ model: r.model.settings, mcpUrl: r.proxy.mcpUrl, caller: r.cases.caller }, message('msg-1', REPORT_TEXT));
+    // Neither reply is sent, so the tool limit's expiry is the point: 3 s, its own.
+    const response = await impl.run(
+      { model: r.model.settings, mcpUrl: r.proxy.mcpUrl, caller: r.cases.caller, limits: { toolMs: 3000 } },
+      message('msg-1', REPORT_TEXT),
+    );
 
     assert.equal(response.outcome, 'failed');
     assert.equal(response.reply, '');
@@ -462,7 +470,8 @@ function behaviour(impl: Implementation): void {
     const response = await impl.run({ model: r.model.settings, mcpUrl: r.proxy.mcpUrl, caller: r.cases.caller, clock }, message('msg-1', REPORT_TEXT));
 
     assert.equal(response.outcome, 'stopped');
-    assert.match(response.stop_reason ?? '', /time limit of 5 s/);
+    // LIMITS.runMs is 60 s; the test's clock passes it, and the real timer cannot.
+    assert.match(response.stop_reason ?? '', /time limit of 60 s/);
     assert.equal(r.model.requests.length, 0);
   });
 
@@ -487,9 +496,10 @@ function behaviour(impl: Implementation): void {
   test(`${impl.name}: the run's time running out while the model is being asked fails the run as a model that did not answer`, async (t) => {
     const r = await rig(t, [{ kind: 'never' }]);
 
-    // The run has less time than one model request is allowed.
+    // The run has less time than one model request is allowed (LIMITS gives a request 30 s). The model never
+    // answers, so the run's 5 s running out is the point; 5 s leaves a busy machine room to reach the request.
     const response = await impl.run(
-      { model: r.model.settings, mcpUrl: r.proxy.mcpUrl, caller: r.cases.caller, limits: { runMs: 200, modelMs: 2000 } },
+      { model: r.model.settings, mcpUrl: r.proxy.mcpUrl, caller: r.cases.caller, limits: { runMs: 5000 } },
       message('msg-1', REPORT_TEXT),
     );
 
@@ -502,9 +512,10 @@ function behaviour(impl: Implementation): void {
   test(`${impl.name}: the run's time running out during an unanswered write fails the run as not known`, async (t) => {
     const r = await rig(t, [toolCalls(call('create_case', FULL_REPORT)), text('never sent')], { drop: (tool) => tool === 'create_case' });
 
-    // The run has less time than one tool call is allowed, so the write cannot be waited out and repeated.
+    // The run has less time than one tool call is allowed (LIMITS gives a call 20 s), so the write cannot be waited
+    // out and repeated. The write is never answered, so the run's 5 s running out is the point.
     const response = await impl.run(
-      { model: r.model.settings, mcpUrl: r.proxy.mcpUrl, caller: r.cases.caller, limits: { runMs: 250, toolMs: 2000 } },
+      { model: r.model.settings, mcpUrl: r.proxy.mcpUrl, caller: r.cases.caller, limits: { runMs: 5000 } },
       message('msg-1', REPORT_TEXT),
     );
 
@@ -622,9 +633,9 @@ function behaviour(impl: Implementation): void {
     const r = await rig(t, [{ kind: 'never' }, { kind: 'never' }, { kind: 'never' }]);
 
     // In the proportion the agents run with (90 s for a request, 150 s for a run): the run has time
-    // for one request and part of a second.
+    // for one request and part of a second. The model never answers, so these expiries are the point.
     const response = await impl.run(
-      { model: r.model.settings, mcpUrl: r.proxy.mcpUrl, caller: r.cases.caller, limits: { modelMs: 1500, runMs: 2500 } },
+      { model: r.model.settings, mcpUrl: r.proxy.mcpUrl, caller: r.cases.caller, limits: { modelMs: 5000, runMs: 9000 } },
       message('msg-1', REPORT_TEXT),
     );
 
@@ -737,12 +748,20 @@ test('hand-written: it waits before each further request, and not after the last
 });
 
 test('hand-written: no wait is started that the run has no time left for', async (t) => {
-  const r = await rig(t, [{ kind: 'status', status: 503 }, text('never sent')]);
+  // The test's clock, not real time: when the model is asked, it moves to 400 ms before the run's limit. The wait
+  // before a second request would be 500 ms.
+  const clock = agentClock(AGENT_START);
+  const r = await rig(t, [{ kind: 'status', status: 503 }, text('never sent')], {
+    script: {
+      onRequest: () => {
+        clock.advance(LIMITS.runMs - 400);
+      },
+    },
+  });
   const waits: number[] = [];
 
-  // The run has 400 ms. The wait before a second request would be 500 ms.
   const response = await HANDWRITTEN.run(
-    { model: r.model.settings, mcpUrl: r.proxy.mcpUrl, caller: r.cases.caller, waits, limits: { runMs: 400 } },
+    { model: r.model.settings, mcpUrl: r.proxy.mcpUrl, caller: r.cases.caller, waits, clock },
     message('msg-1', REPORT_TEXT),
   );
 

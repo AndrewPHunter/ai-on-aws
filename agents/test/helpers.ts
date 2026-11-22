@@ -537,7 +537,7 @@ export async function startCaseSystem(t: TestContext): Promise<CaseSystem> {
       rolesClaim: 'roles',
       minRemainingSeconds: 0,
     },
-    { now: tokenTime, keyRefetchWaitMs: 30_000, timeoutMs: 2000 },
+    { now: tokenTime, keyRefetchWaitMs: 30_000, timeoutMs: 30_000 },
   );
   const agentServer = createAgentServer(store, now, check);
   const reviewServer = createReviewServer(store, check, 'reviewer');
@@ -565,7 +565,9 @@ export async function startCaseSystem(t: TestContext): Promise<CaseSystem> {
 
 export const AGENT_START = '2026-03-01T10:00:00.000Z';
 
-export const LIMITS: Limits = { maxTurns: 4, runMs: 5000, modelMs: 500, toolMs: 300 };
+// Far above anything a busy machine needs: a test whose subject is a time limit sets its own, short, limit, or moves
+// the agent's clock (agentClock). The model stand-in and the case system answer at once; nothing here should wait.
+export const LIMITS: Limits = { maxTurns: 4, runMs: 60_000, modelMs: 30_000, toolMs: 20_000 };
 
 export function message(id: string, textBody: string, receivedAt = '2026-03-01T08:55:00.000Z'): InboundMessage {
   return { id, received_at: receivedAt, sender: 'dr.lee@clinic.example', text: textBody };
@@ -783,7 +785,7 @@ export async function startTokenRig(t: { after(fn: () => unknown): void }): Prom
       rolesClaim: 'roles',
       minRemainingSeconds: TOKEN_MIN_REMAINING_SECONDS,
     },
-    { now: clock.now, keyRefetchWaitMs: 30_000, timeoutMs: 2000 },
+    { now: clock.now, keyRefetchWaitMs: 30_000, timeoutMs: 30_000 },
   );
   const mint = (options: Partial<MintOptions> = {}): Promise<string> =>
     issuer.mintAccessToken({ lifetimeSeconds: 600, ...options, claims: { ...TOKEN_CLAIMS, ...options.claims } });

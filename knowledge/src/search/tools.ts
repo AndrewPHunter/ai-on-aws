@@ -106,8 +106,10 @@ function outOfTime<T>(budget: SearchBudget, step: string): Outcome<T> {
 // runs out. 'out_of_time' when it was the search's limit, not the request's own, that ended it.
 async function engineSend(engine: Engine, budget: SearchBudget, method: 'GET' | 'POST', path: string, body?: unknown): Promise<EngineAnswer | 'out_of_time'> {
   if (budget.spent()) return 'out_of_time';
-  const answer = await engine.send(method, path, body, undefined, budget.signal());
-  return answer.kind === 'timeout' && budget.spent() ? 'out_of_time' : answer;
+  const given = budget.allot('engine');
+  const answer = await engine.send(method, path, body, undefined, given.signal);
+  // Why it ran out is decided by what it was given, not by which timer fired first.
+  return answer.kind === 'timeout' && given.bySearch ? 'out_of_time' : answer;
 }
 
 // An answer of status 200 can still say that it is not whole: the search ran out of time, or a shard failed. Such an
@@ -413,8 +415,9 @@ async function queryVector(retriever: Retriever, budget: SearchBudget, query: st
   if (embedding === null) return fail('embedding_error', 'This service has no embedding server configured.');
   const step = 'asking the embedding server for the query vector';
   if (budget.spent()) return outOfTime(budget, step);
-  const answer = await embedding.client.embed(embedding.modelId, [queryText(query)], budget.signal());
-  if (answer.kind === 'timeout' && budget.spent()) return outOfTime(budget, step);
+  const given = budget.allot('embedding');
+  const answer = await embedding.client.embed(embedding.modelId, [queryText(query)], given.signal);
+  if (answer.kind === 'timeout' && given.bySearch) return outOfTime(budget, step);
   if (answer.kind !== 'ok') return { ok: false, error: modelFailure('embedding', answer) };
   let values: Float32Array;
   try {
@@ -515,15 +518,16 @@ export async function searchLabel(engine: Engine, index: string, input: SearchLa
         if (top.length > 0) {
           const step = 'asking the reranker';
           if (budget.spent()) return outOfTime(budget, step);
+          const given = budget.allot('rerank');
           // The reranker judges the same text the vectors were made from: the context line, a newline, the text.
           const answer = await rerank.client.rerank(
             rerank.modelId,
             query,
             top.map(({ found }) => documentText(found.hit.chunk)),
             RERANK_MAX_TOKENS_PER_DOC,
-            budget.signal(),
+            given.signal,
           );
-          if (answer.kind === 'timeout' && budget.spent()) return outOfTime(budget, step);
+          if (answer.kind === 'timeout' && given.bySearch) return outOfTime(budget, step);
           if (answer.kind !== 'ok') return { ok: false, error: modelFailure('rerank', answer) };
           const scores: number[] = new Array<number>(top.length).fill(0);
           for (const result of answer.value) scores[result.index] = result.score;

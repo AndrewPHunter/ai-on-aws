@@ -9,6 +9,7 @@
 
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { request } from 'node:http';
 import type { ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
 import { after, test } from 'node:test';
@@ -160,6 +161,36 @@ async function post(
   return { status: response.status, text, body: parsed };
 }
 
+// A POST that declares a Content-Length and sends none of the body, then reads whatever the server answers. It does
+// not race the server's closing of the connection: nothing is being written when the answer comes.
+function postDeclaringLength(child: Child, length: number, headers: Record<string, string>): Promise<{ status: number; text: string; body: unknown }> {
+  return new Promise((resolve, reject) => {
+    const target = new URL(`${child.url}/invocations`);
+    const sent = request(
+      { hostname: target.hostname, port: target.port, path: target.pathname, method: 'POST', headers: { 'content-type': 'application/json', 'content-length': String(length), ...headers } },
+      (response) => {
+        const parts: Buffer[] = [];
+        response.on('data', (chunk: Buffer) => parts.push(chunk));
+        response.on('end', () => {
+          const text = Buffer.concat(parts).toString('utf8');
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(text);
+          } catch {
+            parsed = undefined;
+          }
+          sent.destroy();
+          resolve({ status: response.statusCode ?? 0, text, body: parsed });
+        });
+        response.on('error', reject);
+      },
+    );
+    sent.on('error', reject);
+    // The headers go now; the body never does.
+    sent.flushHeaders();
+  });
+}
+
 async function endChild(child: Child): Promise<number | null> {
   child.process.kill('SIGTERM');
   return child.exited;
@@ -169,8 +200,12 @@ test('R07. through the edge and the SDK app, a valid request with a valid token 
   const child = await sharedChild('on');
   const token = await child.tokens.mint();
   const answer = await post(child, JSON.stringify({ message: message('msg-1', 'Hello') }), { authorization: `Bearer ${token}` });
-  assert.equal(answer.status, 200);
-  assert.deepEqual(invocationResponseSchema.parse(answer.body), {
+  // Every failure says what came back: the status and the body as text.
+  const got = `status ${answer.status}, body ${answer.text}`;
+  assert.equal(answer.status, 200, got);
+  const parsed = invocationResponseSchema.safeParse(answer.body);
+  assert.ok(parsed.success, `the answer is outside the contract: ${got}`);
+  assert.deepEqual(parsed.data, {
     agent: CHILD_IDENTITY,
     outcome: 'completed',
     stop_reason: null,
@@ -178,7 +213,7 @@ test('R07. through the edge and the SDK app, a valid request with a valid token 
     citations: [],
     case_actions: [],
     steps: [],
-  });
+  }, got);
 });
 
 test('R08. a body outside the contract, a body that is not JSON, and a body over the limit, with the edge off and on', async (t) => {
@@ -203,8 +238,11 @@ test('R08. a body outside the contract, a body that is not JSON, and a body over
       message: "Body is not valid JSON but content-type is set to 'application/json'",
     });
 
-    const tooLarge = await post(child, JSON.stringify({ message: message('msg-1', 'x'.repeat(SDK_BODY_LIMIT)) }), headers);
-    assert.equal(tooLarge.status, 413);
+    // The SDK's server answers 413 as soon as the declared length is over its limit, and closes the connection; a
+    // client still writing the body may see the connection fail instead of the answer (docs/architecture/
+    // agent-runtime.md). So the request declares a length over the limit, sends none of the body, and reads the answer.
+    const tooLarge = await postDeclaringLength(child, SDK_BODY_LIMIT + 1, headers);
+    assert.equal(tooLarge.status, 413, tooLarge.text);
     assert.deepEqual(tooLarge.body, { statusCode: 413, code: 'FST_ERR_CTP_BODY_TOO_LARGE', error: 'Payload Too Large', message: 'Request body is too large' });
   });
 

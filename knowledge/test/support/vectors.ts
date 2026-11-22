@@ -30,7 +30,7 @@ export function embedEnv(standIn: ModelStandIn, overrides: Record<string, string
 }
 
 export const embedArgs = (dataDir: string): string[] => [
-  'embed', '--data', dataDir, '--batch-size', '32', '--attempts', '3', '--waits-ms', '10,20', '--timeout-ms', '5000',
+  'embed', '--data', dataDir, '--batch-size', '32', '--attempts', '3', '--waits-ms', '10,20', '--timeout-ms', '30000',
 ];
 
 export const IDENTITY: EmbeddingIdentity = {

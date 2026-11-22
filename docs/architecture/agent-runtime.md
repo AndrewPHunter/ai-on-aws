@@ -116,6 +116,8 @@ For the intake agent on Strands and the label expert, compared with the hand-wri
 
 The same in all three: a handler that throws gives 200 with `outcome: failed` and "The agent failed unexpectedly.", and a valid request with a valid token gets the handler's answer.
 
+With the edge off, the SDK answers 413 from the declared `Content-Length`, before it reads the body, and then closes the connection. So what a client sends over the limit decides what it sees. A client that waits for the answer before sending the body, or sends none, reads the 413. A client that is still sending the body when the connection closes can instead see the connection fail (in Node's `fetch`, "fetch failed"), and which one it sees depends on timing. The test (R08) declares a length over the limit and sends no body, so it always reads the 413.
+
 ## The setting
 
 | Setting | Values | Meaning |

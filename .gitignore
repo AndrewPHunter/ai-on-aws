@@ -23,3 +23,6 @@ model/gate-report.json
 
 # Label data fetched by knowledge/fetch.sh: never tracked (see knowledge/README.md)
 knowledge/data/
+
+# Evaluation runs, samples and judgments (they hold question, answer and reply text): never tracked
+evaluation/data/
