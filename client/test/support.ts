@@ -162,12 +162,12 @@ export type Person = SignedInUser & { granted: string[] };
 export const RILEY: Person = { sub: 'sub-riley', name: 'Riley Reviewer', username: 'riley.reviewer', roles: ['reviewer'], granted: ['openid', 'agents:intake', 'cases:read', 'cases:review'] };
 export const DANA: Person = { sub: 'sub-dana', name: 'Dana Desk', username: 'dana.desk', roles: [], granted: ['openid', 'agents:intake', 'cases:read'] };
 
-// A session made directly in the store, as a completed sign-in makes one, that has already got the access token
-// `access`, with lifeMs to live, for each scope it was granted. Returns the cookie a browser would send.
+// A session made directly in the store, as a completed sign-in makes one, that has already got an access token for
+// each scope it was granted, "<access>:<scope>", with lifeMs to live. Returns the cookie a browser would send.
 export function signedIn(desk: Desk, person: Person, access: string, lifeMs: number, refresh: string): string {
   const { granted, ...user } = person;
   const session = desk.sessions.create({ user, granted, refreshToken: refresh });
-  for (const scope of granted) session.tokens.set(scope, { accessToken: access, expiresAt: desk.clock.now().getTime() + lifeMs });
+  for (const scope of granted) session.tokens.set(scope, { accessToken: `${access}:${scope}`, expiresAt: desk.clock.now().getTime() + lifeMs });
   return `${SESSION_COOKIE}=${session.id}`;
 }
 
