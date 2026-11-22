@@ -194,7 +194,7 @@ Passage text costs a median of 0.24, a 99th percentile of 0.59, and at most 0.75
 
 `agents/test/expert.test.ts`, E01 to E23. Each run uses the scripted model stand-in, the real retrieval service in-process over the search engine stand-in, and real tokens from the stand-in issuer; every response is checked against the contract schema. A labelled stand-in MCP server (`startOddRetrieval` in `agents/test/expert-helpers.ts`) gives the answers the real retrieval service cannot: an error code no list names, an error or a success of another shape, and a service offering one tool.
 
-The tests' limits are real time limits, shorter than the agent's own: a model request has 0.5 s (kept by the OpenAI client), a tool call 2 s (kept by the MCP client; it also bounds connecting to the retrieval service), and the run 5 s (kept by a real timer as well as by the test's clock). At a 0.3 s tool limit a first, cold connection under the full suite once ran out; at 2 s it has not. A slower machine could still run out.
+The tests' limits are real time limits: a model request's is kept by the OpenAI client, a tool call's by the MCP client (it also bounds connecting to the retrieval service), and the run's by a real timer as well as by the test's clock. A test whose subject is not a time limit gets limits no busy machine reaches: 30 s for a model request, 20 s for a tool call, 60 s for the run. A test whose subject is a limit either moves the test's clock (E17) or sets a short limit of its own where the other side never answers, so the expiry is the only way the test can end (E12's tool limit, 3 s).
 
 ## Not present
 

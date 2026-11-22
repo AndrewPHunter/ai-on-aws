@@ -77,7 +77,7 @@ test('V07. an embed report for other chunks: exit 1, nothing built, the alias un
   // A new chunk run after the embedding: other text, other chunk report.
   await writeChunks(where.dataDir, 3, { text: (i) => `Invented passage ${i}, corrected.` });
 
-  const outcome = await command(['index', '--data', where.dataDir, '--search-url', standIn.url, '--alias', 'labels', '--batch-bytes', '1500', '--timeout-ms', '5000']);
+  const outcome = await command(['index', '--data', where.dataDir, '--search-url', standIn.url, '--alias', 'labels', '--batch-bytes', '1500', '--timeout-ms', '30000']);
 
   assert.equal(outcome.code, 1);
   assert.match(outcome.out.join('\n'), /embed-report\.json was made from other chunks than the chunk report's: run knowledge\/embed\.sh again\. Nothing was built/);

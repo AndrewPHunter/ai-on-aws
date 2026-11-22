@@ -269,7 +269,7 @@ The numbers, and where each is set:
 | One engine request; embedding request; reranker request | 5 s; 3 s; 5 s, each cut to what is left of the search | `knowledge/src/search/limits.ts` |
 | Model, revision, served name, dimensions | from `model/retrieval.env` | `model/retrieval.env` |
 
-Every request a search makes (the mapping read, each engine request, the embedding request, the reranker request, the count) gets the smaller of its own limit and what is left of the search's 8 seconds, and none is sent when nothing is left. So a search answers inside an agent's 10 s tool limit, whatever its strategy.
+Every request a search makes (the mapping read, each engine request, the embedding request, the reranker request, the count) gets the smaller of its own limit and what is left of the search's 8 seconds, and none is sent when nothing is left. A request that runs out of time is the search's failure only if what it was given was what was left of the search (less than its own limit); otherwise it is the request's own. So a search answers inside an agent's 10 s tool limit, whatever its strategy.
 
 Measured by the planner on 2026-11-22, with the real embedding server and reranker on the GPU machine and OpenSearch 3.9.0:
 

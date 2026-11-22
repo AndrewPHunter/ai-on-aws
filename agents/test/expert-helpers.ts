@@ -67,7 +67,7 @@ export async function startExpertTokens(t: TestContext): Promise<ExpertTokens> {
   const check = (audience: string, minRemainingSeconds: number): AccessTokenCheck =>
     createAccessTokenCheck(
       { discoveryUrl: issuer.discoveryUrl, issuer: EXPERT_TOKEN_ISSUER, audience, allowedClients: ['desk'], rolesClaim: 'roles', minRemainingSeconds },
-      { now, keyRefetchWaitMs: 30_000, timeoutMs: 2000 },
+      { now, keyRefetchWaitMs: 30_000, timeoutMs: 30_000 },
     );
   const mint = (options: Partial<MintOptions> = {}): Promise<string> =>
     issuer.mintAccessToken({ lifetimeSeconds: 600, ...options, claims: { ...EXPERT_TOKEN_CLAIMS, ...options.claims } });
@@ -101,7 +101,7 @@ export async function unreachableIdentityCheck(t: TestContext): Promise<AccessTo
       rolesClaim: 'roles',
       minRemainingSeconds: 0,
     },
-    { now: () => new Date(AGENT_START), keyRefetchWaitMs: 30_000, timeoutMs: 2000 },
+    { now: () => new Date(AGENT_START), keyRefetchWaitMs: 30_000, timeoutMs: 30_000 },
   );
 }
 
@@ -321,11 +321,12 @@ export async function startOddRetrieval(t: TestContext, answers: OddAnswers): Pr
 
 export const EXPERT_IDENTITY = { id: 'expert-test', implementation: 'Strands' };
 
-// Shorter than the agent's own, so no test waits long; enough turns for find, search and three answers. These
-// limits are kept in real time: a model request's 0.5 s by the OpenAI client, a tool call's 2 s by the MCP client,
-// and the run's 5 s by a real timer as well as by the test's clock. The tool limit also bounds connecting to the
-// retrieval service; at 0.3 s a first, cold connection under the full suite once ran out, so it is 2 s.
-export const EXPERT_TEST_LIMITS: Limits = { maxTurns: 8, runMs: 5000, modelMs: 500, toolMs: 2000 };
+// Enough turns for find, search and three answers. The time limits are kept in real time (a model request's by the
+// OpenAI client, a tool call's by the MCP client, which also bounds connecting to the retrieval service, and the
+// run's by a real timer as well as by the test's clock), so a test whose subject is not a time limit gets limits a
+// busy machine cannot reach: tens of seconds. A test whose subject is a limit sets its own: E12's tool limit is
+// short because its retrieval service never answers, and E17 moves the test's clock instead of waiting.
+export const EXPERT_TEST_LIMITS: Limits = { maxTurns: 8, runMs: 60_000, modelMs: 30_000, toolMs: 20_000 };
 
 export type ExpertRunOptions = {
   model: ScriptedModel;
