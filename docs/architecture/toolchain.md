@@ -42,10 +42,10 @@ flowchart TD
 3. The check container has no network, a read-only root filesystem, and no mount from the host. Its source is the copy made when the image was built.
 4. Dependencies are installed only by `npm ci` from the committed lockfile, with install scripts off. A lockfile that disagrees with `package.json` fails the install.
 5. Every dependency version in the root `package.json` is exact. A test in `toolchain/test/` fails otherwise.
-6. The Node pin is one digest. A test in `toolchain/test/` compares the Dockerfile's with `model/gate/compose.yaml`, a test in `model/setup/test/` compares the copies under `model/`, and tests in `platform/identity/test/` compare the Dockerfile's with `platform/identity/gate/compose.yaml` and `platform/identity/setup.sh`.
+6. The Node pin is one digest. One test in `toolchain/test/` compares the Dockerfile's with every other file that pins Node: `model/gate/compose.yaml`, `model/setup.sh`, `model/setup/run-tests.sh`, `platform/identity/gate/compose.yaml` and `platform/identity/setup.sh`.
 7. The only base image is the Node pin. Nothing is installed from the operating system's package manager.
 8. No `.git`, `node_modules`, `.env` file (other than `.env.example`), `secrets` folder or gate report enters an image.
-9. The only place `toolchain/` names a piece is the Node pin test, which reads `model/gate/compose.yaml`. `model/` does not depend on the toolchain: its setup, its gate and its own test command run in the bare Node image with only `model/` mounted and no installed dependency.
+9. The only place `toolchain/` names a piece is the Node pin test, which reads the files listed in 6. `model/` does not depend on the toolchain: its setup, its gate and its own test command run in the bare Node image with only `model/` mounted and no installed dependency.
 10. TypeScript is run by Node directly, in the check and in a running piece. The compiler emits nothing.
 11. A piece's image holds the run-time dependencies, the source files at the top of `shared/`, and that piece's `src/` folder: no tests, no other piece, and none of the check's tools. A piece with a React app also holds that app's built static files, and none of the libraries it was built from.
 

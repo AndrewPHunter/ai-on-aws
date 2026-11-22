@@ -8,6 +8,16 @@ Four pieces use its tokens. The client's server signs desk staff in here, valida
 
 How it is put together: [docs/architecture/identity.md](../../docs/architecture/identity.md).
 
+## Always true
+
+1. No secret or password is in a tracked file: every one in the realm file is a placeholder that `setup.sh` generates, `.env.example` names, and the compose file passes to the provider.
+2. A role that lets someone run an agent also grants every scope that agent's client may ask for.
+3. Only an agent's client can exchange a token, and no client takes a password in place of a sign-in.
+4. Every person and every machine account has a fixed identifier, so the subject in their tokens does not change when the provider starts again.
+5. Running set-up again changes no value that is already set.
+
+The repository check runs one test for each, `identity 1` to `identity 5`, on the tracked files; `setup.sh` runs from a copy in a temporary directory. What the running provider issues and refuses is shown by the gate.
+
 ## Set up and start
 
 On the machine you work on, from the repository root:

@@ -38,8 +38,15 @@ services:
       # Where the gate reaches the provider: its service name on the stack's network.
       IDENTITY_URL: http://identity:8080
       IDENTITY_DESK_CLIENT_SECRET: ${IDENTITY_DESK_CLIENT_SECRET:?run platform/identity/setup.sh}
+      IDENTITY_INTAKE_HANDWRITTEN_CLIENT_SECRET: ${IDENTITY_INTAKE_HANDWRITTEN_CLIENT_SECRET:?run platform/identity/setup.sh}
+      IDENTITY_INTAKE_STRANDS_CLIENT_SECRET: ${IDENTITY_INTAKE_STRANDS_CLIENT_SECRET:?run platform/identity/setup.sh}
+      IDENTITY_EXPERT_CLIENT_SECRET: ${IDENTITY_EXPERT_CLIENT_SECRET:?run platform/identity/setup.sh}
+      IDENTITY_EVALUATION_CLIENT_SECRET: ${IDENTITY_EVALUATION_CLIENT_SECRET:?run platform/identity/setup.sh}
+      IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET: ${IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET:?run platform/identity/setup.sh}
       IDENTITY_RILEY_PASSWORD: ${IDENTITY_RILEY_PASSWORD:?run platform/identity/setup.sh}
       IDENTITY_DANA_PASSWORD: ${IDENTITY_DANA_PASSWORD:?run platform/identity/setup.sh}
+      IDENTITY_MORGAN_PASSWORD: ${IDENTITY_MORGAN_PASSWORD:?run platform/identity/setup.sh}
+      IDENTITY_AVERY_PASSWORD: ${IDENTITY_AVERY_PASSWORD:?run platform/identity/setup.sh}
     command: ["node", "/repo/platform/identity/gate/gate.ts", "/repo/platform/identity/gate/gate.config.json"]
 
   stack-gate:

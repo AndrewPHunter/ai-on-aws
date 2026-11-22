@@ -5,14 +5,21 @@ import assert from 'node:assert/strict'
 const read = (relative: string): string => readFileSync(new URL(`../../${relative}`, import.meta.url), 'utf8')
 const digests = (text: string): string[] => [...text.matchAll(/node@sha256:([0-9a-f]{64})/g)].map((match) => match[0])
 
-test('T1. toolchain/Dockerfile pins Node by the one digest that model/gate/compose.yaml uses', () => {
-  const inDockerfile = digests(read('toolchain/Dockerfile'))
-  const inGate = digests(read('model/gate/compose.yaml'))
+// Every other tracked file that pins a Node image. Each must name the Dockerfile's digest and no other.
+const OTHER_NODE_PINS = [
+  'model/gate/compose.yaml',
+  'model/setup.sh',
+  'model/setup/run-tests.sh',
+  'platform/identity/gate/compose.yaml',
+  'platform/identity/setup.sh',
+]
 
-  assert.ok(inDockerfile.length >= 1, 'toolchain/Dockerfile has no node@sha256:<64 hex> reference')
-  assert.equal(new Set(inDockerfile).size, 1, `toolchain/Dockerfile names more than one digest: ${inDockerfile.join(', ')}`)
-  assert.equal(inGate.length, 1, `model/gate/compose.yaml must name exactly one digest: ${inGate.join(', ')}`)
-  assert.deepEqual([...new Set(inDockerfile)], inGate)
+test('T1. the Node pin is one digest: toolchain/Dockerfile and every other file that pins Node name the same one', () => {
+  const inDockerfile = [...new Set(digests(read('toolchain/Dockerfile')))]
+  assert.equal(inDockerfile.length, 1, `toolchain/Dockerfile must name exactly one digest: ${inDockerfile.join(', ')}`)
+  for (const file of OTHER_NODE_PINS) {
+    assert.deepEqual([...new Set(digests(read(file)))], inDockerfile, `${file} does not pin Node by the Dockerfile's digest alone`)
+  }
 })
 
 test('T3. the check image is named per checkout, so two checkouts cannot run each other\'s image', () => {

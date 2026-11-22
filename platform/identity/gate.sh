@@ -1,7 +1,8 @@
 #!/bin/sh
-# Checks a running identity service for real: discovery from inside the stack's network, sign-in of both
-# realm users through the Authorization Code flow with PKCE, the signature and claims of each access token,
-# and refusal of the password grant. See platform/identity/README.md.
+# Checks a running identity service for real: discovery from inside the stack's network, sign-in of each
+# realm person through the Authorization Code flow with PKCE, the scopes, audiences and claims of each token,
+# a token per target by refresh, the agents' token exchanges, the machines' client credentials, and the
+# refusals (statements G1 to G14 in platform/identity/gate/gate.ts). See platform/identity/README.md.
 #
 #   platform/identity/gate.sh <compose-project>
 #
