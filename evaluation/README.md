@@ -290,4 +290,4 @@ Stated as readings, each with the figures it rests on:
 
 ## Tests
 
-`evaluation/test/` holds Q01 to Q25, run by `toolchain/check.sh` with everything else. Three test doubles, each labelled: a stand-in agent that speaks the contract over HTTP and records each request (`evaluation/test/support.ts`), a stand-in judge adapter (`evaluation/test/stand-in-adapter.sh`) and a stand-in rewriter adapter (`evaluation/test/stand-in-rewriter.sh`). All text in them is invented.
+`evaluation/test/` holds one test per invariant of the architecture document's "Always true", `evaluation 1` to `evaluation 12`, run by `toolchain/check.sh` with everything else; the judge and rewriter half of 3 (a constant in `judge.sh` and `reword.sh`) and the git and image half of 9 (`.gitignore`, `.dockerignore`) have none. The runner is given an in-memory agent (a fetch function, `evaluation/test/support.ts`); the model calls go through `evaluation/judge/call-all.sh` to one labelled stand-in adapter (`evaluation/test/stand-in-adapter.sh`). All text in them is invented.

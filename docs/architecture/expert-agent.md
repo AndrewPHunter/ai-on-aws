@@ -129,18 +129,18 @@ What the model is told when an answer does not pass, one line per problem, each 
 
 After the problems, always one closing line: "Send the whole answer again, by calling answer, with these corrected. A statement that cannot be supported from the passages shown may be left out." A refused `cannot_answer` is told why and closes with "Call answer or cannot_answer again."
 
-Readings chosen where the rules leave a choice, each pinned by a test:
+Readings chosen where the rules leave a choice. They are details of the code, read from it; no test pins them:
 
-| Question | Reading | Test |
-|---|---|---|
-| After a passage that does not fit, is a smaller one after it shown? | Yes. Each passage is judged on its own, best first | E11 |
-| A passage shown in an earlier search comes back: is it `shown`? | Yes, and it is named as above, at no cost | E11 |
-| Does a search the service refused count towards the 4? | Yes. Every call sent to the service counts; one refused before it is sent does not | E10, E13 |
-| `10^{6}` in a text | Reads as `106`, on both sides alike | E22 |
-| `mcg` against `µg` | Different units: neither finds the other | E22 |
-| `g` inside `µg`, `L` inside `µL` | Not that unit: a unit is bounded by letters, µ and μ included | E22 |
-| One space between a number and its unit | Read as that number's unit; two spaces are not | E22 |
-| `unit` against `units` | Each finds the other | E22 |
+| Question | Reading |
+|---|---|
+| After a passage that does not fit, is a smaller one after it shown? | Yes. Each passage is judged on its own, best first |
+| A passage shown in an earlier search comes back: is it `shown`? | Yes, and it is named as above, at no cost |
+| Does a search the service refused count towards the 4? | Yes. Every call sent to the service counts; one refused before it is sent does not |
+| `10^{6}` in a text | Reads as `106`, on both sides alike |
+| `mcg` against `µg` | Different units: neither finds the other |
+| `g` inside `µg`, `L` inside `µL` | Not that unit: a unit is bounded by letters, µ and μ included |
+| One space between a number and its unit | Read as that number's unit; two spaces are not |
+| `unit` against `units` | Each finds the other |
 
 ## Always true
 
@@ -151,6 +151,7 @@ Readings chosen where the rules leave a choice, each pinned by a test:
 5. The caller's token goes to the retrieval service on every request of the run, and nothing else of the message. The model is given the message's text only: not the sender, not the receipt time.
 6. No passage is cut. A passage is shown whole or named as not shown.
 7. Runs share no state. A new Agent and a new MCP client are made for every message.
+8. Whatever goes wrong, a run ends with an outcome inside the contract, and nothing the model wrote that did not pass the checks is in the reply.
 
 ## How it ends
 
@@ -208,9 +209,9 @@ Passage text costs a median of 0.24, a 99th percentile of 0.59, and at most 0.75
 
 ## How it is tested
 
-`agents/test/expert.test.ts`, E01 to E23 and V19 (the strategy and scores a retrieval step carries). E20 serves the agent over HTTP through the hand-written contract server, not the SDK server. The SDK server and the edge are tested in `agents/test/sdk-server.test.ts` and `agents/test/edge.test.ts` with a handler written for the tests, not this agent's. Each run uses the scripted model stand-in, the real retrieval service in-process over the search engine stand-in, and real tokens from the stand-in issuer; every response is checked against the contract schema. A labelled stand-in MCP server (`startOddRetrieval` in `agents/test/expert-helpers.ts`) gives the answers the real retrieval service cannot: an error code no list names, an error or a success of another shape, and a service offering one tool.
+`agents/test/expert.test.ts`: one test for each line of "Always true" (expert 1 to 7), and one (expert 8) that a run with no final tool, a model server that fails, or an answer that never passes ends inside the contract with no unchecked model text in the reply. Each calls the handler with the caller as a value, through the real Strands loop and its MCP client, against a scripted model server and a scripted retrieval service on loopback; no token is signed, and every response is checked against the contract schema. Whether this agent and the real retrieval service agree is not checked here. The SDK server and the edge are tested in `agents/test/runtime.test.ts` with a handler written for the tests, not this agent's.
 
-The tests' limits are real time limits: a model request's is kept by the OpenAI client, a tool call's by the MCP client (it also bounds connecting to the retrieval service), and the run's by a real timer as well as by the test's clock. A test whose subject is not a time limit gets limits no busy machine reaches: 30 s for a model request, 20 s for a tool call, 60 s for the run. A test whose subject is a limit either moves the test's clock (E17) or sets a short limit of its own where the other side never answers, so the expiry is the only way the test can end (E12's tool limit, 3 s).
+The model's and the tools' time limits are kept in real time by their clients. The tests set limits no busy machine reaches, and no test's subject is a time limit.
 
 ## Not present
 

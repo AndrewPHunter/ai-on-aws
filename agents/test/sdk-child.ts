@@ -1,69 +1,41 @@
-// Run by agents/test/sdk-server.test.ts in a child process: a real BedrockAgentCoreApp, started by the
-// production start-up in ../src/contract/runtime.ts, with the edge on or off. The SDK app cannot be closed and
-// gives no port back, so each test starts one of these on ports it chose and ends it with SIGTERM.
+// Run by runtime.test.ts in a child process: a real BedrockAgentCoreApp, started by the production start-up in
+// ../src/contract/runtime.ts with the edge on, on loopback ports the test chose. The SDK app cannot be closed, so
+// each test ends its child with a signal.
 //
-// What is not production here: the ports and hosts (loopback only), the token check's clock (fixed at the
-// instant the test's tokens were issued), and the handler, which is written for the tests:
-//   message id "throws"    the handler throws an error whose message carries the message's text
-//   message id "outside"   the handler returns a response outside the contract, carrying the message's text
-//   any other id           the handler answers inside the contract, naming the caller's subject
+// What is not production here: the ports, and two values written for the tests.
+//   The token check  "Bearer refused" is refused, "Bearer unavailable" cannot be checked, any other Bearer token
+//                    is accepted as a fixed caller holding that token.
+//   The handler      message id "throws" throws an error quoting the message's text; "outside" answers outside the
+//                    contract, quoting it; any other id answers inside the contract.
 //
-// One argument: a JSON object { edgePort: number | null, appPort: number, discoveryUrl, issuer, now }.
+// One argument: a JSON object { edgePort: number, appPort: number }.
 
-import { z } from 'zod';
-
-import { createAccessTokenCheck } from '../../shared/access-token.ts';
+import type { AccessTokenCheck } from '../../shared/access-token.ts';
 import type { InvocationResponse } from '../../shared/agent-contract.ts';
 import { startOnAgentCoreSdk } from '../src/contract/runtime.ts';
-import type { RuntimeLayout } from '../src/contract/runtime-contract.ts';
 
-const options = z
-  .object({ edgePort: z.number().int().nullable(), appPort: z.number().int(), discoveryUrl: z.string(), issuer: z.string(), now: z.iso.datetime() })
-  .parse(JSON.parse(process.argv[2] ?? '{}'));
-// The same identity as CHILD_IDENTITY in sdk-server.test.ts.
-const CHILD_IDENTITY = { id: 'sdk-server-test-agent', implementation: 'none: the handler in agents/test/sdk-child.ts' };
+const ports: unknown = JSON.parse(process.argv[2] ?? '{}');
+const port = (name: string): number => Number(typeof ports === 'object' && ports !== null ? Reflect.get(ports, name) : NaN);
+const identity = { id: 'runtime-test-agent', implementation: 'the handler in agents/test/sdk-child.ts' };
 
-const now = new Date(options.now);
-const checkToken = createAccessTokenCheck(
-  {
-    discoveryUrl: options.discoveryUrl,
-    issuer: options.issuer,
-    audience: 'lab-agents',
-    allowedClients: ['desk'],
-    requiredScopes: ['agents:intake'],
-    rolesClaim: 'roles',
-    minRemainingSeconds: 150,
-  },
-  // Time is not what these tests test: the provider's keys are fetched from the test's own issuer, in the test's
-  // process, which may be busy with other tests; 30 s is far above anything a busy machine needs. (R17's provider
-  // closes each connection at once, so it does not wait on this limit.)
-  { now: () => now, keyRefetchWaitMs: 30_000, timeoutMs: 30_000 },
-);
-
-const loopback = '127.0.0.1';
-const layout: RuntimeLayout =
-  options.edgePort === null
-    ? { edge: 'off', appAt: { host: loopback, port: options.appPort } }
-    : { edge: 'on', edgeAt: { host: loopback, port: options.edgePort }, appAt: { host: loopback, port: options.appPort } };
+const checkToken: AccessTokenCheck = (authorization) => {
+  const token = /^Bearer (\S+)$/.exec(authorization ?? '')?.[1];
+  if (token === undefined || token === 'refused') return Promise.resolve({ kind: 'refused', reason: 'bad_signature', detail: 'Refused by the test.' });
+  if (token === 'unavailable') return Promise.resolve({ kind: 'unavailable', detail: 'Not checked, by the test.' });
+  return Promise.resolve({
+    kind: 'caller',
+    caller: { subject: 's', username: 'u', name: 'n', clientId: 'desk', roles: [], expiresAt: new Date('2026-03-01T10:10:00.000Z'), token },
+  });
+};
 
 startOnAgentCoreSdk({
-  title: 'SDK server test agent',
-  identity: CHILD_IDENTITY,
+  title: 'Runtime test agent',
+  identity,
   checkToken,
-  layout,
-  handler: (message, caller) => {
-    if (message.id === 'throws') {
-      return Promise.reject(new Error(`The handler failed on purpose, quoting: ${message.text}`));
-    }
-    const answer: InvocationResponse = {
-      agent: CHILD_IDENTITY,
-      outcome: 'completed',
-      stop_reason: null,
-      reply: `Received for ${caller.subject}.`,
-      citations: [],
-      case_actions: [],
-      steps: [],
-    };
+  layout: { edge: 'on', edgeAt: { host: '127.0.0.1', port: port('edgePort') }, appAt: { host: '127.0.0.1', port: port('appPort') } },
+  handler: (message) => {
+    if (message.id === 'throws') return Promise.reject(new Error(`The handler failed on purpose, quoting: ${message.text}`));
+    const answer: InvocationResponse = { agent: identity, outcome: 'completed', stop_reason: null, reply: 'Received.', citations: [], case_actions: [], steps: [] };
     if (message.id === 'outside') {
       return Promise.resolve({ ...answer, steps: [{ kind: 'error', started_at: 'yesterday', duration_ms: -1, message: message.text }] });
     }

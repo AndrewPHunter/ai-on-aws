@@ -41,6 +41,17 @@ Three tools, and no others:
 
 The four elements are an identifiable patient, an identifiable reporter, a suspect drug and an adverse event.
 
+## Always true
+
+1. Whether a case is complete is decided by code: all four elements present, or it lists what is missing.
+2. One case per inbound message: the same content returns the same case; different content is refused and changes nothing.
+3. A follow-up adds a version and never overwrites; one from the same message is recorded once.
+4. A follow-up sends the case back to review, whatever its status was.
+5. Only a person decides a case, through the review server, from the statuses allowed; the reviewer is the token's holder.
+6. An agent sees and adds to only the sender's own cases; another sender's case is answered exactly as one that does not exist.
+7. Every change is in the audit trail with who, when and which message, including replays and refused conflicts.
+8. No call is accepted without knowing who is calling, and the token is judged before anything else is read.
+
 ## The rules it enforces
 
 - **Complete or not is decided here, by code.** A case with all four elements is `awaiting_review`. A case missing any is `incomplete` and lists what is missing. The check is that each element is present; whether it is good enough is the reviewer's judgement.
@@ -111,7 +122,7 @@ curl -s -X POST http://127.0.0.1:8001/cases/AE-000001/review -H "authorization: 
 
 ## What was measured
 
-- The repository check runs 42 tests for this piece: 19 on the store, 14 that drive the real servers over loopback with the MCP SDK's own client, and 9 on the access token. The requests in the last two groups carry real signed tokens from a stand-in issuer.
+- The repository check runs 11 tests for this piece, named `case-system` and a number: one for each invariant under "Always true", numbered as they are, and three probes of the wiring, P1 to P3. Invariants 1 to 7 are shown on the store over an in-memory database (for invariant 5, the statuses a decision is allowed from). Invariant 8 and the probes drive the real servers over loopback, P1 and P3 with the MCP SDK's own client: P1, the three tools offered and a create recorded against the context headers and the token's user; P2, a decision through the review route recorded under the token's user, and refused for a body naming a reviewer or a caller without the role; P3, another sender's case answered over MCP as one that does not exist. Their token check is a function that names a caller, refuses or is unavailable; verifying a token is tested in [`shared/`](../../shared/README.md).
 - By hand against the running container, on an arm64 Mac: a case created, the same call repeated, the container removed and started again on the same volume, and the same call repeated a third time. One case existed throughout, and the audit trail showed one creation and two replays.
 
 ## Known limits
