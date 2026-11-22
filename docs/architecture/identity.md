@@ -507,6 +507,7 @@ On a trial stack built from this repository, run under Docker on an Apple-silico
 | Identity gate | `platform/identity/gate.sh` | 151 statements held, none failed |
 | Stack gate | `platform/identity/stack-gate.sh` | 102 statements held, none failed, none in `not_checked` |
 | Knowledge gate, with its token as its own client `knowledge-gate` | `knowledge/gate.sh` | 20 statements held |
+| The same three gates, on a stack started from the earlier realm with an inquiry store and a label index, then moved by the steps under [Changing the realm file](#changing-the-realm-file) with its volumes kept | as above | 151, 102 and 20 statements held, none failed |
 
 ## Not present
 
