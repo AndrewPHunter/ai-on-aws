@@ -1,9 +1,11 @@
-// The three tools a model can call. Approving or rejecting a case is deliberately not one of them.
+// The three tools a model can call, each offered only to a caller holding its scope. Approving or rejecting
+// a case is deliberately not one of them.
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 
+import { offersTool } from './scopes.ts';
 import type { CallContext, CaseFilter, CaseStore, Elements } from './store.ts';
 
 export const TOOL_NAMES = ['create_case', 'find_case', 'add_follow_up'] as const;
@@ -30,7 +32,7 @@ function contextMissing(): CallToolResult {
     {
       error: 'call_context_missing',
       detail:
-        'This tool records which inbound message and which agent a change came from. ' +
+        'This tool records which inbound message a change came from. ' +
         'The calling agent\'s code did not send that with the request, so nothing was recorded.',
     },
     true,
@@ -54,12 +56,13 @@ function elementsFrom(args: Elements): Elements {
   return elements;
 }
 
-// Builds the MCP server for one request. The context comes from the request's headers,
-// so the model cannot choose which message or agent a change is recorded against.
-export function buildMcpServer(store: CaseStore, context: CallContext | undefined): McpServer {
+// Builds the MCP server for one request, with only the tools the caller's scopes reach. The context comes
+// from the request's headers and its access token, so the model cannot choose which message or agent a
+// change is recorded against.
+export function buildMcpServer(store: CaseStore, context: CallContext | undefined, scopes: readonly string[]): McpServer {
   const server = new McpServer({ name: 'case-system', version: '1' });
 
-  server.registerTool(
+  if (offersTool('create_case', scopes)) server.registerTool(
     'create_case',
     {
       description:
@@ -89,7 +92,7 @@ export function buildMcpServer(store: CaseStore, context: CallContext | undefine
     },
   );
 
-  server.registerTool(
+  if (offersTool('find_case', scopes)) server.registerTool(
     'find_case',
     {
       description:
@@ -135,7 +138,7 @@ export function buildMcpServer(store: CaseStore, context: CallContext | undefine
     },
   );
 
-  server.registerTool(
+  if (offersTool('add_follow_up', scopes)) server.registerTool(
     'add_follow_up',
     {
       description:

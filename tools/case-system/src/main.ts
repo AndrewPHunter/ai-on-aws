@@ -1,5 +1,5 @@
 // Starts the case system: one store, the agent server on 8000 and the review server on 8001. Both
-// require a valid access token on every route but GET /ping.
+// require a valid access token on every route but GET /ping, each judged by its own check.
 
 import { createAccessTokenCheck } from '../../../shared/access-token.ts';
 import { createAgentServer, createReviewServer } from './http.ts';
@@ -24,9 +24,9 @@ try {
 
 const now = (): Date => new Date();
 const store = new CaseStore(settings.databasePath, now);
-const checkToken = createAccessTokenCheck(settings.auth, { now, keyRefetchWaitMs: KEY_REFETCH_WAIT_MS, timeoutMs: IDENTITY_TIMEOUT_MS });
-const agentServer = createAgentServer(store, now, checkToken);
-const reviewServer = createReviewServer(store, checkToken, settings.reviewerRole);
+const checkOptions = { now, keyRefetchWaitMs: KEY_REFETCH_WAIT_MS, timeoutMs: IDENTITY_TIMEOUT_MS };
+const agentServer = createAgentServer(store, now, createAccessTokenCheck(settings.agentServerAuth, checkOptions));
+const reviewServer = createReviewServer(store, createAccessTokenCheck(settings.reviewServerAuth, checkOptions));
 
 agentServer.listen(AGENT_PORT, HOST, () => {
   console.log(`Agent server (MCP at /mcp) listening on ${HOST}:${AGENT_PORT}`);

@@ -23,11 +23,12 @@ export type { AuditView, CaseStatus, CaseView, ElementName, Elements, FoundCases
 // A person as the identity provider names them: their name and their subject.
 export type Person = { name: string; subject: string };
 
-// Who is calling and for which inbound message. Supplied by the agent's code, never by the model,
-// except actingFor, which comes from the access token the agent passed on.
+// Who is calling and for which inbound message, never chosen by the model. The message and its sender
+// are supplied by the agent's code; the agent and the user it acts for come from the access token.
 export type CallContext = {
   messageId: string;
   receivedAt: string;
+  // The client the access token was issued to.
   agentId: string;
   // The signed-in user the agent is acting for.
   actingFor: Person;

@@ -4,7 +4,14 @@ A small system of record for adverse event cases. Agents open cases and add to t
 
 All data in it is synthetic. It is a lab stand-in, not a pharmacovigilance system.
 
-Every request but `GET /ping`, on both servers, needs an access token from the lab's [identity provider](../../platform/identity/README.md) as `Authorization: Bearer`, issued to the `desk` client for `lab-case-system`. On the agent server it is the token of the signed-in user the agent acts for, passed on by the agent; on the review server it is the reviewer's own, sent by the client. The reviewer is whoever the token names, and deciding a case needs the `reviewer` role.
+Every request but `GET /ping`, on both servers, needs an access token from the lab's [identity provider](../../platform/identity/README.md) as `Authorization: Bearer`, for the audience `case-system`. Each server accepts tokens issued to its own callers only. On the agent server it is a token issued to an intake agent's client (`intake-handwritten` or `intake-strands`), which the agent gets by exchanging the signed-in user's token; the agent is that client, acting for that user. On the review server it is the reviewer's own, issued to the `desk` client and sent by the client; the reviewer is whoever the token names. Each tool and each route needs its own scope:
+
+| Tool or route | Scope |
+|---|---|
+| `create_case`, `add_follow_up` | `cases:write` |
+| `find_case` | `cases:lookup` |
+| `GET /cases`, `GET /cases/<id>` | `cases:read` |
+| `POST /cases/<id>/review` | `cases:review` |
 
 Every command on this page is run from the root of the repository.
 
@@ -31,7 +38,7 @@ stops it and keeps the cases. Add `-v` to delete them.
 
 ## What an agent can do
 
-Three tools, and no others:
+Three tools, and no others. The MCP server offers each only to a token holding its scope; a call to one not offered is answered with the MCP library's unknown-tool error and changes nothing.
 
 | Tool | What it does |
 |---|---|
@@ -73,22 +80,22 @@ Statuses and who sets them:
 
 ## Who is calling: the context headers
 
-The model does not choose which message or agent a change is recorded against. The agent's own code sends that with each MCP request:
+The model does not choose which message or agent a change is recorded against. The agent is the client the access token was issued to. The agent's own code sends the message with each MCP request:
 
 | Header | Meaning |
 |---|---|
 | `x-message-id` | The agent's identifier for the inbound message it is handling |
 | `x-received-at` | When that message was received, as a date and time |
-| `x-agent-id` | Which agent is calling |
 | `x-sender` | Who sent the message, as the caller gave it, percent-encoded |
 
 Without them every tool call is refused and nothing is recorded or returned. Listing the tools works without them. Sending only some of them, a receipt time that is not a time, or a receipt time more than five minutes ahead of the server's clock, is refused with status 400.
 
-The access token comes first, before the headers or the body are read. Every audit entry for an agent's change records the agent as the actor and, beside it, the user the agent acted for: the token's `name` and subject.
+An `x-agent-id` header is not read. The access token comes first, before the headers or the body are read. Every audit entry for an agent's change records the token's client as the actor and, beside it, the user the agent acted for: the token's `name` and subject.
 
 | Answer | When |
 |---|---|
-| 401, `WWW-Authenticate: Bearer error="invalid_token"`, `{"error":"unauthorized","reason","detail"}` | No token, or one that is malformed, signed by another key or not with RS256, from another issuer, not for `lab-case-system`, not issued to `desk`, or expired. `reason` names which |
+| 401, `WWW-Authenticate: Bearer error="invalid_token"`, `{"error":"unauthorized","reason","detail"}` | No token, or one that is malformed, signed by another key or not with RS256, from another issuer, not for `case-system`, not issued to a client this server accepts, or expired. `reason` names which |
+| 403, `WWW-Authenticate: Bearer error="insufficient_scope", scope="..."`, `{"error":"forbidden","reason":"insufficient_scope","detail"}` | A token holding none of the server's scopes, or, on the review server, not the route's own scope, which the header names |
 | 503 `identity_unavailable` | The identity provider's discovery document or keys cannot be fetched, or it names another issuer |
 
 ## Settings
@@ -100,16 +107,16 @@ Set in [`compose.yaml`](compose.yaml). Every one is required; the case system st
 | `CASE_DB_PATH` | The SQLite file |
 | `AUTH_DISCOVERY_URL` | Where the identity provider's discovery document is: `http://identity:8080/realms/lab/.well-known/openid-configuration` |
 | `AUTH_ISSUER` | The issuer it and every token must name, exactly: `http://localhost:8090/realms/lab` |
-| `AUTH_ALLOWED_AUDIENCE` | A value the token's `aud` must contain: `lab-case-system` |
-| `AUTH_ALLOWED_CLIENTS` | The `client_id` values accepted, separated by commas: `desk` |
+| `AUTH_ALLOWED_AUDIENCE` | A value the token's `aud` must contain: `case-system` |
+| `AUTH_AGENT_SERVER_CLIENTS` | The `client_id` values the agent server accepts, separated by commas: `intake-handwritten,intake-strands` |
+| `AUTH_REVIEW_SERVER_CLIENTS` | The `client_id` values the review server accepts, separated by commas: `desk` |
 | `AUTH_ROLES_CLAIM` | The claim holding the caller's roles: `roles` |
-| `AUTH_REVIEWER_ROLE` | The role a token must list to decide a case: `reviewer` |
 
-A token needs only to be valid when it arrives (no minimum remaining life).
+The scopes are set in code, not by a setting: each server's token check requires at least one of its own tools' or routes' scopes. A token needs only to be valid when it arrives (no minimum remaining life).
 
 ## Review a case
 
-With an access token of a signed-in user in `$ACCESS_TOKEN`:
+With an access token of a signed-in user, issued to `desk` with `cases:read` (to list) or `cases:review` (to decide), in `$ACCESS_TOKEN`:
 
 ```bash
 curl -s http://127.0.0.1:8001/cases?status=awaiting_review -H "authorization: Bearer $ACCESS_TOKEN"
@@ -119,22 +126,21 @@ curl -s http://127.0.0.1:8001/cases?status=awaiting_review -H "authorization: Be
 curl -s -X POST http://127.0.0.1:8001/cases/AE-000001/review -H "authorization: Bearer $ACCESS_TOKEN" -H 'content-type: application/json' -d '{"decision":"approve"}'
 ```
 
-`decision` is `approve`, `reject` or `request_information`; the last needs a `note`. The reviewer recorded is the token's `name`, with its subject. A body that names a `reviewer` is refused with 400. A token without the `reviewer` role is refused with 403 `not_a_reviewer`, decided before the case is looked up, so the answer says nothing about whether it exists. `GET /cases/<id>` returns the case with every version and its audit trail; an agent's entries carry `acting_for`, a reviewer's carry `actor_subject`.
+`decision` is `approve`, `reject` or `request_information`; the last needs a `note`. The reviewer recorded is the token's `name`, with its subject. A body that names a `reviewer` is refused with 400. A token without `cases:review` is refused with 403 `insufficient_scope`, decided before the case is looked up, so the answer says nothing about whether it exists. `GET /cases/<id>` returns the case with every version and its audit trail; an agent's entries carry `acting_for`, a reviewer's carry `actor_subject`.
 
 ## What was measured
 
-- The repository check runs 11 tests for this piece, named `case-system` and a number: one for each invariant under "Always true", numbered as they are, and three probes of the wiring, P1 to P3. Invariants 1 to 7 are shown on the store over an in-memory database (for invariant 5, the statuses a decision is allowed from). Invariant 8 and the probes drive the real servers over loopback, P1 and P3 with the MCP SDK's own client: P1, the three tools offered and a create recorded against the context headers and the token's user; P2, a decision through the review route recorded under the token's user, and refused for a body naming a reviewer or a caller without the role; P3, another sender's case answered over MCP as one that does not exist. Their token check is a function that names a caller, refuses or is unavailable; verifying a token is tested in [`shared/`](../../shared/README.md).
+- The repository check runs 12 tests for this piece, named `case-system` and a number: one for each invariant under "Always true", numbered as they are, and three probes of the wiring, P1 to P3. Invariants 1 to 7 are shown on the store over an in-memory database (for invariant 5, the statuses a decision is allowed from). Invariant 9 is shown on the function that decides a route and on the MCP server built for one request, reached through the MCP SDK's in-memory transport, one row per scope. Invariant 8 and the probes drive the real servers over loopback, P1 and P3 with the MCP SDK's own client: P1, the three tools offered to a token holding both agent scopes and a create recorded against the context headers and the token's client and user, with an `x-agent-id` header naming another agent; P2, a decision through the review route recorded under the token's user, and refused for a body naming a reviewer or a token without `cases:review`; P3, another sender's case answered over MCP as one that does not exist. Their token check is a function that names a caller, refuses or is unavailable; verifying a token is tested in [`shared/`](../../shared/README.md).
 - By hand against the running container, on an arm64 Mac: a case created, the same call repeated, the container removed and started again on the same volume, and the same call repeated a third time. One case existed throughout, and the audit trail showed one creation and two replays.
 
 ## Known limits
 
-- **The context headers are not established to reach the server through AgentCore.** The Runtime documentation read for this says session headers are forwarded and shows an allowlist setting for others; whether these three pass through Runtime or Gateway has not been tried. Whether the Strands MCP client can send them has not been tried either.
+- **The context headers are not established to reach the server through AgentCore.** The Runtime documentation read for this says session headers are forwarded and shows an allowlist setting for others; whether these pass through Runtime or Gateway has not been tried. Whether the Strands MCP client can send them has not been tried either.
 - **A conflict is reported to the model, and what the model does next is not controlled here.** After a refused create it could send the reworded content as a follow-up, which adds a version and sends the case back to review.
-- **The context headers are trusted as sent.** A call needs a signed-in user's access token, but the agent's own name (`x-agent-id`) is a header it claims: anything holding a valid token can claim to be any agent, handling a message from any sender. The limit to a sender's own cases is only as good as that sender text, which the signed-in user vouches for.
-- **The token is the user's, passed on unchanged by the agent.** It is not exchanged for a narrower one, so it is valid here for anything that user may do here.
+- **The context headers are trusted as sent.** The agent is the token's client, but the message and its sender are headers the agent's code claims: an intake agent's token can record a change against any message, from any sender. The limit to a sender's own cases is only as good as that sender text, which the signed-in user vouches for.
 - **One event reported by two senders becomes two cases.** The second sender cannot find the first sender's case, and nothing links them.
 - **A store written before senders were kept** opens, but its existing cases have no sender, so no agent lookup finds them. Reviewers still see them.
-- **Any holder of a valid token can list and read every case** on the review server; only deciding needs the `reviewer` role.
+- **A token with `cases:read` can list and read every case** on the review server, from every sender.
 - **A store written before tokens were checked** opens; its existing audit entries have no `acting_for` and no `actor_subject`.
 - **One case per message.** A message that reports two patients produces one case.
 - **SQLite support in Node 22 is marked experimental** and prints a warning at start. It was chosen because it adds no dependency that needs compiling.

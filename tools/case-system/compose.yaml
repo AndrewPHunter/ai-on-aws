@@ -12,17 +12,16 @@ services:
     command: ["node", "tools/case-system/src/main.ts"]
     environment:
       CASE_DB_PATH: /data/cases.sqlite
-      # The access token every request but /ping must carry. The agents pass on the signed-in user's
-      # token; the client sends it on review calls. The discovery document is fetched by the identity
+      # The access token every request but /ping must carry. Each intake agent exchanges the token it
+      # received for one issued to its own client; the client sends the reviewer's own on review calls.
+      # The scopes each server needs are set in code. The discovery document is fetched by the identity
       # service's name on the shared network; the issuer is the browser's address for it.
       AUTH_DISCOVERY_URL: http://identity:8080/realms/lab/.well-known/openid-configuration
       AUTH_ISSUER: http://localhost:8090/realms/lab
-      AUTH_ALLOWED_AUDIENCE: lab-case-system
-      AUTH_ALLOWED_CLIENTS: desk
+      AUTH_ALLOWED_AUDIENCE: case-system
+      AUTH_AGENT_SERVER_CLIENTS: intake-handwritten,intake-strands
+      AUTH_REVIEW_SERVER_CLIENTS: desk
       AUTH_ROLES_CLAIM: roles
-      AUTH_REQUIRED_SCOPES: cases:write,cases:lookup,cases:read,cases:review
-      # Deciding a case needs this role in the token.
-      AUTH_REVIEWER_ROLE: reviewer
     ports:
       # Published on this machine only. 8000 is for agents (MCP), 8001 is for reviewers.
       - "127.0.0.1:8000:8000"
