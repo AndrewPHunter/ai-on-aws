@@ -13,7 +13,7 @@ platform/identity/setup.sh
 docker compose up -d --build --wait
 ```
 
-Then open <http://localhost:3000>, by that name and not `127.0.0.1`: the identity provider sends the browser back to `localhost`, and the session cookie belongs to it. Sign in as `riley.reviewer` (who may decide cases) or `dana.desk` (who may not); their passwords are `IDENTITY_RILEY_PASSWORD` and `IDENTITY_DANA_PASSWORD` in `platform/identity/.env`, which the first command writes. What each person sees is set by the scopes their role is granted; see [what each person sees](#what-each-person-sees).
+Then open <http://localhost:3000>, by that name and not `127.0.0.1`: the identity provider sends the browser back to `localhost`, and the session cookie belongs to it. Sign in as one of the four people: `dana.desk` (who runs the intake agents), `morgan.medinfo` (who also runs the label expert), `riley.reviewer` (who reads and decides cases) or `avery.auditor` (who reads cases); their passwords are `IDENTITY_DANA_PASSWORD`, `IDENTITY_MORGAN_PASSWORD`, `IDENTITY_RILEY_PASSWORD` and `IDENTITY_AVERY_PASSWORD` in `platform/identity/.env`, which the first command writes. What each person sees is set by the scopes their role is granted; see [what each person sees](#what-each-person-sees).
 
 That starts the client together with the [agents](../agents/README.md), the [case system](../tools/case-system/README.md) and the [identity provider](../platform/identity/README.md), on one network. All are published on this machine only. The agents need the model server, so [set that up](../model/README.md) first.
 
