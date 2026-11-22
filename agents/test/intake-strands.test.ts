@@ -11,6 +11,7 @@ import { z } from 'zod';
 
 import { invocationResponseSchema } from '../../shared/agent-contract.ts';
 import type { InvocationResponse } from '../../shared/agent-contract.ts';
+import type { TokenExchange } from '../../shared/token-exchange.ts';
 import { handleInquiry } from '../src/intake/strands.ts';
 import { CALLER, ask, clock, message, result, say, startMcp, startModel } from './support.ts';
 import type { ModelAnswer, ModelRequest, ToolAnswer } from './support.ts';
@@ -19,6 +20,7 @@ import type { ModelAnswer, ModelRequest, ToolAnswer } from './support.ts';
 const LIMITS = { maxTurns: 6, runMs: 60_000, modelMs: 30_000, toolMs: 20_000 };
 const optional = z.string().optional();
 const CASE_FIELDS = { case_id: optional, patient: optional, suspect_drug: optional, event: optional };
+const exchange: TokenExchange = () => Promise.resolve({ kind: 'token', token: 'token-for-the-case-system', expiresAt: new Date('2026-03-01T10:05:00.000Z'), scopes: ['cases:write', 'cases:lookup'] });
 const createdAs = (caseId: string): ToolAnswer => result({ outcome: 'created', case: { case_id: caseId, status: 'incomplete' } });
 
 async function rig(t: TestContext, script: (request: ModelRequest, nth: number) => ModelAnswer, create: (nth: number) => ToolAnswer = () => createdAs('C-7')) {
@@ -31,7 +33,7 @@ async function rig(t: TestContext, script: (request: ModelRequest, nth: number) 
   const run = async (limits: Partial<typeof LIMITS> = {}): Promise<InvocationResponse> =>
     invocationResponseSchema.parse(
       await handleInquiry(
-        { identity: { id: 'intake-strands-test', implementation: 'Strands' }, model: model.settings, caseMcpUrl: cases.url, now: clock().now, limits: { ...LIMITS, ...limits } },
+        { identity: { id: 'intake-strands-test', implementation: 'Strands' }, model: model.settings, caseMcpUrl: cases.url, exchange, now: clock().now, limits: { ...LIMITS, ...limits } },
         message('msg-1', 'Patient JD had a rash after Examplamab.'),
         CALLER,
       ),

@@ -1,6 +1,7 @@
-// The front doors' invariants ("Always true" in docs/architecture/agent-runtime.md), and the one probe of the
-// hand-written agent's model client. The token check is a plain function that refuses, cannot check, or accepts a
-// fixed caller: no token is signed. The SDK app cannot be closed, so it runs in a child process (sdk-child.ts),
+// The front doors' invariants ("Always true" in docs/architecture/agent-runtime.md), the one probe of the
+// hand-written agent's model client, and the token an agent sends its tool server (runtime 6, the list's fifth
+// invariant). The token check and the token exchange are plain functions that answer as each row says: no token
+// is signed. The SDK app cannot be closed, so it runs in a child process (sdk-child.ts),
 // behind the edge, on loopback ports picked here; a port taken in the moment between being picked and the child
 // listening makes the child exit and the test fail.
 
@@ -14,10 +15,12 @@ import type { TestContext } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import type { AccessTokenCheck } from '../../shared/access-token.ts';
+import type { TokenExchangeRequest, TokenExchangeResult } from '../../shared/token-exchange.ts';
 import { invocationResponseSchema } from '../../shared/agent-contract.ts';
 import { createLocalEdge } from '../src/contract/edge.ts';
 import { createContractServer } from '../src/contract/server.ts';
 import { createChatModel } from '../src/model/chat.ts';
+import { CASE_SYSTEM, connectWithToolToken } from '../src/tools/tool-token.ts';
 import { ask, listen, message, say, startModel, stop } from './support.ts';
 
 const IDENTITY = { id: 'runtime-test-agent', implementation: 'none' };
@@ -158,4 +161,37 @@ test('runtime 5. the hand-written agent\'s model client reaches a model server a
     second.completion.toolCalls.map((c) => c.function),
     [{ name: 'find_case', arguments: '{"patient":"JD"}' }],
   );
+});
+
+test('runtime 6. an agent connects to its tool server only with a token it got for that server by one exchange of the caller\'s, and a refused or unavailable exchange connects nothing', async () => {
+  const callerToken = 'token-the-agent-was-called-with';
+  const inbound = message('msg-runtime-6', 'Patient JD had a rash after Examplamab.');
+  const rows: Array<{ name: string; answer: TokenExchangeResult; connected: string[] }> = [
+    { name: 'granted', answer: { kind: 'token', token: 'token-for-the-case-system', expiresAt: new Date('2026-03-01T10:05:00.000Z'), scopes: ['cases:write', 'cases:lookup'] }, connected: ['token-for-the-case-system'] },
+    { name: 'refused', answer: { kind: 'refused', reason: 'provider_refused', detail: 'Detail-of-the-refused-exchange.' }, connected: [] },
+    { name: 'unavailable', answer: { kind: 'unavailable', detail: 'Detail-of-the-unavailable-exchange.' }, connected: [] },
+  ];
+  for (const row of rows) {
+    const asked: TokenExchangeRequest[] = [];
+    const connected: string[] = [];
+    const connect = connectWithToolToken(
+      (request) => {
+        asked.push(request);
+        return Promise.resolve(row.answer);
+      },
+      CASE_SYSTEM,
+      (_message, token) => {
+        connected.push(token);
+        return Promise.resolve({ ok: true, tools: { definitions: [], call: () => Promise.resolve({ kind: 'no_answer', reason: 'Not called.' }), close: () => Promise.resolve() } });
+      },
+    );
+    const result = await connect(inbound, callerToken, 10_000);
+    assert.deepEqual(
+      asked.map(({ subjectToken, audience, scopes }) => ({ subjectToken, audience, scopes: [...scopes] })),
+      [{ subjectToken: callerToken, audience: 'case-system', scopes: ['cases:write', 'cases:lookup'] }],
+      `${row.name}: the exchange was not asked once, for the case system`,
+    );
+    assert.deepEqual(connected, row.connected, `${row.name}: what was connected with`);
+    if (row.answer.kind !== 'token') assert.ok(!result.ok && result.reason.includes(row.answer.detail), `${row.name}: the reason does not carry the detail`);
+  }
 });

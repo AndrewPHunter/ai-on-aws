@@ -10,6 +10,7 @@ import { z } from 'zod';
 
 import { invocationResponseSchema } from '../../shared/agent-contract.ts';
 import type { InboundMessage, InvocationResponse } from '../../shared/agent-contract.ts';
+import type { TokenExchange } from '../../shared/token-exchange.ts';
 import { EXPERT_SETTINGS } from '../src/expert/settings.ts';
 import { handleQuestion } from '../src/expert/strands.ts';
 import { CALLER, ask, clock, message, result, say, startMcp, startModel } from './support.ts';
@@ -42,7 +43,11 @@ const passage = (of: Label, n: number, text: string): Record<string, unknown> =>
 const DOSE = 'The usual adult dose is 20 mg once daily with food. Do not take more than 40 mg in one day.';
 const STORAGE = 'Store the vials between 2 and 8 degrees in their carton, away from light.';
 
-type Retrieval = { find?: (drug: string) => ToolAnswer; search?: (setId: string, nth: number) => ToolAnswer; extra?: string };
+// The token the scripted exchange gives for the retrieval service, unless a test scripts another answer.
+const EXCHANGED = 'token-for-the-retrieval-service';
+const granted: TokenExchange = () => Promise.resolve({ kind: 'token', token: EXCHANGED, expiresAt: new Date('2026-03-01T10:05:00.000Z'), scopes: ['labels:search'] });
+
+type Retrieval = { find?: (drug: string) => ToolAnswer; search?: (setId: string, nth: number) => ToolAnswer; extra?: string; exchange?: TokenExchange };
 
 async function rig(t: TestContext, script: (request: ModelRequest, nth: number) => ModelAnswer, retrieval: Retrieval = {}) {
   const model = await startModel(t, script);
@@ -63,6 +68,7 @@ async function rig(t: TestContext, script: (request: ModelRequest, nth: number) 
           identity: { id: 'expert-test', implementation: 'Strands' },
           model: model.settings,
           knowledgeMcpUrl: service.url,
+          exchange: retrieval.exchange ?? granted,
           now: clock().now,
           limits: LIMITS,
           settings: { ...EXPERT_SETTINGS, search: { ...EXPERT_SETTINGS.search, readingAllowance } },
@@ -133,16 +139,16 @@ test('expert 4. a search that could not be made is never told to the model and n
   }
 });
 
-test('expert 5. the caller\'s token goes to the retrieval service on every request and nothing else of the message; the model gets the text only', async (t) => {
+test('expert 5. the token the agent got for the retrieval service goes to it on every request, and neither the caller\'s token nor anything else of the message; the model gets the text only', async (t) => {
   const inbound = { id: 'msg-identifier-of-expert-5', received_at: '2026-02-27T07:41:00.000Z', sender: 'sender.of.expert5@clinic.example', text: 'What is the usual adult dose of Examplamab?' };
   const { model, service, run } = await rig(t, findSearchThen(answer(GOOD)));
   await run(inbound);
   assert.ok(service.requests.length > 0);
   const hidden = [inbound.id, inbound.received_at, inbound.sender];
   for (const request of service.requests) {
-    assert.equal(request.headers.authorization, `Bearer ${CALLER.token}`);
+    assert.equal(request.headers.authorization, `Bearer ${EXCHANGED}`);
     const sent = JSON.stringify(request);
-    assert.deepEqual(hidden.filter((value) => sent.includes(value)), [], 'part of the message went to the retrieval service');
+    assert.deepEqual([...hidden, CALLER.token].filter((value) => sent.includes(value)), [], 'the caller\'s token or part of the message went to the retrieval service');
   }
   for (const request of model.requests) {
     assert.ok(request.user.includes(inbound.text));
@@ -180,15 +186,18 @@ test('expert 7. runs share no state', async (t) => {
 test('expert 8. whatever goes wrong, the run ends inside the contract, and nothing the model wrote that did not pass the checks is in the reply', async (t) => {
   const unchecked = 'Zebra: take as much as you like.';
   const bad: Statement = { text: unchecked, passages: ['P1'], quote: 'take as much as you like' };
-  const rows: Array<{ name: string; script: (request: ModelRequest, nth: number) => ModelAnswer }> = [
+  const refused: TokenExchange = () => Promise.resolve({ kind: 'refused', reason: 'provider_refused', detail: 'The identity provider refused the token exchange.' });
+  const rows: Array<{ name: string; script: (request: ModelRequest, nth: number) => ModelAnswer; exchange?: TokenExchange }> = [
+    { name: 'the exchange is refused', script: findSearchThen(answer(GOOD)), exchange: refused },
     { name: 'the model never calls a final tool', script: findSearchThen(say(unchecked)) },
     { name: 'the model server fails', script: (request, nth) => (nth < 2 ? findSearchThen()(request, nth) : { kind: 'status', status: 400 }) },
     { name: 'the answer never passes', script: findSearchThen(answer(bad), answer(bad), answer(bad)) },
   ];
   for (const row of rows) {
-    const { run } = await rig(t, row.script);
+    const { model, run } = await rig(t, row.script, { exchange: row.exchange });
     const response = await run();
     assert.notEqual(response.outcome, 'completed', row.name);
+    if (row.exchange) assert.deepEqual([response.outcome, model.requests.length], ['failed', 0], `${row.name}: the run did not fail before the model was asked`);
     assert.equal(JSON.stringify({ reply: response.reply, stop: response.stop_reason, citations: response.citations }).includes('Zebra'), false, row.name);
   }
 });

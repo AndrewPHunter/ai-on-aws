@@ -59,11 +59,13 @@ import { OpenAIModel } from '@strands-agents/sdk/models/openai';
 
 import type { Caller } from '../../../shared/access-token.ts';
 import type { InboundMessage, InvocationResponse } from '../../../shared/agent-contract.ts';
+import type { TokenExchange } from '../../../shared/token-exchange.ts';
 import type { AgentIdentity } from '../contract/server.ts';
 import { MODEL_UNREACHABLE, modelAnsweredWithStatus, modelDidNotAnswerWithin } from '../model/served.ts';
 import type { ModelSettings } from '../model/served.ts';
-import { caseSystemHeaders, connectionFailure, noAnswerWithin, payloadOf } from '../tools/case-system.ts';
+import { caseSystemHeaders, connectionFailure, missingCaseTools, noAnswerWithin, payloadOf } from '../tools/case-system.ts';
 import type { ToolOutcome } from '../tools/tool-set.ts';
+import { CASE_SYSTEM, toolToken } from '../tools/tool-token.ts';
 import { completed, failed, stoppedAtTimeLimit, stoppedAtTurnLimit, stoppedCutOff, stoppedWithoutReply } from '../run/endings.ts';
 import type { Limits } from '../run/limits.ts';
 import { recordError, recordNotCalled, recordToolCall, toldAbout } from '../run/steps.ts';
@@ -77,6 +79,8 @@ export type StrandsDeps = {
   identity: AgentIdentity;
   model: ModelSettings;
   caseMcpUrl: string;
+  // Exchanges the caller's token for one meant for the case system.
+  exchange: TokenExchange;
   now: () => Date;
   limits: Limits;
 };
@@ -170,10 +174,16 @@ function textOf(message: Message): string {
 
 export async function handleInquiry(deps: StrandsDeps, message: InboundMessage, caller: Caller): Promise<InvocationResponse> {
   const run = startRun(deps.identity, deps.now, deps.limits);
+  // The caller's token is exchanged, once, for one meant for the case system, before anything is connected.
+  const got = await toolToken(deps.exchange, CASE_SYSTEM, caller.token, run.deadline.within(deps.limits.toolMs));
+  if (!got.ok) {
+    recordError(run, got.reason);
+    return failed(run, got.reason);
+  }
   const mcp = new McpClient({
     url: deps.caseMcpUrl,
-    // The context headers and the caller's token, on every request this client makes.
-    headers: caseSystemHeaders(message, deps.identity.id, caller.token),
+    // The context headers and the token for the case system, on every request this client makes.
+    headers: caseSystemHeaders(message, got.token),
     applicationName: deps.identity.id,
   });
 
@@ -188,6 +198,11 @@ export async function handleInquiry(deps: StrandsDeps, message: InboundMessage, 
       const reason = connectionFailure(error);
       recordError(run, reason);
       return failed(run, reason);
+    }
+    const short = missingCaseTools(listed.map((tool) => tool.name));
+    if (short !== undefined) {
+      recordError(run, short);
+      return failed(run, short);
     }
     return await converse(run, deps, mcp, listed, message);
   } finally {

@@ -59,7 +59,7 @@ const created = (caseId: string): ToolOutcome => answered({ outcome: 'created', 
 
 // The handler with scripted dependencies. The model's script is asked per conversation (by its user turn), so two
 // runs on the same dependencies each follow their own.
-function rig(script: Script, tools: Tools = (tool) => (tool === 'create_case' ? created('C-1') : answered({ cases: [] })), options: { connect?: 'refused'; clock?: Clock } = {}) {
+function rig(script: Script, tools: Tools = (tool) => (tool === 'create_case' ? created('C-1') : answered({ cases: [] })), options: { connect?: 'refused' | 'short'; clock?: Clock } = {}) {
   const time = options.clock ?? clock();
   const world: World = { events: [], calls: [], requests: [], connected: [] };
   const seen = new Map<string, number>();
@@ -85,7 +85,7 @@ function rig(script: Script, tools: Tools = (tool) => (tool === 'create_case' ? 
           return Promise.resolve({
             ok: true,
             tools: {
-              definitions: structuredClone(DEFINITIONS),
+              definitions: structuredClone(options.connect === 'short' ? DEFINITIONS.slice(0, 2) : DEFINITIONS),
               call(tool, args) {
                 world.events.push(tool);
                 world.calls.push({ tool, args });
@@ -125,8 +125,9 @@ const callIdsOf = (result: ChatResult): string[] => (result.ok ? result.completi
 const writes = (world: World): number => world.calls.filter((c) => c.tool === 'create_case' || c.tool === 'add_follow_up').length;
 
 test('intake 1. once a message is accepted, whatever goes wrong, the handler returns a response inside the contract with an outcome and its steps', async () => {
-  const rows: Array<{ name: string; rig: ReturnType<typeof rig> }> = [
+  const rows: Array<{ name: string; rig: ReturnType<typeof rig>; failsBeforeModel?: true }> = [
     { name: 'tools cannot be connected', rig: rig(turns(), undefined, { connect: 'refused' }) },
+    { name: 'the case system offers fewer than three tools', rig: rig(turns(), undefined, { connect: 'short' }), failsBeforeModel: true },
     { name: 'the model fails', rig: rig(() => modelFails(false)) },
     { name: 'the model answers nonsense', rig: rig(turns(ask(['no_such_tool', {}], ['create_case', '{not json'], ['find_case', '[1, 2]']), say(''))) },
     { name: 'a tool gives no answer', rig: rig(turns(ask(['find_case', {}])), () => noAnswer) },
@@ -137,6 +138,7 @@ test('intake 1. once a message is accepted, whatever goes wrong, the handler ret
     const parsed = invocationResponseSchema.safeParse(response);
     assert.ok(parsed.success, `${row.name}: the response is outside the contract`);
     assert.ok(response.steps.length > 0, `${row.name}: no steps`);
+    if (row.failsBeforeModel) assert.deepEqual([response.outcome, row.rig.world.events.includes('model')], ['failed', false], `${row.name}: the model was asked`);
   }
 });
 

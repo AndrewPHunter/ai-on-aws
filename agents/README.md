@@ -2,7 +2,7 @@
 
 The agents that handle inquiries. Each runs as its own container from one image, and each serves the same HTTP contract, the one Amazon Bedrock AgentCore Runtime asks of a container: `POST /invocations` and `GET /ping` on port 8080. The hand-written agent serves it with a server written by hand; the two agents on Strands serve it with AWS's SDK server (`BedrockAgentCoreApp`), behind a local stand-in for AgentCore Runtime's front door. [docs/architecture/agent-runtime.md](../docs/architecture/agent-runtime.md) describes both, and where their answers differ.
 
-`POST /invocations` requires an access token from the lab's [identity provider](../platform/identity/README.md), as `Authorization: Bearer`, checked before anything else: the check AgentCore Runtime's JWT authorizer makes in front of the container, made here by the hand-written server or by the local edge. Each agent passes the caller's token on to the service it calls on every request: the intake agents to the case system, the label expert to the retrieval service. `GET /ping` needs none.
+`POST /invocations` requires an access token from the lab's [identity provider](../platform/identity/README.md), as `Authorization: Bearer`, checked before anything else: the check AgentCore Runtime's JWT authorizer makes in front of the container, made here by the hand-written server or by the local edge. Each agent accepts only a token meant for itself. Before it connects to the service it calls, it exchanges that token, once per run and as itself, for one meant for that service, and sends only that one: the intake agents for the case system (audience `case-system`, scopes `cases:write` and `cases:lookup`), the label expert for the retrieval service (audience `knowledge`, scope `labels:search`). The caller's token goes to the identity provider's token endpoint and nowhere else. `GET /ping` needs none.
 
 Every command on this page is run from the root of the repository.
 
@@ -23,7 +23,7 @@ docker compose up -d --build --wait
 
 That starts both intake agents and the label expert with the case system, the retrieval service, the identity provider and the [client](../client/README.md). Open <http://localhost:3000>, sign in, choose an agent and send an inquiry.
 
-To call an agent directly, use port 8080 for the hand-written intake agent, 8081 for the intake agent on Strands and 8082 for the label expert, with an access token issued to the `desk` client that has at least 150 seconds left. Its audience must hold `lab-agents`, and the audience of the service the agent passes it on to: `lab-case-system` for an intake agent, `lab-knowledge` for the label expert; without the second, the run ends `failed` with a sentence naming the service. Without a token the answer is 401:
+To call an agent directly, use port 8080 for the hand-written intake agent, 8081 for the intake agent on Strands and 8082 for the label expert, with an access token issued to the `desk` client (or, for the label expert, the `evaluation` client) that has at least 150 seconds left. Its audience must hold the agent's own id (`intake-handwritten`, `intake-strands` or `expert`), and its scope `agents:intake` for an intake agent or `agents:expert` for the label expert. If the agent's exchange of that token is refused or cannot be made, the run ends `failed` with a sentence naming the service it was for. Without a token the answer is 401:
 
 ```bash
 curl -s http://127.0.0.1:8080/invocations -H 'content-type: application/json' -H "authorization: Bearer $ACCESS_TOKEN" -d '{"message":{"id":"m-1","received_at":"2026-01-01T09:00:00Z","sender":"Dr. A. Rivera, a.rivera@example.org","text":"My patient JD, 54, developed severe muscle pain on atorvastatin 40 mg."}}'
@@ -31,7 +31,7 @@ curl -s http://127.0.0.1:8080/invocations -H 'content-type: application/json' -H
 
 | Answer | When |
 |---|---|
-| 401, `WWW-Authenticate: Bearer error="invalid_token"`, `{"error":"unauthorized","reason","detail"}` | No token, or one that is malformed, signed by another key or not with RS256, from another issuer, not for `lab-agents`, not issued to an allowed client, expired, or with less than 150 s left. `reason` names which |
+| 401, `WWW-Authenticate: Bearer error="invalid_token"`, `{"error":"unauthorized","reason","detail"}` | No token, or one that is malformed, signed by another key or not with RS256, from another issuer, not for this agent's audience, not issued to an allowed client, expired, or with less than 150 s left. `reason` names which |
 | 503 `identity_unavailable` | The identity provider's discovery document or keys cannot be fetched within 5 s, or it names another issuer, or its keys cannot be used |
 
 The request and the answer are defined in [`shared/agent-contract.ts`](../shared/agent-contract.ts). The answer carries the reply, what was done to cases, and every step taken.
@@ -70,7 +70,8 @@ The flows, the rules of a tool call, and the controls neither has are in two doc
 | [`src/run/endings.ts`](src/run/endings.ts) | The wording of every ending | Both, and the label expert |
 | [`src/run/record.ts`](src/run/record.ts) | Step timing and the run's deadline | Both, and the label expert (the deadline) |
 | [`src/model/served.ts`](src/model/served.ts) | The model settings, which model the server serves, the wording of a model failure | Both, and the label expert |
-| [`src/tools/case-system.ts`](src/tools/case-system.ts) | What is particular to the case system: its context headers, which tools change a case, how to read its answers, and what they mean for the run's record. Also the hand-written agent's MCP connection | Both |
+| [`src/tools/case-system.ts`](src/tools/case-system.ts) | What is particular to the case system: its context headers, the three tools a run needs and which of them change a case, how to read its answers, and what they mean for the run's record. Also the hand-written agent's MCP connection | Both |
+| [`src/tools/tool-token.ts`](src/tools/tool-token.ts) | The exchange of the caller's token for one meant for the tool server, and each agent's target (audience and scopes) | Both, and the label expert |
 | [`src/tools/mcp-answers.ts`](src/tools/mcp-answers.ts) | Reading why connecting to an MCP service failed, and the payload of a tool result, in the words of the service named | Both, through `case-system.ts`; the label expert, through `src/expert/retrieval.ts` |
 | [`src/tools/tool-set.ts`](src/tools/tool-set.ts) | What a call can come back as (`ToolOutcome`), and what a set of tools looks like to the hand-written loop | Both use `ToolOutcome` |
 | [`src/intake/handwritten.ts`](src/intake/handwritten.ts) | The hand-written loop | Hand-written |
@@ -84,7 +85,7 @@ The rules both apply, from [`src/intake/run.ts`](src/intake/run.ts) and, for the
 - **If it is still not known whether a write happened, the run fails.** It does not write a reply.
 - **A turn lost to thinking is asked again once, with thinking off.**
 - **A run has a turn limit (6) and a time limit (150 s),** below the 180 s the client waits, and says which one stopped it.
-- **The model never sets the message identifier, receipt time, sender or agent name.** The code sends them as headers on every call to the case system, which uses the sender to limit lookups and follow-ups to that sender's own cases.
+- **The model never sets the message identifier, receipt time or sender.** The code sends them as headers on every call to the case system, which uses the sender to limit lookups and follow-ups to that sender's own cases. Which agent is calling the case system reads from the token the agent got for it.
 - **Once a request is valid, the answer is always inside the contract:** an outcome and the steps taken so far, never a bare error status. The exceptions: the hand-written server answers 500 if the agent's own response is outside the contract (the SDK server makes that a `failed` outcome), and the local edge answers 502 if the SDK app does not answer.
 
 ## Where the two differ
@@ -128,12 +129,14 @@ Set in [`compose.yaml`](compose.yaml), for each agent. The intake agents' limits
 | `MODEL_ID` | The model's name. Optional: if unset, the agent asks the server, which must serve exactly one model. |
 | `CASE_MCP_URL` | The intake agents only: the case system's MCP endpoint |
 | `KNOWLEDGE_MCP_URL` | The label expert only: the retrieval service's MCP endpoint |
-| `AGENT_ID` | The name this agent's changes are recorded under |
+| `AGENT_ID` | The name this agent's changes are recorded under, and its client id at the identity provider |
 | `AUTH_DISCOVERY_URL` | Where the identity provider's discovery document is: `http://identity:8080/realms/lab/.well-known/openid-configuration` |
 | `AUTH_ISSUER` | The issuer it and every token must name, exactly: `http://localhost:8090/realms/lab` |
-| `AUTH_ALLOWED_AUDIENCE` | A value the token's `aud` must contain: `lab-agents` |
-| `AUTH_ALLOWED_CLIENTS` | The `client_id` values accepted, separated by commas: `desk` |
+| `AUTH_ALLOWED_AUDIENCE` | A value the token's `aud` must contain: the agent's own `AGENT_ID` |
+| `AUTH_ALLOWED_CLIENTS` | The `client_id` values accepted, separated by commas: `desk` for the intake agents, `desk,evaluation` for the label expert |
 | `AUTH_ROLES_CLAIM` | The claim holding the caller's roles: `roles` |
+| `EXCHANGE_TOKEN_ENDPOINT` | Where the agent exchanges the caller's token: `http://identity:8080/realms/lab/protocol/openid-connect/token` |
+| `EXCHANGE_CLIENT_SECRET` | The agent's client secret for the exchange. Read from `platform/identity/.env`, written by `platform/identity/setup.sh`; never logged |
 | `LOCAL_RUNTIME_EDGE` | The two agents on Strands only: `on` runs the local stand-in for AgentCore Runtime's front door in front of the SDK app; `off` serves as on AgentCore Runtime. Set to `on` here |
 
 Every setting but `MODEL_ID` is required; the agent stops at start-up (exit 2) naming any that is missing, or a `LOCAL_RUNTIME_EDGE` other than `on` or `off`. A token must have at least the run's time limit (150 s, for all three agents) left. The keys are fetched again, at most every 30 s, when a token names one not yet seen.
@@ -151,8 +154,8 @@ Against the local model (Qwen3.5-9B on vLLM), through the client, on the seven p
 
 ## Known limits
 
-- **The case system checks the token the intake agent passes on.** If it refuses the token when the agent connects, the run fails with "The case system refused the caller's token."; if it cannot check tokens, with "The case system could not check the caller's token." A refusal on a later tool call in the same run is not told apart: it is handled as a call that got no answer.
-- **The agent's name is still a header it claims,** and the token is passed on unchanged, not exchanged for a narrower one. The agent trusts the case system's address.
+- **The case system checks the token the intake agent sends.** If it refuses the token when the agent connects, the run fails with "The case system refused the caller's token."; if it cannot check tokens, with "The case system could not check the caller's token." A refusal on a later tool call in the same run is not told apart: it is handled as a call that got no answer.
+- **The agent trusts the case system's address,** and holds its own client secret for the exchange. On AWS, AgentCore Identity makes the exchange and the agent holds no secret.
 - **The caller's roles are read but not used:** any accepted token may submit a message.
 - **The token check runs in tests against a stand-in issuer.** Against the lab's identity provider, it has run in the label expert's container in the measured evaluation runs ([evaluation.md](../docs/architecture/evaluation.md)), which send real access tokens.
 - **The message text is put between `<message>` tags.** A message that contains the closing tag has not been tried.
