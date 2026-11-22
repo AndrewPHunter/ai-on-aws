@@ -166,7 +166,7 @@ The wording overlap is that of the text the run sent: a reworded question's over
 
 ## Always true
 
-1. The harness calls the agent as a client does: `POST /invocations`, the agent contract's request, a real bearer token got by signing in. It reads only the response.
+1. The harness calls the agent as a client does: `POST /invocations`, the agent contract's request, a real bearer token got as its own client, `evaluation`, with its own secret. It reads only the response.
 2. A token is replaced before it has under 200 s left, since an agent refuses one with under 150 s.
 3. At most 4 calls to the agent, and at most 4 to the judge or the rewriter, are in flight at once.
 4. Every call is recorded once with its result. A failed call is recorded with its reason and counted; it is sent again only when the operator asks. Nothing is retried quietly or dropped.

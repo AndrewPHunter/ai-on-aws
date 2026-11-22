@@ -45,11 +45,13 @@ stops them and keeps the inquiries and cases. Add `-v` to delete them.
 2. Sending answers at once, and a run always ends as finished or failed, including after a restart.
 3. An agent's answer outside the contract is a failed run with the reason.
 4. Only a sign-in the provider vouched for creates a session, and only in the browser that started it.
-5. Every call to an agent or the case system carries the user's token with enough life left; it is renewed first, and a failed renewal ends the session.
+5. Every call to an agent or the case system carries a token got for that target alone, with enough life left. It is got by a refresh first; refreshes of one session never overlap, and each uses the newest refresh token; a failed one ends the session.
 6. The reviewer of a case is whoever is signed in, never a name the browser sends.
 7. No token reaches the browser.
 8. Signing out removes the session and revokes the refresh token; a failed revocation does not stop it.
 9. A POST from another site is refused.
+10. What a session may do comes from the scopes it was granted at sign-in: which agents it may run, whether it may read cases, whether it may decide one. A call for anything else is answered 403 before the identity provider or the target is asked.
+11. An inquiry and its runs are read, and a run is started on it, only by the person who entered it. To anyone else it is answered as an unknown inquiry is.
 
 The server's tests in `test/` are one per item, named by its number.
 

@@ -148,7 +148,7 @@ Readings chosen where the rules leave a choice. They are details of the code, re
 2. Text the model writes reaches the reply only as statements that passed every check. No other sentence of the reply carries model text: each is written by code, from what the retrieval service returned at most (a label's names, version and date), and so is every stop reason. What the model searched for is in its tool and retrieval steps.
 3. Every citation names the passage the quote was found in, and that passage's label, version, date and page, as the retrieval service returned them.
 4. A search that could not be made is never told to the model and never repeated. An unknown error code, or an error the agent cannot read, counts as one.
-5. The caller's token goes to the retrieval service on every request of the run, and nothing else of the message. The model is given the message's text only: not the sender, not the receipt time.
+5. The token the agent got for the retrieval service goes to it on every request of the run. The caller's token does not, and nothing else of the message does. The model is given the message's text only: not the sender, not the receipt time.
 6. No passage is cut. A passage is shown whole or named as not shown.
 7. Runs share no state. A new Agent and a new MCP client are made for every message.
 8. Whatever goes wrong, a run ends with an outcome inside the contract, and nothing the model wrote that did not pass the checks is in the reply.
