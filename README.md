@@ -93,18 +93,20 @@ knowledge/index.sh ai-on-aws
 
 The first three get the drug labels the corpus pins, parse them, and split them into chunks (see [knowledge/README.md](knowledge/README.md)); the last loads the chunks into the running stack's search engine. Without it the retrieval service answers that the index has not been built.
 
-Then open <http://localhost:3000> (use `localhost`, not `127.0.0.1`: sign-in returns to `localhost`) and sign in as one of the lab's two synthetic users:
+Then open <http://localhost:3000> (use `localhost`, not `127.0.0.1`: sign-in returns to `localhost`) and sign in as one of the lab's four synthetic people:
 
-| Username | Can decide cases | Password |
-|---|---|---|
-| `riley.reviewer` | Yes, holds the `reviewer` role | `IDENTITY_RILEY_PASSWORD` in `platform/identity/.env` |
-| `dana.desk` | No | `IDENTITY_DANA_PASSWORD` in `platform/identity/.env` |
+| Username | Role | May | Password |
+|---|---|---|---|
+| `dana.desk` | `desk` | Enter inquiries and run the intake agents | `IDENTITY_DANA_PASSWORD` in `platform/identity/.env` |
+| `morgan.medinfo` | `medical-information` | Do what the desk does, and run the label expert | `IDENTITY_MORGAN_PASSWORD` in `platform/identity/.env` |
+| `riley.reviewer` | `safety-reviewer` | Read cases and decide them | `IDENTITY_RILEY_PASSWORD` in `platform/identity/.env` |
+| `avery.auditor` | `auditor` | Read cases and their audit trails; change nothing | `IDENTITY_AVERY_PASSWORD` in `platform/identity/.env` |
 
 `platform/identity/setup.sh` writes `platform/identity/.env`, the secrets of the lab's identity provider, with random values; run again, it changes nothing. `docker compose up` starts the agents, the case system they write to, the client, the identity provider, the search engine and the retrieval service, on one network. It reads `model/.env`, which model setup wrote, to find the model server, and `platform/identity/.env`; without either file it stops and says what is missing. The identity provider is described in [platform/identity/README.md](platform/identity/README.md). If the model server is on a different machine from the one you work on, run setup with `--host` from the machine you work on, as described in [model/README.md](model/README.md), so that `model/.env` is here.
 
 What each screen does is in [client/README.md](client/README.md), and what each agent does is in [agents/README.md](agents/README.md).
 
-To check sign-in end to end on the running lab (both users signed in through Keycloak, each agent's and the case system's refusal of a request without a token, an inquiry through each agent, the reviewer role, sign-out), run the stack gate beside the identity provider's own gate:
+To check sign-in end to end on the running lab (the four people signed in through Keycloak, what each may and may not do, each agent's and each tool server's refusal of a request without a token, an inquiry through each intake agent and a question to the label expert, each run followed to its end, tokens presented straight to each service, sign-out), run the stack gate beside the identity provider's own gate:
 
 ```bash
 platform/identity/stack-gate.sh ai-on-aws

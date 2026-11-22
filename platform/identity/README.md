@@ -4,7 +4,7 @@ An OpenID Connect provider for the lab: Keycloak 26.8.2 in development mode, wit
 
 It is a local stand-in for the identity provider that AgentCore's JWT authorizer trusts. On AWS that authorizer is configured with a discovery URL, the allowed audiences (`aud`), the allowed client IDs (read from a claim named `client_id`), and optional rules on custom claims. The tokens issued here carry those claims in that shape, so the code that will check them does not depend on anything particular to Keycloak.
 
-Four pieces use its tokens. The client's server signs desk staff in here, validates their ID tokens, and sends their access tokens to the agents and the case system. The agents require a valid access token and pass it on: the intake agents to the case system, the label expert to the retrieval service. The case system requires one on every request but `/ping`, records whom an agent acted for, and takes the reviewer and the reviewer role from it. The retrieval service (`knowledge/`) requires one on every request but `/ping`, with audience `lab-knowledge`, and takes nothing else from it.
+Each token the client sends is for one target, named by its scope. The client's server signs staff in here, validates their ID tokens, and gets a token for each call by refresh: an agent's scope for an agent, `cases:read` or `cases:review` for the case system. Each agent accepts a token for itself with its scope, and exchanges it, as itself with its own secret, for a token for its tool server: the intake agents for the case system, the label expert for the retrieval service. The case system accepts tokens from the intake agents on its agents' server and from the client on its review server, records the agent from the token's client and the person from its user, and takes the reviewer from it. The retrieval service (`knowledge/`) accepts tokens with audience `knowledge` and scope `labels:search` from the label expert and the knowledge gate, and takes nothing else from them. Two machines, the evaluation runner and the knowledge gate, get tokens as their own clients by client credentials.
 
 How it is put together: [docs/architecture/identity.md](../../docs/architecture/identity.md).
 
@@ -27,11 +27,11 @@ platform/identity/setup.sh
 docker compose -f platform/identity/compose.yaml up -d --wait
 ```
 
-`setup.sh` writes `platform/identity/.env` with a random value for every variable in [`.env.example`](.env.example): the Keycloak administrator's username and password, the `desk` client's secret, and each user's password. It needs only a shell and Docker; the values are made in the pinned Node image, with no network. If the file already holds every variable it changes nothing; if it exists but lacks one, it stops and names it. It never prints a value.
+`setup.sh` writes `platform/identity/.env` with a random value for every variable in [`.env.example`](.env.example): the Keycloak administrator's username and password, the secret of each client that has one (`desk`, the three agents, the two machines), and each person's password. It needs only a shell and Docker; the values are made in the pinned Node image, with no network. If the file already holds every variable it changes nothing; if it exists but lacks one, it stops, names it, and adds nothing: add the variable by hand, or remove the file and run it again, which writes a new value for every variable. It never prints a value.
 
 `docker compose up --wait` returns once the realm's discovery document answers 200. The lab's root `compose.yaml` includes this service, so `docker compose up` at the root starts it with everything else, and also needs `platform/identity/.env`: without it nothing starts.
 
-The realm is imported from the file at every start, and the provider keeps nothing between starts (see "Development only"). Stopping and starting it, or removing it with its volumes, gives the same realm with the same users (and user ids), passwords and client secret, and new signing keys.
+The realm is imported from the file at every start, and the provider keeps nothing between starts (see "Development only"). Stopping and starting it, or removing it with its volumes, gives the same realm with the same accounts (and account ids), passwords and client secrets, and new signing keys.
 
 ### After changing the realm file
 
@@ -44,49 +44,80 @@ docker compose -f platform/identity/compose.yaml restart identity  # the provide
 
 Stopping the container empties the tmpfs that holds its database, so the start imports the file as it now is, with new signing keys. Every token issued before the restart is then refused, and everyone signed in to the desk signs in again. Run the gate afterwards to check the realm still issues the tokens described here. A realm that does not import never becomes healthy.
 
+A realm file that names a variable `platform/identity/.env` lacks also needs new values and a rebuilt stack: see [Changing the realm file](../../docs/architecture/identity.md#changing-the-realm-file).
+
 ## Users
 
-Synthetic users, both with permanent passwords.
+Four synthetic people, each with one lab role and a permanent password, and two service accounts, one for each machine.
 
 | Username | Name | Email | Realm roles | Password |
 |---|---|---|---|---|
-| `riley.reviewer` | Riley Reviewer | `riley.reviewer@example.org` | `reviewer`, `default-roles-lab` | `IDENTITY_RILEY_PASSWORD` in `platform/identity/.env` |
-| `dana.desk` | Dana Desk | `dana.desk@example.org` | `default-roles-lab` | `IDENTITY_DANA_PASSWORD` in `platform/identity/.env` |
+| `dana.desk` | Dana Desk | `dana.desk@example.org` | `desk`, `default-roles-lab` | `IDENTITY_DANA_PASSWORD` in `platform/identity/.env` |
+| `morgan.medinfo` | Morgan Medinfo | `morgan.medinfo@example.org` | `medical-information`, `default-roles-lab` | `IDENTITY_MORGAN_PASSWORD` in `platform/identity/.env` |
+| `riley.reviewer` | Riley Reviewer | `riley.reviewer@example.org` | `safety-reviewer`, `default-roles-lab` | `IDENTITY_RILEY_PASSWORD` in `platform/identity/.env` |
+| `avery.auditor` | Avery Auditor | `avery.auditor@example.org` | `auditor`, `default-roles-lab` | `IDENTITY_AVERY_PASSWORD` in `platform/identity/.env` |
+| `service-account-evaluation` | Evaluation Harness | — | `evaluation`, `default-roles-lab` | None: it is the `evaluation` client, by its secret |
+| `service-account-knowledge-gate` | Knowledge Gate | — | `knowledge-gate`, `default-roles-lab` | None: it is the `knowledge-gate` client, by its secret |
+
+| Role | Grants | So the holder may |
+|---|---|---|
+| `desk` | `agents:intake`, `cases:write`, `cases:lookup` | Enter inquiries and run the intake agents |
+| `medical-information` | `agents:intake`, `agents:expert`, `cases:write`, `cases:lookup`, `labels:search` | Do what the desk does, and run the label expert |
+| `safety-reviewer` | `cases:read`, `cases:review` | Read cases and decide them |
+| `auditor` | `cases:read` | Read cases and their audit trails; change nothing |
+| `evaluation` | `agents:expert`, `labels:search` | Call the label expert |
+| `knowledge-gate` | `labels:search` | Search the retrieval service |
+
+`cases:write`, `cases:lookup` and `labels:search` go with the roles that run an agent (invariant 2), because the agent asks for them when it exchanges that person's token, and an exchange that leaves out a scope asked for ends the run.
 
 The administrator for the admin console at <http://localhost:8090/admin/> is `IDENTITY_ADMIN_USERNAME` with `IDENTITY_ADMIN_PASSWORD`, in the same file. Changes made in the console are lost at the next start.
 
-## The client
+## The client and the other clients
 
-One client, `desk`, for the desk's server.
+`desk`, for the desk's server, is the one client people sign in through.
 
 | Setting | Value |
 |---|---|
 | Type | Confidential: it has a secret, `IDENTITY_DESK_CLIENT_SECRET` in `platform/identity/.env` |
-| Flow | Authorization Code only. No password grant, no implicit flow, no service account, no device grant |
+| Flow | Authorization Code only. No password grant, no implicit flow, no service account, no device grant, no token exchange |
 | PKCE | Required, method `S256` |
 | Redirect URI | `http://localhost:3000/auth/callback`, exactly |
 | Post-logout redirect URI | `http://localhost:3000/` |
+| May ask for | `agents:intake`, `agents:expert`, `cases:read`, `cases:review`. Asking for `labels:search`, which it may not, is refused with `invalid_scope` (gate statement G6) |
+
+| Client | For | How it gets a token | May ask for | Secret |
+|---|---|---|---|---|
+| `intake-handwritten`, `intake-strands` | The two intake agents | Token exchange of the token it was called with | `cases:write`, `cases:lookup` | `IDENTITY_INTAKE_HANDWRITTEN_CLIENT_SECRET`, `IDENTITY_INTAKE_STRANDS_CLIENT_SECRET` |
+| `expert` | The label expert | Token exchange of the token it was called with | `labels:search` | `IDENTITY_EXPERT_CLIENT_SECRET` |
+| `evaluation` | The evaluation runner | Client credentials, as its service account | `agents:expert` | `IDENTITY_EVALUATION_CLIENT_SECRET` |
+| `knowledge-gate` | The knowledge gate | Client credentials, as its service account | `labels:search` | `IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET` |
+| `case-system`, `knowledge` | Named as audiences only | None | Nothing | None |
+
+Only the three agents' clients can exchange a token. No client has the password grant, the implicit flow or the device grant.
 
 ## Access token claims
 
-An access token issued to either user through `desk` is a JWT signed with RS256 by a key published at the realm's `jwks_uri`, and carries:
+An access token is a JWT signed with RS256 by a key published at the realm's `jwks_uri`, and carries:
 
 | Claim | Value |
 |---|---|
 | `iss` | `http://localhost:8090/realms/lab`, whichever address was used to reach the provider |
-| `aud` | `lab-agents`, `lab-case-system` and `lab-knowledge` |
-| `client_id` | `desk` |
-| `roles` | A top-level array of the user's realm role names. Holds `reviewer` for `riley.reviewer` and not for `dana.desk`. Both users also hold Keycloak's default role, `default-roles-lab`, so `roles` also holds it and the roles it includes (`offline_access`, `uma_authorization`), and is never empty |
-| `sub`, `preferred_username`, `name` | The user's id, username and full name. The id is fixed in the realm file, so `sub` is the same after every start |
-| `exp` − `iat` | 600 seconds |
+| `aud` | The audiences of the scopes granted, and no other: `intake-handwritten` and `intake-strands` for `agents:intake`, `expert` for `agents:expert`, `case-system` for the four case scopes, `knowledge` for `labels:search`. An exchanged token names the one audience the agent asked for |
+| `client_id` | The client it was issued to: `desk` for a person's token, the agent for an exchanged token, `evaluation` or `knowledge-gate` for a machine's |
+| `scope` | The scopes granted, separated by spaces. Keycloak adds others, such as `profile` and `email`, which no service reads |
+| `roles` | A top-level array of the account's realm role names: its one lab role, and Keycloak's default role `default-roles-lab` with the roles it includes (`offline_access`, `uma_authorization`), so it is never empty |
+| `sub`, `preferred_username`, `name` | The account's id, username and full name. The id is fixed in the realm file, so `sub` is the same after every start. An exchanged token carries the person's |
+| `exp` − `iat` | 600 seconds. An exchanged token keeps the `exp` of the token it was exchanged for |
 
-`aud`, `client_id` and `roles` are added by mappers on the `desk` client, in the realm file; Keycloak puts none of them in a user's token by default (its own token names the client in `azp` and the roles under `realm_access`). The token carries no `realm_access` or `resource_access` claim. Other claims Keycloak adds (`azp`, `sid`, `scope`, `email` and so on) are present and are not part of this contract.
+`client_id` and `roles` are added by mappers on each client, and `aud` by the audience mappers of each scope, in the realm file; Keycloak puts none of them in a token by default (its own token names the client in `azp` and the roles under `realm_access`). A person's token from sign-in carries no `realm_access` or `resource_access` claim. Other claims Keycloak adds (`azp`, `sid`, `email` and so on) are not part of this contract.
 
-A user who holds no realm role at all would get no `roles` claim: Keycloak leaves an empty list out. That is why both users hold the default role.
+A person's role bounds the scopes a request can get. Keycloak leaves out a scope `desk` may ask for that the role does not grant, and still answers 200, so a token request that succeeds proves nothing: each service checks the audience, the client and the scope itself.
+
+An account that holds no realm role at all would get no `roles` claim: Keycloak leaves an empty list out. That is why every account holds the default role.
 
 ## ID token
 
-The ID token issued with it, also signed with RS256 by a key at `jwks_uri`, names the same issuer, has `desk` as its audience, and carries the same top-level `roles` array: `reviewer` is in it for `riley.reviewer` and not for `dana.desk`. The same `roles` mapper on the `desk` client puts it in both tokens. The ID token is what tells the desk's server who signed in and whether they are a reviewer.
+The ID token issued with it, also signed with RS256 by a key at `jwks_uri`, names the same issuer, has `desk` as its audience, and carries the same top-level `roles` array. The same `roles` mapper on the `desk` client puts it in both tokens. The ID token is what tells the desk's server who signed in. What they may do there comes from the scopes the token response grants.
 
 ## Two addresses
 
@@ -106,7 +137,7 @@ The issuer is `http://localhost:8090/realms/lab` on both. Keycloak does this thr
 
 ## The gate
 
-`gate.sh` checks a running service for real, from inside the stack's network, and exits 0 only if each of the four steps below holds:
+`gate.sh` checks a running service for real, from inside the stack's network, and exits 0 only if every statement below holds:
 
 ```bash
 platform/identity/gate.sh <compose-project>
@@ -120,53 +151,72 @@ platform/identity/gate.sh identity-trial
 docker compose -p identity-trial -f platform/identity/compose.yaml down -v
 ```
 
-The gate runs in the pinned Node image on the project's default network (`<compose-project>_default`), with `jose` installed from the lockfile. Its image is `ai-on-aws-identity-gate:checkout-<number>` and its compose project `ai-on-aws-identity-gate-<number>`, the number derived from the checkout's path as `toolchain/check.sh` derives its own. So two checkouts never run each other's gate. `gate.sh` and `stack-gate.sh` print the image on standard error. It:
+The gate runs in the pinned Node image on the project's default network (`<compose-project>_default`), with `jose` installed from the lockfile. Its image is `ai-on-aws-identity-gate:checkout-<number>` and its compose project `ai-on-aws-identity-gate-<number>`, the number derived from the checkout's path as `toolchain/check.sh` derives its own. So two checkouts never run each other's gate. `gate.sh` and `stack-gate.sh` print the image on standard error. The gate is given the `desk` client's secret, every agent's and machine's secret, and the four passwords, and reads what it expects from [`gate/gate.config.json`](gate/gate.config.json). Its statements are named G1 to G14 in [`gate/gate.ts`](gate/gate.ts), and checked in this order:
 
-1. fetches the discovery document at `http://identity:8080`, checks that its issuer is `http://localhost:8090/realms/lab`, and that its key set answers with keys;
-2. signs each user in through the Authorization Code flow with PKCE: it requests the authorization endpoint, posts the sign-in form with a cookie jar, reads the redirect to the callback without requesting it, and exchanges the code at the token endpoint with the client secret and the code verifier;
-3. verifies each access token's RS256 signature against the published keys and checks `iss`, `aud`, `client_id`, `roles` (with `reviewer` present or absent), `sub`, `preferred_username`, `name` and `exp` − `iat`, then verifies each ID token (signature, issuer, audience) and checks its `roles`;
-4. checks that the token endpoint refuses the password grant and the client-credentials grant, and that the authorization endpoint refuses a request with no `code_challenge`, one with `code_challenge_method=plain`, and one with `response_type=token`.
+1. G14: the discovery document at `http://identity:8080` answers, names the issuer `http://localhost:8090/realms/lab`, and its key set answers with keys.
+2. G1: each of the four people signs in through the Authorization Code flow with PKCE, asking for `openid` and every scope `desk` may ask for: the gate requests the authorization endpoint, posts the sign-in form with a cookie jar, reads the redirect to the callback without requesting it, and exchanges the code at the token endpoint with the client secret and the code verifier. The token is granted exactly the scopes the person's role grants.
+3. G2: each access token is signed with RS256 by a published key and carries the issuer, exactly the granted scopes' audiences, `client_id` `desk`, the fixed `sub`, `preferred_username`, `name`, `roles` holding the person's one lab role and no other, no `realm_access` or `resource_access`, and `exp` − `iat` of 600. Each ID token's signature, issuer and audience are verified, and its `roles` checked the same way.
+4. G3 to G5: a refresh with `scope=openid <scope>`, for each scope the person is granted, gives a token for that scope's audiences alone (G3). The refresh token that refresh returned still obtains the whole grant, and a token for each other granted scope (G4). A refresh for a scope `desk` may ask for that the role does not grant is answered 200, without that scope or its audiences (G5).
+5. G11, G12: each machine gets a token by client credentials for its scope, with the scope's audiences, its own `client_id`, its fixed `sub`, `preferred_username` `service-account-<client>`, a name, and its one role and no staff role. `evaluation` asking for `labels:search` is refused `invalid_scope`.
+6. G7, G8, G11: each agent exchanges each token it is an audience of (the intake agents `dana.desk`'s `agents:intake` token; the label expert `morgan.medinfo`'s `agents:expert` token and `evaluation`'s) for its tool server's audience and scopes. The token issued names that audience alone, the agent as `client_id` and `azp`, the subject's `sub`, `preferred_username`, `name`, `roles` and `exp`, and every scope asked for; no refresh token comes with it.
+7. G9: an agent exchanging a person's token it is not an audience of is refused 403 `Client is not within the token audience`.
+8. G13, G14: the token endpoint refuses the password grant for `desk`, and client credentials for `desk`, `case-system` and `knowledge`; the authorization endpoint refuses a request with no `code_challenge`, one with `code_challenge_method=plain`, and one with `response_type=token`.
+9. Last, G10: `desk`, `case-system`, `knowledge` and both machines cannot exchange a token. G9: an agent asking for the other kind of agent's scopes is refused `invalid_scope`. G6: `desk` asking for `labels:search` is refused `invalid_scope`, at a refresh and at the authorization endpoint. These are checked last, so that a wrong expectation among them leaves every statement before them checked.
 
 The gate is the browser here, but it runs inside the network, where `localhost:8090` is the gate's own container. So the front-channel URLs the provider hands out on `http://localhost:8090` (the authorization endpoint and the sign-in form's action) are sent to `http://identity:8080` with the same path and query. Back-channel URLs from discovery are used as given.
 
-It does not fetch discovery at `http://localhost:8090`, and does not check that a token lacks `realm_access` or `resource_access`.
+It does not fetch discovery at `http://localhost:8090`.
 
-It prints a JSON report: the endpoints from discovery, and for each user the token's header and decoded claims. It prints no password, secret, code or token. On the first statement that does not hold it exits 1 and names it in `failed`; a provider that does not answer is such a statement. Exit 1 always comes with a report on standard output. Any way of ending without one (no Docker, no `platform/identity/.env`, no network for the project, Compose failing before the gate runs, a gate that writes nothing) is exit 2, with the reason on standard error.
+It prints a JSON report: the endpoints from discovery; for each person the token's header and decoded claims, the ID token's `roles` and each token got by refresh; each machine's and each exchanged token's header and claims; and the status and error code of each refusal. It prints no password, secret, code or token. On the first statement that does not hold it exits 1 and names it in `failed`; a provider that does not answer is such a statement. Exit 1 always comes with a report on standard output. Any way of ending without one (no Docker, no `platform/identity/.env`, no network for the project, Compose failing before the gate runs, a gate that writes nothing) is exit 2, with the reason on standard error.
 
 ## The stack gate
 
-`stack-gate.sh` checks the whole running stack end to end, from inside its network, and exits 0 only if every statement holds:
+`stack-gate.sh` checks the whole running stack end to end, from inside its network: whether the realm, the agents, the tool servers and the client agree. No test runs one piece against another, so a mismatch between two of them is caught here or nowhere.
 
 ```bash
 platform/identity/stack-gate.sh <compose-project>
 ```
 
-It uses the same image as `gate.sh` and joins `<compose-project>_default` the same way. It is given the two users' passwords and not the client secret: it signs each user in through the client and Keycloak's own sign-in page, the client exchanges the code, and the gate holds only cookies. It checks:
+It uses the same image as `gate.sh` and joins `<compose-project>_default` the same way. It is given the four people's passwords, and the secrets of `desk`, `intake-handwritten`, `expert`, `evaluation` and `knowledge-gate`. Through the client it signs each person in on Keycloak's own sign-in page; the client exchanges the code, and the gate holds only cookies. The secrets are for the tokens it gets for itself in step 6. In order, it checks:
 
-1. without a session, `/api/inquiries` is 401 and `/ping` is 200;
-2. `/auth/login` redirects to the provider with the code flow, the client, the redirect URI, `openid`, a state, a nonce and an S256 challenge, and sets the sign-in cookie with its attributes;
-3. Keycloak accepts the password and redirects to the callback; the callback creates a session, sets the session cookie with its attributes and clears the sign-in cookie;
-4. `/api/session` names the user, with `is_reviewer` true for `riley.reviewer` and false for `dana.desk`, and carries no token; `/api/status` lists the identity provider as up;
-5. a replayed callback, and a callback without the sign-in cookie, are 400;
-6. a POST from another origin is 403;
-7. each intake agent (`intake-handwritten`, `intake-strands`) answers 401 `missing` to no token, 401 `malformed` to a token that is not a JWT, 401 to no token with a body outside the contract, and 200 on `/ping`;
-8. the case system's MCP endpoint and review server each answer 401 to no token and 200 on `/ping`;
-9. an inquiry to each intake agent is accepted and records who entered it, and its run ends with the agent's answer inside the contract, past the case system, recording who started it. It does not need a model server: a run may end at the model;
-10. a review by `dana.desk` of a case that does not exist is 403 `not_a_reviewer`, and by `riley.reviewer` 404 `case_not_found`;
-11. sign-out answers with the provider's end-session address carrying no token, and the same cookie is then 401. After the run, on the Docker host, the script reads the client's output since the gate started and requires no revocation failure in it; only the count of such lines is passed to the report.
+1. With no token or session: the client's `/api/inquiries` is 401 and its `/ping` 200; each agent (`intake-handwritten`, `intake-strands`, `expert`) answers 401 `missing` with `WWW-Authenticate: Bearer error="invalid_token"` to no token, 401 `malformed` to a token that is not a JWT, 401 to no token with a body outside the contract, and 200 on `/ping`; the case system's MCP endpoint, its review server and the retrieval service's MCP endpoint each answer 401, and each `/ping` 200.
+2. For each of the four people: `/auth/login` redirects to the provider with the code flow, the client, the redirect URI, `openid`, a state, a nonce and an S256 challenge, and sets the sign-in cookie with its attributes; Keycloak accepts the password and redirects to the callback; the callback creates a session, sets the session cookie with its attributes and clears the sign-in cookie; a replayed callback, and a callback without the sign-in cookie, are 400; `/api/session` names the person, says what they may do (below), and carries no token; `/api/status` lists the identity provider as up; a POST from another origin is 403 `cross_site_request`.
+3. Through the client, each person is refused what they may not do, with 403 `not_allowed`: `dana.desk` sending an inquiry to the label expert or reading the case list, `riley.reviewer` sending an inquiry to an intake agent, `avery.auditor` deciding a case, `morgan.medinfo` reading the case list. `riley.reviewer` and `avery.auditor` read the case list (200). `riley.reviewer` deciding a case that does not exist gets the case system's own 404 `case_not_found`, so the token and its scope were accepted there.
+4. `dana.desk` sends an inquiry to each intake agent and `morgan.medinfo` a question to the label expert. Each is accepted and records who entered it, and its run ends `completed`, recording who started it, with a stop reason that is not one of the gate's list of token stop reasons. Where the intake run opened a case, `riley.reviewer` reads it through the client and its `case_created` audit entry names the agent as actor. Where the expert's run has a retrieval step, the retrieval service accepted the token the expert sent it.
+5. `morgan.medinfo` asking for the inquiry `dana.desk` entered, its runs, or a new run on it gets the same status and body, the id aside, as for an inquiry that does not exist.
+6. The gate gets tokens of its own from the provider and presents each straight to a service (below).
+7. Each person signs out: the answer carries the provider's end-session address and no token, and the same cookie is then 401. After the run, on the Docker host, the script reads the client's output since the gate started and requires no revocation failure in it; only the count of such lines is passed to the report.
 
-The label expert and the retrieval service are not in the stack gate; `knowledge/gate.sh` checks the retrieval service's token check (see [knowledge/README.md](../../knowledge/README.md)).
+| Person | `may.agents` | `read_cases` | `decide_cases` |
+|---|---|---|---|
+| `dana.desk` | `intake-handwritten`, `intake-strands` | false | false |
+| `morgan.medinfo` | `intake-handwritten`, `intake-strands`, `expert` | false | false |
+| `riley.reviewer` | none | true | true |
+| `avery.auditor` | none | true | false |
 
-Every statement is checked even after one fails. The JSON report lists `held` and `failed`; it carries no password, code or token. Exit 1 if any statement does not hold, always with the report on standard output; exit 2, with the reason on standard error and nothing on standard output, for any way of ending without a report.
+| Token the gate gets | Presented to | Must be answered |
+|---|---|---|
+| `riley.reviewer`'s, refreshed for `cases:read` | The review server, `GET /cases` | 200 |
+| The same | The case system's agents' server, `/mcp` | 401 `wrong_client` |
+| `avery.auditor`'s, refreshed for `cases:read` | The review server, `POST /cases/<id>/review` | 403 `insufficient_scope`, naming `cases:review` |
+| `dana.desk`'s, refreshed for `agents:intake` | The label expert, `POST /invocations` | 401 `wrong_audience` |
+| The same | The case system's agents' server, `/mcp` | 401 `wrong_audience` |
+| `dana.desk`'s, exchanged as `intake-handwritten` for `case-system` | The review server, `GET /cases` | 401 `wrong_client` |
+| The same | The case system's agents' server, `/mcp` | Neither 401 nor 403 |
+| `knowledge-gate`'s, by client credentials for `labels:search` | The retrieval service, `/mcp` | Neither 401 nor 403 |
+| `evaluation`'s, by client credentials for `agents:expert` | The retrieval service, `/mcp` | 401 `wrong_audience` |
+| `evaluation`'s, exchanged as `expert` for `knowledge` | The retrieval service, `/mcp` | Neither 401 nor 403 |
+
+Every statement is checked even after one fails. The JSON report has three lists: `held`, `failed` and `not_checked`. A statement goes in `not_checked`, with the reason, when the stack could not show it: the case's audit entry when the intake run opened no case, and the retrieval statement when the expert's run made no retrieval step, as when a run ends at the model on a stack with no model server. A statement in `not_checked` is neither held nor failed, so the gate can exit 0 with it, and standard error says how many there were. When the client's output cannot be read, the revocation statement goes in `failed`. The report carries no password, code or token. Exit 1 if any statement does not hold, always with the report on standard output; exit 2, with the reason on standard error and nothing on standard output, for any way of ending without a report.
 
 ## Other programs that sign in
 
-Two more programs sign in as the gate does, through `desk` with the Authorization Code flow and PKCE, on the stack's network, as `dana.desk`. Compose gives each `IDENTITY_DESK_CLIENT_SECRET` and `IDENTITY_DANA_PASSWORD` from `platform/identity/.env`, and nothing else from it.
+Two more programs get a token on the stack's network, as machines: each as its own client, by client credentials with its own secret ([`shared/machine-token.ts`](../../shared/machine-token.ts)). No person signs in, and neither is given a password. Compose gives each its own client's secret from `platform/identity/.env`, and nothing else from it.
 
-| Program | Uses the access token to |
-|---|---|
-| `knowledge/gate.sh` | Call the retrieval service's MCP endpoint |
-| `evaluation/run.sh` | Call the label expert's `POST /invocations`. It signs in again when the token has under 200 s left |
+| Program | Client | Scope | Secret | Uses the access token to |
+|---|---|---|---|---|
+| `knowledge/gate.sh` | `knowledge-gate` | `labels:search` | `IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET` | Call the retrieval service's MCP endpoint |
+| `evaluation/run.sh` | `evaluation` | `agents:expert` | `IDENTITY_EVALUATION_CLIENT_SECRET` | Call the label expert's `POST /invocations`, which exchanges it for its own token for the retrieval service. It gets a new token before the current one has under 200 s left |
 
 ## Development only
 
@@ -196,10 +246,12 @@ So the container's own layer holds the rebuilt server, and is discarded with the
 
 | What | Note |
 |---|---|
-| A token exchanged for a narrower one | The agents pass the user's access token on unchanged: the intake agents to the case system, the label expert to the retrieval service |
-| Proof of which agent is calling | An agent's name is a header it claims; the case system checks the user's token, not the agent |
+| Every agent in a chain named | A token names one client, the one it was issued to. An exchanged token names the agent in `client_id` and `azp`, and the person in `sub`; no claim a service reads names the client before the agent |
+| A token limited to one run or message | An exchanged token is limited to the agent, one audience and the scopes asked for, and lasts until the token it was exchanged for expires |
+| Rules on data | No rule limits reading to a person's own cases: `cases:read` reads every case. No four-eyes rule: one person with `cases:review` decides a case alone |
+| A client for an orchestrator | No client for an agent that calls another agent |
 | HTTPS | — |
-| Refresh-token policy, session limits, brute-force protection, password policy | Keycloak's defaults for a new realm |
+| Refresh-token policy (rotation included), session limits, brute-force protection, password policy | Keycloak's defaults for a new realm |
 | Self-registration, password reset, email | Turned off; no mail server |
 | Multi-factor sign-in | — |
 | Federation with another identity provider | — |
