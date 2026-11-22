@@ -217,7 +217,7 @@ export function checkRefused(status: number, body: Body): Violation[] {
   return violations
 }
 
-// ---------- G7, G8, G11: a token an agent obtained by exchange ----------
+// ---------- G7, G8, G11, G15, G16: a token an agent obtained by exchange ----------
 
 export type ExchangeExpectations = {
   issuer: string
@@ -230,7 +230,7 @@ export type ExchangeExpectations = {
 }
 
 /**
- * G7, G8, G11. The answer to an exchange (`body`, its other fields) and the token it issued (`claims`), against the
+ * G7, G8, G11, G15, G16. The answer to an exchange (`body`, its other fields) and the token it issued (`claims`), against the
  * token that was exchanged (`subject`): one audience, the agent as client_id and azp, the subject's identity and
  * roles, every scope asked for, the subject's expiry, and no refresh token.
  */
@@ -411,7 +411,7 @@ export function checkSignInRedirect(answer: SignInAnswer, action: string, redire
 }
 
 /**
- * G1, G3, G4, G7, G8, G11, G12. The token endpoint answers 200 with each of `fields` (access_token, id_token,
+ * G1, G3, G4, G7, G8, G11, G12, G15, G16. The token endpoint answers 200 with each of `fields` (access_token, id_token,
  * refresh_token) a non-empty string. A departure names the status, the error code and the missing field only.
  */
 export function checkTokenAnswer(status: number, body: Body, fields: readonly string[]): Violation[] {

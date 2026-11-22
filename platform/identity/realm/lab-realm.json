@@ -11,7 +11,7 @@
     "realm": [
       {
         "name": "desk",
-        "description": "Enters inquiries and runs the intake agents."
+        "description": "Enters inquiries and runs the intake agents and the orchestrator."
       },
       {
         "name": "medical-information",
@@ -158,6 +158,50 @@
       ]
     },
     {
+      "name": "agents:expert:delegated",
+      "description": "Runs the label expert for a person, through the orchestrator only (POST /invocations on expert).",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience expert",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "expert",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "agents:orchestrator",
+      "description": "Runs the orchestrator (POST /invocations on orchestrator).",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience orchestrator",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "orchestrator",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
       "name": "cases:write",
       "description": "Creates a case and adds a follow-up in the case system (create_case, add_follow_up).",
       "protocol": "openid-connect",
@@ -278,6 +322,14 @@
       "roles": ["medical-information", "evaluation"]
     },
     {
+      "clientScope": "agents:expert:delegated",
+      "roles": ["desk", "medical-information"]
+    },
+    {
+      "clientScope": "agents:orchestrator",
+      "roles": ["desk", "medical-information"]
+    },
+    {
       "clientScope": "cases:write",
       "roles": ["desk", "medical-information"]
     },
@@ -295,7 +347,7 @@
     },
     {
       "clientScope": "labels:search",
-      "roles": ["medical-information", "evaluation", "knowledge-gate"]
+      "roles": ["desk", "medical-information", "evaluation", "knowledge-gate"]
     }
   ],
   "defaultDefaultClientScopes": ["basic", "profile", "email"],
@@ -327,7 +379,7 @@
         "standard.token.exchange.enabled": "false"
       },
       "defaultClientScopes": ["basic", "profile", "email"],
-      "optionalClientScopes": ["agents:intake", "agents:expert", "cases:read", "cases:review"],
+      "optionalClientScopes": ["agents:intake", "agents:expert", "agents:orchestrator", "cases:read", "cases:review"],
       "protocolMappers": [
         {
           "name": "client_id",
@@ -501,6 +553,61 @@
           "config": {
             "claim.name": "client_id",
             "claim.value": "expert",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "orchestrator",
+      "name": "Orchestrator agent",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "bearerOnly": false,
+      "consentRequired": false,
+      "fullScopeAllowed": true,
+      "redirectUris": [],
+      "webOrigins": [],
+      "defaultClientScopes": ["basic", "profile", "email"],
+      "secret": "${IDENTITY_ORCHESTRATOR_CLIENT_SECRET}",
+      "attributes": {
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "standard.token.exchange.enabled": "true"
+      },
+      "optionalClientScopes": ["agents:intake", "agents:expert:delegated"],
+      "protocolMappers": [
+        {
+          "name": "client_id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "config": {
+            "claim.name": "client_id",
+            "claim.value": "orchestrator",
             "jsonType.label": "String",
             "access.token.claim": "true",
             "id.token.claim": "false",
