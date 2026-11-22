@@ -79,7 +79,7 @@ flowchart TD
 
 Two calls asked for in one turn are run one at a time, in order, so a search on a label the same turn's `find_labels` returned is made after it. Once a final tool is accepted, a search fails, or a final tool fails after the last correction, the run is stopped through a cancel signal: anything else asked for in that turn is not called and the model is not asked again. A tool asked for when the run's time is already used up calls nothing and ends the run at its time limit.
 
-Before anything is connected, the agent exchanges the caller's token, once, as itself (`tools/tool-token.ts`), for one with audience `knowledge` and scope `labels:search`, within the tool limit or what the run has left. A refused exchange, or one that cannot be made, ends the run `failed`: a refusal with the identity provider's words, an exchange that cannot be made with a fixed sentence that names no address; nothing is connected and the model is not asked. It is not retried. Connecting to the retrieval service and listing its tools then share one time limit of their own: the tool limit, or what the run has left. Every request to the retrieval service carries `Authorization: Bearer` with the exchanged token, and no other header of this agent's: no context headers. The retrieval service never sees the caller's token; it checks the exchanged one with its own settings (`knowledge/compose.yaml`).
+Before anything is connected, the agent exchanges the caller's token, once, as itself (`tools/tool-token.ts`), for one with audience `knowledge` and scope `labels:search`, within the tool limit or what the run has left. A refused exchange, or one that cannot be made, ends the run `failed`: a refusal with the identity provider's words, an exchange that cannot be made with a fixed sentence that names no address; nothing is connected and the model is not asked. It is not retried. Connecting to the retrieval service and listing its tools then share one time limit of their own, asked of the run's deadline again after the exchange: the tool limit, or what the run has left by then. Every request to the retrieval service carries `Authorization: Bearer` with the exchanged token, and no other header of this agent's: no context headers. The retrieval service never sees the caller's token; it checks the exchanged one with its own settings (`knowledge/compose.yaml`).
 
 What the model is told when code refuses a call, each recorded as a tool step with `is_error` and the refusal as its result:
 
@@ -187,7 +187,7 @@ A `stopped` or `failed` run has no reply, no citations and no `label_answer`.
 | Model turns in a run | 8. A turn asked again with thinking off is not counted, as in the intake agent on Strands | `EXPERT_LIMITS`, `expert/settings.ts` |
 | Time for a run | 150 s | `EXPERT_LIMITS` |
 | Time for one model request | 90 s | `EXPERT_LIMITS` |
-| Time for one tool call, for the token exchange, and for connecting and listing the tools | 10 s, or what the run has left | `EXPERT_LIMITS` |
+| Time for one tool call, for the token exchange, and for connecting and listing the tools | 10 s each, or what the run has left when each starts | `EXPERT_LIMITS` |
 | Output allowance | 4,096 tokens | `OUTPUT_ALLOWANCE`, `expert/settings.ts`; applied in `expert/main.ts` |
 | Temperature and seed | shared | `run/sampling.ts` |
 | Searches in a run | 4 | `EXPERT_SETTINGS.search`, `expert/settings.ts` |

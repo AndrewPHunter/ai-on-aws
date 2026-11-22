@@ -43,13 +43,16 @@ export async function toolToken(exchange: TokenExchange, server: ToolServer, cal
 export type ConnectTools = (message: InboundMessage, token: string, timeoutMs: number) => Promise<Connected>;
 
 // A connection that is given the caller's token and connects with the exchanged one. The exchange and the
-// connection are each given the time this is given. This is how the hand-written intake agent is wired.
-export function connectWithToolToken(exchange: TokenExchange, server: ToolServer, connect: ConnectTools): ConnectTools {
+// connection share the time this is given: the connection gets what the exchange left of it, on the clock
+// passed in, and never less than zero. This is how the hand-written intake agent is wired.
+export function connectWithToolToken(exchange: TokenExchange, server: ToolServer, connect: ConnectTools, now: () => Date): ConnectTools {
   return async (message, callerToken, timeoutMs) => {
+    const started = now().getTime();
     const got = await toolToken(exchange, server, callerToken, timeoutMs);
     if (!got.ok) {
       return { ok: false, reason: got.reason };
     }
-    return connect(message, got.token, timeoutMs);
+    const used = now().getTime() - started;
+    return connect(message, got.token, Math.max(0, timeoutMs - used));
   };
 }

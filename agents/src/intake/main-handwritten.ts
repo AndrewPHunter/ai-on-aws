@@ -11,8 +11,11 @@ import { serveIntakeAgent } from './serve.ts';
 serveIntakeAgent('hand-written loop', ({ identity, now, limits, model, exchange, caseMcpUrl }) => {
   const chat = createChatModel(model);
   // The caller's token is exchanged for one meant for the case system, and only that one is connected with.
-  const connectTools = connectWithToolToken(exchange, CASE_SYSTEM, (inbound, token, timeoutMs) =>
-    connectCaseTools(caseMcpUrl, inbound, identity.id, token, timeoutMs),
+  const connectTools = connectWithToolToken(
+    exchange,
+    CASE_SYSTEM,
+    (inbound, token, timeoutMs) => connectCaseTools(caseMcpUrl, inbound, identity.id, token, timeoutMs),
+    now,
   );
   return (message, caller) =>
     handleInquiry(
