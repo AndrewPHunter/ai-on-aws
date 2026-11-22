@@ -45,15 +45,18 @@ export type ClientDeps = {
   // provider have their own.
   now: () => Date;
   newId: () => string;
-  agentTimeoutMs: number;
   identity: IdentityProvider;
   sessions: SessionStore;
 };
 
-// How long a user's access token must still live when it is sent: the time the client waits for an
-// agent, so the token outlives the run; and a margin over the case system's 10-second timeout.
-export const AGENT_TOKEN_MIN_LIFE_MS = 180_000;
+// How long a user's access token must still live when it is sent to the case system: a margin over its
+// 10-second timeout. A token sent to an agent must outlive the wait for that agent (agentWaitMs).
 export const CASE_TOKEN_MIN_LIFE_MS = 30_000;
+
+// How long the client waits for an agent's answer, and so how long the token sent to it must still live.
+function agentWaitMs(agent: AgentConfig): number {
+  return agent.wait_seconds * 1000;
+}
 
 // The case system's review server's two scopes: reading cases, and deciding one.
 export const CASES_READ = 'cases:read';
@@ -272,7 +275,7 @@ function segment(raw: string): string | undefined {
 }
 
 export function createClientServer(deps: ClientDeps): Server {
-  const { config, store, now, newId, agentTimeoutMs, identity, sessions } = deps;
+  const { config, store, now, newId, identity, sessions } = deps;
 
   // Asked for at sign-in: each distinct agent scope configured and the case system's two. The provider
   // leaves out any the person's role does not grant.
@@ -341,7 +344,7 @@ export function createClientServer(deps: ClientDeps): Server {
   // so a failure here is logged and never becomes an unhandled rejection.
   async function settleRun(runId: string, agent: AgentConfig, request: InvocationRequest, token: string): Promise<void> {
     try {
-      const result = await invokeAgent(agent.url, request, agentTimeoutMs, token);
+      const result = await invokeAgent(agent.url, request, agentWaitMs(agent), token);
       if (result.outcome === 'ok') {
         store.completeRun(runId, result.response);
       } else {
@@ -433,7 +436,7 @@ export function createClientServer(deps: ClientDeps): Server {
           throw badRequest(`"text" is longer than ${MAX_TEXT_LENGTH} characters.`);
         }
         const agent = runnableAgent(session, requiredString(body, 'agent_id'));
-        const token = await accessToken(session, agent.scope, AGENT_TOKEN_MIN_LIFE_MS);
+        const token = await accessToken(session, agent.scope, agentWaitMs(agent));
         const id = newId();
         store.createInquiry({ id, receivedAt: now().toISOString(), sender, text, enteredBy: actorOf(session) });
         startRun(ownInquiry(session, id), agent, actorOf(session), token);
@@ -459,7 +462,7 @@ export function createClientServer(deps: ClientDeps): Server {
         const agentId = requiredString(body, 'agent_id');
         const inquiry = ownInquiry(session, inquiryId);
         const agent = runnableAgent(session, agentId);
-        const token = await accessToken(session, agent.scope, AGENT_TOKEN_MIN_LIFE_MS);
+        const token = await accessToken(session, agent.scope, agentWaitMs(agent));
         const payload: RunResponse = { run: startRun(inquiry, agent, actorOf(session), token) };
         sendJson(response, 202, payload);
       },

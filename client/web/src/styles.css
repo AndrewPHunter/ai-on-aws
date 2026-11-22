@@ -907,6 +907,11 @@ select:disabled {
   counter-reset: step;
 }
 
+.steps--nested {
+  margin: 0 0 0 16px;
+  border-top-color: var(--rule);
+}
+
 .step {
   border-bottom: 1px solid var(--rule);
   counter-increment: step;
