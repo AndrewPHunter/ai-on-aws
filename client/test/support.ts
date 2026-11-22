@@ -108,15 +108,15 @@ export class ScriptedRenewal extends IdentityProvider {
   }
 }
 
-// An agent for deskConfig; its scope is agents:intake unless given.
-export type TestAgent = Omit<AgentConfig, 'scope'> & { scope?: AgentScope };
+// An agent for deskConfig; its scope is agents:intake and its wait 180 s unless given.
+export type TestAgent = Omit<AgentConfig, 'scope' | 'wait_seconds'> & { scope?: AgentScope; wait_seconds?: number };
 
 export function deskConfig(options: { agents: TestAgent[]; caseReviewUrl: string; webRoot?: string; discoveryUrl?: string; issuer?: string; revocationEndpoint?: string }): Config {
   const unused = 'http://127.0.0.1:1/not-used';
   return {
     dbPath: ':memory:',
     caseReviewUrl: options.caseReviewUrl,
-    agents: options.agents.map((agent) => ({ ...agent, scope: agent.scope ?? 'agents:intake' })),
+    agents: options.agents.map((agent) => ({ ...agent, scope: agent.scope ?? 'agents:intake', wait_seconds: agent.wait_seconds ?? 180 })),
     webRoot: options.webRoot ?? '/nonexistent-web-root',
     oidc: {
       discoveryUrl: options.discoveryUrl ?? unused,
@@ -143,7 +143,6 @@ export async function startDesk(t: Hooks, config: Config, time: Clock, identity?
     store,
     now: time.now,
     newId: () => `id-${++n}`,
-    agentTimeoutMs: 5_000,
     identity: identity ?? new ScriptedRenewal(config, time.now),
     sessions,
   });

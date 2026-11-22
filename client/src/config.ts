@@ -11,7 +11,7 @@ function withoutTrailingSlash(url: string): string {
 const RESERVED_IDS: readonly string[] = ['case-system', 'identity', 'agents', 'knowledge', 'evaluation'];
 
 // The scopes an agent can require of the token it is sent.
-export const AGENT_SCOPES = ['agents:intake', 'agents:expert'] as const;
+export const AGENT_SCOPES = ['agents:intake', 'agents:expert', 'agents:orchestrator'] as const;
 export type AgentScope = (typeof AGENT_SCOPES)[number];
 
 const agentSchema = z.object({
@@ -22,6 +22,9 @@ const agentSchema = z.object({
   scope: z.enum(AGENT_SCOPES),
   // Stored without a trailing slash, so paths are appended the same way whatever was configured.
   url: z.url({ protocol: /^https?$/ }).transform(withoutTrailingSlash),
+  // How long the client waits for this agent's answer, and so how long the token sent to it must still live.
+  // At most 295 because Node's fetch stops waiting for an answer at 300 s, whatever time limit is set.
+  wait_seconds: z.number().int().min(30).max(295).default(180),
 });
 
 const agentsSchema = z.array(agentSchema).superRefine((agents, context) => {
@@ -119,7 +122,7 @@ function agentsFrom(value: string): AgentConfig[] {
   try {
     parsed = JSON.parse(value);
   } catch {
-    throw new Error('AGENTS is not JSON. It must be a JSON array of { id, name, description, scope, url }.');
+    throw new Error('AGENTS is not JSON. It must be a JSON array of { id, name, description, scope, url, wait_seconds? }.');
   }
   const result = agentsSchema.safeParse(parsed);
   if (!result.success) {
@@ -137,7 +140,7 @@ export function configFrom(env: NodeJS.ProcessEnv): Config {
       'CASE_REVIEW_URL',
       required(env, 'CASE_REVIEW_URL', "the base URL of the case system's review server"),
     ),
-    agents: agentsFrom(required(env, 'AGENTS', 'a JSON array of { id, name, description, scope, url }, possibly empty')),
+    agents: agentsFrom(required(env, 'AGENTS', 'a JSON array of { id, name, description, scope, url, wait_seconds? }, possibly empty')),
     webRoot: required(env, 'WEB_ROOT', 'the directory holding the built web app'),
     oidc: {
       discoveryUrl: exactHttpUrl(
