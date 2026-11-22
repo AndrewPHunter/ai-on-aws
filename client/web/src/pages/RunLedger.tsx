@@ -78,13 +78,14 @@ function StepDetail({ step }: { step: Step }) {
           ) : (
             <ol className="hits">
               {step.hits.map((hit, index) => (
-                <li key={index}>
+                <li key={index} className={hit.shown ? undefined : 'is-unshown'}>
                   <p className="hits__where">
                     <span>
-                      {hit.drug}, {hit.section}
+                      <span className="hits__handle">{hit.handle}</span> {hit.drug}, {hit.section}
                     </span>
                     <span className="hits__score">{hit.score.toFixed(3)}</span>
                   </p>
+                  {hit.shown ? null : <p className="hits__unshown">Matched, but not shown to the model.</p>}
                   <p className="document hits__excerpt">{hit.excerpt}</p>
                 </li>
               ))}

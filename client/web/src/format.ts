@@ -1,6 +1,6 @@
 // Wording and number formatting shared by the screens.
 
-import type { CaseStatus, ElementName, RunState, Step } from '../../shared/api.ts';
+import type { CaseStatus, ElementName, LabelAnswer, RunState, Step } from '../../shared/api.ts';
 
 const dateTime = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 const dateOnly = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' });
@@ -91,6 +91,63 @@ export function stepTitle(step: Step): string {
     case 'error':
       return 'A step failed';
   }
+}
+
+// Whether a question about a drug label was answered, in plain words.
+export const LABEL_ANSWER_TEXT: Record<LabelAnswer, string> = {
+  answered: 'Answered from the label.',
+  no_label: 'No label for this drug.',
+  label_does_not_answer: 'The label does not answer this.',
+  not_a_label_question: 'Not a question about a label.',
+};
+
+export function labelAnswerText(answer: LabelAnswer): string {
+  return LABEL_ANSWER_TEXT[answer];
+}
+
+const MONTHS = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+] as const;
+
+// A label's date as it carries it (YYYYMMDD), written for a person: 30 January 2026. Written out here, not by
+// the browser's locale, so every reader sees the same words. Eight digits that are not a real date are shown
+// as they are, never as "Invalid Date"; anything else is shown as given.
+export function labelDate(yyyymmdd: string): string {
+  const match = /^(\d{4})(\d{2})(\d{2})$/.exec(yyyymmdd);
+  if (match === null) {
+    return yyyymmdd;
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const name = MONTHS[month - 1];
+  if (name === undefined || day < 1 || day > daysInMonth) {
+    return yyyymmdd;
+  }
+  return `${day} ${name} ${year}`;
+}
+
+// The words of a link to a label's page: which version, and the site it is on.
+export function labelLinkText(source: string, version: number): string {
+  let host: string;
+  try {
+    host = new URL(source).hostname;
+  } catch {
+    host = source;
+  }
+  return `Version ${version} of the label, at ${host}`;
 }
 
 export function firstLine(text: string, length: number): string {

@@ -147,6 +147,70 @@ test('a stored answer that no longer matches the contract fails that one run, no
   assert.equal(second.listInquiries().inquiries.length, 2);
 });
 
+// The response of C1 in shared/test/agent-contract.test.ts, word for word: what an intake agent returned and this
+// store kept at 2433db2, before citations carried their source and before label_answer existed.
+const STORED_AT_2433DB2 = `{
+  "agent": { "id": "intake-handwritten", "implementation": "hand-written loop" },
+  "outcome": "completed",
+  "stop_reason": null,
+  "reply": "Thank you. We have opened case AE-000001 and a pharmacist will contact you.",
+  "citations": [],
+  "case_actions": [{ "kind": "case_opened", "case_id": "AE-000001", "status": "awaiting_review" }],
+  "steps": [
+    {
+      "kind": "model",
+      "started_at": "2026-03-01T09:00:00.100Z",
+      "duration_ms": 812,
+      "model": "qwen3.5-9b",
+      "finish_reason": "tool_calls",
+      "text": null,
+      "tool_calls": [{ "name": "create_case", "arguments": { "suspect_drug": "examplamab", "event": "rash" } }],
+      "input_tokens": 1180,
+      "output_tokens": 64
+    },
+    {
+      "kind": "tool",
+      "started_at": "2026-03-01T09:00:00.920Z",
+      "duration_ms": 41,
+      "tool": "create_case",
+      "requested_by": "model",
+      "arguments": { "suspect_drug": "examplamab", "event": "rash" },
+      "result": { "case_id": "AE-000001", "status": "awaiting_review" },
+      "is_error": false
+    },
+    {
+      "kind": "error",
+      "started_at": "2026-03-01T09:00:00.970Z",
+      "duration_ms": 0,
+      "message": "The model server answered with status 503."
+    }
+  ]
+}`;
+
+test('C4. a run whose response was stored at 2433db2, written to the table directly, reads back not stale', (t) => {
+  const path = join(tempDir(t), 'client.sqlite');
+  const first = new InquiryStore(path, steppingClock(START));
+  first.createInquiry(inquiry('q1'));
+  first.startRun('r1', 'q1', 'intake', STAFF);
+  first.close();
+
+  const raw = new DatabaseSync(path);
+  raw
+    .prepare("update runs set state = 'completed', finished_at = ?, duration_ms = 870, response = ? where id = ?")
+    .run('2026-02-01T08:00:01.000Z', STORED_AT_2433DB2, 'r1');
+  raw.close();
+
+  const second = new InquiryStore(path, steppingClock(START));
+  t.after(() => {
+    second.close();
+  });
+  const run = second.getInquiry('q1')?.runs[0];
+  assert.equal(run?.state, 'completed');
+  assert.equal(run?.error, null);
+  assert.notEqual(run?.error, STALE_ERROR);
+  assert.deepEqual(run?.response, JSON.parse(STORED_AT_2433DB2));
+});
+
 // The schema as it was before staff signed in, written out here so the test does not depend on the store.
 const SCHEMA_BEFORE_SIGN_IN = `
 create table inquiries (

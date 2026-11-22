@@ -2,7 +2,7 @@
   "issuer": "http://localhost:8090/realms/lab",
   "clientId": "desk",
   "redirectUri": "http://localhost:3000/auth/callback",
-  "audiences": ["lab-agents", "lab-case-system"],
+  "audiences": ["lab-agents", "lab-case-system", "lab-knowledge"],
   "reviewerRole": "reviewer",
   "lifetimeSeconds": 600,
   "requestTimeoutMs": 15000,

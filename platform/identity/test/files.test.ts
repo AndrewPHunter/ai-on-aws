@@ -1,4 +1,5 @@
-// I3 to I5: what the tracked files of platform/identity/ promise about images, secrets and variables.
+// I3 to I8: what the tracked files of platform/identity/ promise about images, secrets and variables, and (I8) that
+// the gates of platform/identity/ and knowledge/ run images named for the checkout they were built from.
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
@@ -54,6 +55,37 @@ test('I4. every user credential value and every client secret in the realm file 
   for (const [where, value] of values) {
     assert.ok(typeof value === 'string' && placeholder.test(value), `${where} is not a \${NAME} placeholder`)
   }
+})
+
+test('I8. no gate compose file names an image with a fixed tag, and each gate script derives the tag from the checkout', () => {
+  for (const file of ['platform/identity/gate/compose.yaml', 'knowledge/gate/compose.yaml']) {
+    const images = [...read(file).matchAll(/^\s*image:\s*(.+?)\s*$/gm)].map((match) => match[1] ?? '')
+    assert.ok(images.length >= 1, `${file} names no image`)
+    for (const image of images) {
+      // The tag (or the whole name) comes from a variable the script must set; there is no default to fall back on.
+      assert.match(image, /\$\{[A-Z_]+:\?/, `${file} names an image with a fixed tag: ${image}`)
+    }
+  }
+
+  // Both identity gate scripts name the image and the compose project from the checkout's path, as toolchain/check.sh does.
+  for (const script of ['platform/identity/gate.sh', 'platform/identity/stack-gate.sh']) {
+    const text = read(script)
+    assert.match(text, /checkout=\$\(printf '%s' "\$repo_dir" \| cksum \| cut -d ' ' -f 1\)/, `${script} must derive the checkout from its path`)
+    assert.match(text, /IDENTITY_GATE_IMAGE_TAG="checkout-\$checkout"/, `${script} must name the tag for the checkout`)
+    assert.match(text, /gate_project="ai-on-aws-identity-gate-\$checkout"/, `${script} must name the project for the checkout`)
+    assert.match(text, /say "image ai-on-aws-identity-gate:\$IDENTITY_GATE_IMAGE_TAG"/, `${script} must print the image it uses`)
+    const runs = [...text.matchAll(/docker compose (?:-p "\$gate_project" )?-f "\$identity_dir\/gate\/compose\.yaml"/g)].map((match) => match[0])
+    assert.ok(runs.length >= 1 && runs.every((run) => run.includes('-p "$gate_project"')), `${script} runs the gate's compose file outside its own project`)
+  }
+
+  // The knowledge gate takes its image from knowledge/lib.sh, named for the checkout, and runs in a project of its own.
+  const lib = read('knowledge/lib.sh')
+  assert.match(lib, /checkout=\$\(printf '%s' "\$repo_dir" \| cksum \| cut -d ' ' -f 1\)/)
+  assert.match(lib, /KNOWLEDGE_IMAGE="knowledge-corpus:checkout-\$checkout"/)
+  const knowledgeGate = read('knowledge/gate.sh')
+  assert.match(knowledgeGate, /gate_project="ai-on-aws-knowledge-gate-\$checkout"/)
+  assert.match(knowledgeGate, /docker compose -p "\$gate_project" -f "\$knowledge_dir\/gate\/compose\.yaml"/)
+  assert.match(knowledgeGate, /say "image \$KNOWLEDGE_IMAGE"/)
 })
 
 test('I5. the variables used by compose.yaml and the realm file are exactly those in .env.example', () => {

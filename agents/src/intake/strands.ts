@@ -64,25 +64,14 @@ import { MODEL_UNREACHABLE, modelAnsweredWithStatus, modelDidNotAnswerWithin } f
 import type { ModelSettings } from '../model/served.ts';
 import { caseSystemHeaders, connectionFailure, noAnswerWithin, payloadOf } from '../tools/case-system.ts';
 import type { ToolOutcome } from '../tools/tool-set.ts';
+import { completed, failed, stoppedAtTimeLimit, stoppedAtTurnLimit, stoppedCutOff, stoppedWithoutReply } from '../run/endings.ts';
+import type { Limits } from '../run/limits.ts';
+import { recordError, recordNotCalled, recordToolCall, toldAbout } from '../run/steps.ts';
+import type { Refusal } from '../run/steps.ts';
+import { askAgainWithoutThinking } from '../run/turns.ts';
 import { SYSTEM_PROMPT, userTurn } from './prompt.ts';
-import {
-  afterCall,
-  askAgainWithoutThinking,
-  completed,
-  failed,
-  recordError,
-  recordNotCalled,
-  recordToolCall,
-  refusalBeforeCall,
-  startRun,
-  stoppedAtTimeLimit,
-  stoppedAtTurnLimit,
-  stoppedCutOff,
-  stoppedWithoutReply,
-  toldAbout,
-  unsettledWithoutRepeat,
-} from './run.ts';
-import type { IntakeRun, Limits, Refusal } from './run.ts';
+import { afterCall, refusalBeforeCall, startRun, unsettledWithoutRepeat } from './run.ts';
+import type { IntakeRun } from './run.ts';
 
 export type StrandsDeps = {
   identity: AgentIdentity;

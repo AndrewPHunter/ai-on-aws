@@ -141,7 +141,18 @@ export const EXAMPLE_RESPONSE: InvocationResponse = {
   outcome: 'completed',
   stop_reason: null,
   reply: 'The maximum dose is in section 2 of the label.',
-  citations: [{ drug: 'atorvastatin', section: '2 Dosage', quote: 'Do not exceed 20 mg.' }],
+  citations: [
+    {
+      drug: 'atorvastatin',
+      section: '2 Dosage',
+      quote: 'Do not exceed 20 mg.',
+      set_id: '00000000-0000-4000-8000-0000000000c1',
+      version: 1,
+      effective_date: '20260101',
+      source: 'https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=00000000-0000-4000-8000-0000000000c1&version=1',
+      passage: '00000000-0000-4000-8000-0000000000c1/1/sec-2/body/1',
+    },
+  ],
   case_actions: [{ kind: 'case_opened', case_id: 'AE-000001', status: 'awaiting_review' }],
   steps: [{ kind: 'error', started_at: '2026-01-01T00:00:00Z', duration_ms: 1, message: 'example step' }],
 };

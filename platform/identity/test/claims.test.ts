@@ -4,7 +4,7 @@ import { checkClaims, checkIdTokenRoles, type ClaimExpectations, type ClaimState
 
 const expectations = (isReviewer: boolean): ClaimExpectations => ({
   issuer: 'http://localhost:8090/realms/lab',
-  audiences: ['lab-agents', 'lab-case-system'],
+  audiences: ['lab-agents', 'lab-case-system', 'lab-knowledge'],
   clientId: 'desk',
   reviewerRole: 'reviewer',
   isReviewer,
@@ -13,7 +13,7 @@ const expectations = (isReviewer: boolean): ClaimExpectations => ({
 
 const reviewerToken: Record<string, unknown> = {
   iss: 'http://localhost:8090/realms/lab',
-  aud: ['lab-agents', 'lab-case-system'],
+  aud: ['lab-agents', 'lab-case-system', 'lab-knowledge'],
   client_id: 'desk',
   roles: ['default-roles-lab', 'reviewer'],
   sub: '3f1c2a9e-0000-4000-8000-000000000001',
@@ -62,4 +62,11 @@ test('G1. the ID-token checker reports roles missing, reviewer for the non-revie
     const reported = checkIdTokenRoles(claims, { reviewerRole: 'reviewer', isReviewer }).map((violation) => violation.statement)
     assert.deepEqual(reported, expected, name)
   }
+})
+
+test('G2. the claim checker reports an access token whose audience lacks lab-knowledge', () => {
+  const withoutKnowledge = { ...deskToken, aud: ['lab-agents', 'lab-case-system'] }
+  const violations = checkClaims(withoutKnowledge, expectations(false))
+  assert.deepEqual(violations.map((violation) => violation.statement), ['aud'])
+  assert.match(violations[0]?.detail ?? '', /missing lab-knowledge/)
 })

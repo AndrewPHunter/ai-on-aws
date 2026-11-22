@@ -4,7 +4,7 @@ An OpenID Connect provider for the lab: Keycloak 26.8.2 in development mode, wit
 
 It is a local stand-in for the identity provider that AgentCore's JWT authorizer trusts. On AWS that authorizer is configured with a discovery URL, the allowed audiences (`aud`), the allowed client IDs (read from a claim named `client_id`), and optional rules on custom claims. The tokens issued here carry those claims in that shape, so the code that will check them does not depend on anything particular to Keycloak.
 
-Three pieces use its tokens. The client's server signs desk staff in here, validates their ID tokens, and sends their access tokens to the agents and the case system. The agents require a valid access token and pass it on to the case system. The case system requires one on every request, records whom an agent acted for, and takes the reviewer and the reviewer role from it.
+Four pieces use its tokens. The client's server signs desk staff in here, validates their ID tokens, and sends their access tokens to the agents and the case system. The agents require a valid access token and pass it on: the intake agents to the case system, the label expert to the retrieval service. The case system requires one on every request, records whom an agent acted for, and takes the reviewer and the reviewer role from it. The retrieval service (`knowledge/`) requires one on every request but `/ping`, with audience `lab-knowledge`, and takes nothing else from it.
 
 How it is put together: [docs/architecture/identity.md](../../docs/architecture/identity.md).
 
@@ -53,7 +53,7 @@ An access token issued to either user through `desk` is a JWT signed with RS256 
 | Claim | Value |
 |---|---|
 | `iss` | `http://localhost:8090/realms/lab`, whichever address was used to reach the provider |
-| `aud` | `lab-agents` and `lab-case-system` |
+| `aud` | `lab-agents`, `lab-case-system` and `lab-knowledge` |
 | `client_id` | `desk` |
 | `roles` | A top-level array of the user's realm role names. Holds `reviewer` for `riley.reviewer` and not for `dana.desk`. Both users also hold Keycloak's default role, `default-roles-lab`, so `roles` also holds it and the roles it includes (`offline_access`, `uma_authorization`), and is never empty |
 | `sub`, `preferred_username`, `name` | The user's id, username and full name. The id is fixed in the realm file, so `sub` is the same after every start |
@@ -99,7 +99,7 @@ platform/identity/gate.sh identity-trial
 docker compose -p identity-trial -f platform/identity/compose.yaml down -v
 ```
 
-The gate runs in the pinned Node image on the project's default network (`<compose-project>_default`), with `jose` installed from the lockfile. It:
+The gate runs in the pinned Node image on the project's default network (`<compose-project>_default`), with `jose` installed from the lockfile. Its image is `ai-on-aws-identity-gate:checkout-<number>` and its compose project `ai-on-aws-identity-gate-<number>`, the number derived from the checkout's path as `toolchain/check.sh` derives its own. So two checkouts never run each other's gate. `gate.sh` and `stack-gate.sh` print the image on standard error. It:
 
 1. fetches the discovery document at `http://identity:8080` and checks its issuer, and that its key set answers;
 2. signs each user in through the Authorization Code flow with PKCE: it requests the authorization endpoint, posts the sign-in form with a cookie jar, reads the redirect to the callback without requesting it, and exchanges the code at the token endpoint with the client secret and the code verifier;

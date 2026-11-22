@@ -26,10 +26,10 @@ flowchart LR
 
     subgraph Agent["Agent container, port 8080"]
         Main["intake/main-handwritten.ts<br/>wiring"]
-        Serve["intake/serve.ts, settings.ts<br/>SHARED: startup, limits, sampling"]
+        Serve["intake/serve.ts, settings.ts,<br/>run/serve.ts, sampling.ts<br/>SHARED: startup, limits, sampling"]
         Server["contract/server.ts<br/>SHARED: POST /invocations, GET /ping"]
         Loop["intake/handwritten.ts<br/>the loop"]
-        Run["intake/run.ts<br/>SHARED: rules of a run,<br/>its record, how it ends"]
+        Run["intake/run.ts, run/state.ts,<br/>steps.ts, turns.ts, endings.ts<br/>SHARED: rules of a run,<br/>its record, how it ends"]
         Prompt["intake/prompt.ts<br/>SHARED: system prompt, user turn"]
         Record["run/record.ts<br/>SHARED: step timing, run deadline"]
         ToolSet["tools/tool-set.ts<br/>ToolSet, ToolOutcome"]
@@ -62,17 +62,19 @@ flowchart LR
 |---|---|---|
 | `contract/server.ts` | The HTTP surface. That a valid request always gets an answer inside the contract | The model, tools, cases, what the handler does |
 | `intake/handwritten.ts` | The order of work in a run: when the model is asked, when a tool is called, when each rule is applied. Three rules of its own: an unknown tool, arguments that are not JSON, and when a failed request to the model is sent again | HTTP, MCP, the model server's address, how a tool is reached |
-| `intake/run.ts` (shared) | The rules both implementations apply (one case per run, the repeat of a lost write, an unsettled write, the turn lost to thinking), the run's record, and the wording of every ending | Who is looping, the model, how a tool is reached |
+| `intake/run.ts` (shared) | The rules both implementations apply (one case per run, the repeat of a lost write, an unsettled write) and the state they keep | Who is looping, the model, how a tool is reached |
+| `run/state.ts`, `run/steps.ts`, `run/turns.ts`, `run/endings.ts` (shared) | The state every run keeps, the run's record, the turn lost to thinking, and the wording of every ending | Who is looping, the model, how a tool is reached |
 | `intake/prompt.ts` | What the model is told, and how the message is laid out for it | Everything else |
 | `run/record.ts` | Measuring a step and counting down the run's time | What is being timed |
 | `tools/tool-set.ts` | The shape of any tool set and of what a call can come back as | Any particular tool |
 | `tools/case-system.ts` | The MCP connection, the context headers, which tools write, and what an answer means for the run's record | The model, the loop |
+| `tools/mcp-answers.ts` (shared with the label expert) | Reading why a connection to an MCP service failed, and the payload of a tool result, in the words of the service named. `tools/case-system.ts` reads through it in the case system's name | Any particular service |
 | `model/chat.ts` | One request to the model server, the reading of its answer, and whether a failure could go differently if the request were sent again. It never sends twice | Tools' meaning, cases, the loop |
-| `intake/serve.ts`, `intake/settings.ts` (shared) | Reading the environment, the limits and sampling settings, asking which model is served, starting the server | The rules of a run, which implementation runs |
+| `intake/serve.ts`, `intake/settings.ts`, `run/serve.ts`, `run/sampling.ts` (shared) | Reading the environment, the limits and sampling settings, asking which model is served, starting the server | The rules of a run, which implementation runs |
 | `model/served.ts` (shared) | The model settings, the question "which model do you serve", and the wording of a model failure | Chat requests |
 | `intake/main-handwritten.ts` | Connecting this implementation's modules | The rules of a run |
 
-The loop receives the model, the tool connection, its clock, its way of waiting and its source of randomness as arguments (`IntakeDeps`). It knows nothing about the case system. The shared rules in `run.ts` do: they import `WRITING_TOOLS` and `caseActionFrom` from `tools/case-system.ts`, and they name `create_case` and `add_follow_up`.
+The loop receives the model, the tool connection, its clock, its way of waiting and its source of randomness as arguments (`IntakeDeps`). It knows nothing about the case system. The shared rules in `intake/run.ts` do: they import `WRITING_TOOLS` and `caseActionFrom` from `tools/case-system.ts`, and they name `create_case` and `add_follow_up`.
 
 ## One request, end to end
 
@@ -101,12 +103,12 @@ sequenceDiagram
         V-->>M: text, or requests for tools
         M-->>L: Completion
         alt the model asked for tools
-            L->>L: runToolCall asks refusalBeforeCall (run.ts)
+            L->>L: runToolCall asks refusalBeforeCall (intake/run.ts)
             L->>T: ToolSet.call
             T->>K: tools/call, with context headers and the token
             K-->>T: result or refusal
             T-->>L: ToolOutcome
-            L->>L: afterCall (run.ts) records what it means for cases
+            L->>L: afterCall (intake/run.ts) records what it means for cases
         else the model wrote a reply
             L-->>S: InvocationResponse
         end
@@ -123,17 +125,17 @@ The same flow by function:
 | 1a | `invoke` → the access-token check | Checks the `Authorization` header before the body is read (see "The caller's token"). A refused token gets 401 and a check that cannot be made gets 503; nothing else runs |
 | 2 | `invoke` → `readJson` | Reads the body, at most 1 MB, as JSON |
 | 3 | `invoke` | Checks the body against `invocationRequestSchema`. A body that fails gets 400, and nothing else runs |
-| 4 | Handler in `serve.ts` → `ready`, given the caller | On the first request, asks the model server which model it serves (`servedModelId`) unless `MODEL_ID` names it, then has `main-handwritten.ts` build the client (`createChatModel`) and the handler |
-| 5 | `handleInquiry` in `intake/handwritten.ts` → `startRun` in `run.ts` | Starts the run: its `Deadline`, and empty lists of steps and case actions |
+| 4 | Handler in `run/serve.ts` → `ready`, given the caller | On the first request, asks the model server which model it serves (`servedModelId`) unless `MODEL_ID` names it, then has `main-handwritten.ts` build the client (`createChatModel`) and the handler |
+| 5 | `handleInquiry` in `intake/handwritten.ts` → `startRun` in `intake/run.ts` | Starts the run: its `Deadline`, and empty lists of steps and case actions |
 | 6 | `connectCaseTools` in `tools/case-system.ts` | Opens the MCP connection with the four context headers, taken from the message and the agent's name, and `Authorization: Bearer` with the caller's token as it was presented, on every request. Lists the tools. Each becomes a tool description for the model |
 | 7 | `loop` | Starts the conversation: `SYSTEM_PROMPT`, then `userTurn(message)` |
 | 8 | `loop` → `askModel` → `ChatModel.complete` in `model/chat.ts` | Sends the conversation and the tool descriptions. The time allowed is the smaller of the model limit and what the run has left. A request that fails may be sent again (see "A failed request to the model") |
 | 9 | `loop` | Records a model step. If the model asked for no tools, the run ends here (see "How a run ends") |
-| 10 | `loop` → `runToolCall`, once per tool the model asked for, in order | Decides whether the call is made: its own two checks, then `refusalBeforeCall` in `run.ts` (see "One tool call") |
+| 10 | `loop` → `runToolCall`, once per tool the model asked for, in order | Decides whether the call is made: its own two checks, then `refusalBeforeCall` in `intake/run.ts` (see "One tool call") |
 | 11 | `runToolCall` → `callOnce` → `ToolSet.call` | Makes the MCP call and records a tool step (`recordToolCall`) |
-| 12 | `runToolCall` → `afterCall` in `run.ts` → `caseActionFrom` | Turns the case system's answer into a case action, remembers the case this run opened or found open, and says whether the call is done, to be repeated, or unsettled |
+| 12 | `runToolCall` → `afterCall` in `intake/run.ts` → `caseActionFrom` | Turns the case system's answer into a case action, remembers the case this run opened or found open, and says whether the call is done, to be repeated, or unsettled |
 | 13 | `loop` | Appends one tool message per call to the conversation, and goes to step 8 |
-| 14 | `completed`, `stoppedAt...`, `failed` in `run.ts` | Builds the response: outcome, stop reason, reply, case actions, steps |
+| 14 | `completed`, `stoppedAt...`, `failed` in `run/endings.ts` | Builds the response: outcome, stop reason, reply, case actions, steps |
 | 15 | `handleInquiry` | Closes the MCP connection |
 | 16 | `invoke` | Checks the response against `invocationResponseSchema` and sends it with 200 |
 
@@ -194,7 +196,7 @@ The wait and the randomness are given to the loop (`sleep` and `random` in `Inta
 | `failed` | The case system cannot be reached at the start | `handleInquiry` | Empty |
 | `failed` | A request to the model still fails after being sent three times, or fails in a way that sending again would not change | `askModel`, then `loop` | Empty |
 | `failed` | A write got no answer twice | `runToolCall`, then `loop` | Empty |
-| `failed` | The model server would not say which model it serves | Handler in `serve.ts` | Empty |
+| `failed` | The model server would not say which model it serves | Handler in `run/serve.ts` | Empty |
 | `failed` | The handler threw | `invoke` in `contract/server.ts` | Empty |
 
 One exception to "writes nothing": if that turn ended because the output allowance ran out (`finish_reason` `length`) and thinking was on, the model is asked again with thinking off, once in a run (`askAgainWithoutThinking`). The lost turn is recorded and counts towards the turn limit.
@@ -205,7 +207,7 @@ Four answers are not outcomes of a run: 401 for a refused token, 503 when the to
 
 ## The caller's token
 
-Settings, read by `settingsFrom` in `intake/serve.ts`: `AUTH_DISCOVERY_URL`, `AUTH_ISSUER`, `AUTH_ALLOWED_AUDIENCE` (`lab-agents`), `AUTH_ALLOWED_CLIENTS` (`desk`), `AUTH_ROLES_CLAIM` (`roles`). The minimum remaining life is the run's time limit, 150 s.
+Settings, read by `agentSettingsFrom` in `run/serve.ts` (through `settingsFrom` in `intake/serve.ts`): `AUTH_DISCOVERY_URL`, `AUTH_ISSUER`, `AUTH_ALLOWED_AUDIENCE` (`lab-agents`), `AUTH_ALLOWED_CLIENTS` (`desk`), `AUTH_ROLES_CLAIM` (`roles`). The minimum remaining life is the run's time limit, 150 s.
 
 | Order | Check | Refused as |
 |---|---|---|
@@ -270,7 +272,7 @@ Each row is a control this agent does not have, where it would sit in the flow, 
 | Special handling of a token refused mid-run | `ToolSet.call` | A tool call the case system refuses (401) or cannot check (503) after the connection was accepted falls under the rules for a call that got no answer (see "One tool call") |
 | A check of the caller's roles | `invoke` | Any accepted token may submit a message; the roles are given to the handler and not used |
 | Encryption between the pieces | All three hops | Plain HTTP. The model server's key crosses the local network unencrypted |
-| Rotation of the model server's key | `serve.ts` | One long-lived key, read from a file into an environment variable |
+| Rotation of the model server's key | `run/serve.ts` | One long-lived key, read from a file into an environment variable |
 
 ### What goes into the model
 
@@ -294,7 +296,7 @@ Each row is a control this agent does not have, where it would sit in the flow, 
 | Missing | Where it would sit | What follows |
 |---|---|---|
 | A check of the reply | `loop`, before `completed` | The reply is the model's text as written. It can say something the tools did not say, answer a clinical question, or repeat details of the sender's own earlier cases returned by `find_case` |
-| Redaction of the steps | The record in `run.ts` | Steps carry full tool arguments and results to the caller, which stores them |
+| Redaction of the steps | The record in `run/steps.ts` | Steps carry full tool arguments and results to the caller, which stores them |
 
 ### Running it
 
@@ -303,10 +305,10 @@ Each row is a control this agent does not have, where it would sit in the flow, 
 | Rate and concurrency limits | `createContractServer` | Each request holds a model call for up to 150 seconds, and nothing bounds how many run at once. Two runs of one message at the same time race; the case system still opens one case |
 | Reading of `Retry-After` | `askModel` | A server that says how long to wait is not listened to: the loop waits its own half second and second. The local model server does not send the header |
 | A shared view of the model's health | Around `askModel` | Each run decides on its own. While the model server is down, every run in flight sends its three requests |
-| A record kept by the agent | The endings in `run.ts` | If the caller goes away mid-run, the steps are lost. What remains is the case system's audit trail and the agent's error output |
+| A record kept by the agent | The endings in `run/endings.ts` | If the caller goes away mid-run, the steps are lost. What remains is the case system's audit trail and the agent's error output |
 | Tracing and metrics | Around `complete` and `ToolSet.call` | No trace identifiers and no exported measurements. A step carries its own timing and token counts |
 | The model's reasoning text | `createChatModel` | It is received and discarded. Only its cost appears, inside `output_tokens` |
-| The prompt's version in the response | The endings in `run.ts` | The response names the model. It does not say which prompt, temperature or seed produced it |
+| The prompt's version in the response | The endings in `run/endings.ts` | The response names the model. It does not say which prompt, temperature or seed produced it |
 | A health check of what it depends on | `GET /ping` | `/ping` says `Healthy` when the model server or the case system is down |
 
 ## Limits and settings
@@ -320,16 +322,16 @@ Each row is a control this agent does not have, where it would sit in the flow, 
 | Wait before a further request | 250 to 500 ms, then 500 to 1,000 ms | `waitBeforeRequest` in `intake/handwritten.ts` |
 | Time for one tool call | 10 s, or what the run has left | `intake/settings.ts`, `Deadline.within` |
 | Request body | 1 MB | `contract/server.ts` |
-| Model temperature, seed | 0, fixed | `intake/settings.ts` |
-| Output allowance for a turn | 2,048 tokens, thinking included | `intake/settings.ts` |
+| Model temperature, seed | 0, fixed | `run/sampling.ts` |
+| Output allowance for a turn | 2,048 tokens, thinking included | `run/sampling.ts` |
 | Thinking | On, until a turn is lost to it | `loop` |
 | Model server address and key | `MODEL_BASE_URL`, `MODEL_API_KEY` | `model/.env`, through `agents/compose.yaml` |
-| Model name | Asked of the model server, unless `MODEL_ID` is set | `intake/serve.ts` |
+| Model name | Asked of the model server, unless `MODEL_ID` is set | `run/serve.ts` |
 | Case system address | `CASE_MCP_URL` | `agents/compose.yaml` |
 | Agent's name | `AGENT_ID` | `agents/compose.yaml` |
 | Access-token check | `AUTH_DISCOVERY_URL`, `AUTH_ISSUER`, `AUTH_ALLOWED_AUDIENCE`, `AUTH_ALLOWED_CLIENTS`, `AUTH_ROLES_CLAIM` | `agents/compose.yaml` |
-| Minimum life left on a token | 150 s, the run's time limit | `settingsFrom` in `intake/serve.ts` |
-| Wait before fetching the keys again | 30 s | `intake/serve.ts` |
+| Minimum life left on a token | 150 s, the run's time limit | `agentSettingsFrom` in `run/serve.ts`, with the limits from `intake/settings.ts` |
+| Wait before fetching the keys again | 30 s | `run/serve.ts` |
 
 ## Who owns what
 

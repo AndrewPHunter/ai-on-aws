@@ -10,7 +10,7 @@ Every command on this page is run from the root of the repository.
 |---|---|---|
 | Intake, hand-written loop | Notices an adverse event in a message and records it in the [case system](../tools/case-system/README.md). Does not answer clinical questions. | Works against the local model. Measured on seven prepared inquiries. |
 | Intake, on Strands | The same agent with the loop left to the Strands SDK, for comparison | Works against the local model. Measured on the same seven. |
-| Label expert | Answers from the approved label, with the passages it relied on | Not built |
+| Label expert, on Strands | Answers a question about a medicine from its approved label, with the passages it relied on; every statement is checked in code against the passage it cites. Records nothing. | Built and tested against stand-ins; not yet measured against the local model. |
 | Orchestrator | Decides which of the others a message needs | Not built |
 
 ## Run it
@@ -21,7 +21,7 @@ The agents need the model server. [Set it up](../model/README.md) first; that wr
 docker compose up -d --build --wait
 ```
 
-That starts both intake agents with the case system, the identity provider and the [client](../client/README.md). Open <http://localhost:3000>, sign in, choose an agent and send an inquiry.
+That starts both intake agents and the label expert with the case system, the retrieval service, the identity provider and the [client](../client/README.md). Open <http://localhost:3000>, sign in, choose an agent and send an inquiry.
 
 To call an agent directly, use port 8080 for the hand-written one and 8081 for the one on Strands, with an access token issued to the `desk` client that has at least 150 seconds left. Without one the answer is 401:
 
@@ -35,6 +35,8 @@ curl -s http://127.0.0.1:8080/invocations -H 'content-type: application/json' -H
 | 503 `identity_unavailable` | The identity provider's discovery document or keys cannot be fetched, or it names another issuer |
 
 The request and the answer are defined in [`shared/agent-contract.ts`](../shared/agent-contract.ts). The answer carries the reply, what was done to cases, and every step taken.
+
+The label expert, on port 8082, is described in [docs/architecture/expert-agent.md](../docs/architecture/expert-agent.md).
 
 ## How the intake agent is put together
 
@@ -56,18 +58,25 @@ The flows, the rules of a tool call, and the controls neither has are in two doc
 |---|---|---|
 | [`src/contract/server.ts`](src/contract/server.ts) | `/invocations` and `/ping`, written by hand | Both |
 | [`src/intake/prompt.ts`](src/intake/prompt.ts) | What the agent is told | Both |
-| [`src/intake/run.ts`](src/intake/run.ts) | The rules of a run, its record, and the wording of every ending | Both |
-| [`src/intake/settings.ts`](src/intake/settings.ts) | The limits and the sampling settings | Both |
-| [`src/intake/serve.ts`](src/intake/serve.ts) | Startup: the environment, which model is served, the server | Both |
+| [`src/intake/run.ts`](src/intake/run.ts) | The rules of a run and the state they keep | Both |
+| [`src/intake/settings.ts`](src/intake/settings.ts) | The limits | Both |
+| [`src/intake/serve.ts`](src/intake/serve.ts) | Startup particular to intake: `CASE_MCP_URL`, the limits, the listening line | Both |
+| [`src/run/serve.ts`](src/run/serve.ts) | Startup: the environment, which model is served, the server | Both |
+| [`src/run/sampling.ts`](src/run/sampling.ts) | The sampling settings | Both |
+| [`src/run/state.ts`](src/run/state.ts), [`src/run/limits.ts`](src/run/limits.ts) | The state every run keeps, and the shape of its limits | Both |
+| [`src/run/steps.ts`](src/run/steps.ts) | The run's record | Both |
+| [`src/run/turns.ts`](src/run/turns.ts) | The turn lost to thinking | Both |
+| [`src/run/endings.ts`](src/run/endings.ts) | The wording of every ending | Both |
 | [`src/run/record.ts`](src/run/record.ts) | Step timing and the run's deadline | Both |
 | [`src/model/served.ts`](src/model/served.ts) | The model settings, which model the server serves, the wording of a model failure | Both |
 | [`src/tools/case-system.ts`](src/tools/case-system.ts) | What is particular to the case system: its context headers, which tools change a case, how to read its answers, and what they mean for the run's record. Also the hand-written agent's MCP connection | Both |
+| [`src/tools/mcp-answers.ts`](src/tools/mcp-answers.ts) | Reading why connecting to an MCP service failed, and the payload of a tool result, in the words of the service named | Both, through `case-system.ts`; the label expert, through `src/expert/retrieval.ts` |
 | [`src/tools/tool-set.ts`](src/tools/tool-set.ts) | What a call can come back as (`ToolOutcome`), and what a set of tools looks like to the hand-written loop | Both use `ToolOutcome` |
 | [`src/intake/handwritten.ts`](src/intake/handwritten.ts) | The hand-written loop | Hand-written |
 | [`src/model/chat.ts`](src/model/chat.ts) | The chat API client, with `fetch` | Hand-written |
 | [`src/intake/strands.ts`](src/intake/strands.ts) | The Strands `Agent`, its four hooks, and the tool wrapper that adds a time limit | Strands |
 
-The rules both apply, from [`src/intake/run.ts`](src/intake/run.ts):
+The rules both apply, from [`src/intake/run.ts`](src/intake/run.ts) and, for the turn lost to thinking and the limits, [`src/run/turns.ts`](src/run/turns.ts) and [`src/run/endings.ts`](src/run/endings.ts):
 
 - **A write whose reply is lost is repeated once by the agent's code,** with identical content. The case system recognises an identical repeat, so there is one case either way. The model is not asked to retry, because a model rewords.
 - **One message opens at most one case, at one version.** Once a run has opened a case, or been told by the case system that one is already open for this message, a second `create_case` or a follow-up to that case is refused in code.
@@ -110,7 +119,7 @@ The reasons for each are in [the Strands document](../docs/architecture/intake-a
 
 ## Settings
 
-Set in [`compose.yaml`](compose.yaml), for each agent. The limits and sampling settings are in [`src/intake/settings.ts`](src/intake/settings.ts) and are the same for both.
+Set in [`compose.yaml`](compose.yaml), for each agent. The limits are in [`src/intake/settings.ts`](src/intake/settings.ts) and the sampling settings in [`src/run/sampling.ts`](src/run/sampling.ts); both are the same for both.
 
 | Setting | Meaning |
 |---|---|

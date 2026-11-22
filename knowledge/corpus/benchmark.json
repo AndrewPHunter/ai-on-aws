@@ -1,0 +1,17 @@
+{
+  "repository": "https://github.com/xiongbetty/FDARxBench",
+  "revision": "019785d2802c4ceec583e4d4b82b902d7a8f9910",
+  "licence": "Apache-2.0",
+  "files": {
+    "labels": {
+      "path": "data/labels/labels.jsonl",
+      "sha256": "f257a010e03d8d4248506181dae57c9033aa6a85be2832cda4754ba3f4dfc295",
+      "bytes": 45663169
+    },
+    "qa": {
+      "path": "data/qa/qa.jsonl",
+      "sha256": "fa789f79e082ef8fc07ccb23304183768d2653b5d02e4bf77ebb04eefa52596b",
+      "bytes": 37051206
+    }
+  }
+}

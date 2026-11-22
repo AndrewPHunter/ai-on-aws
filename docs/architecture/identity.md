@@ -2,7 +2,7 @@
 
 The lab's OpenID Connect provider: Keycloak in development mode, one realm, imported from a file at every start. It stands in for the identity provider that AgentCore's JWT authorizer trusts. To use it, see [platform/identity/README.md](../../platform/identity/README.md).
 
-Three pieces consume its tokens. The client's server signs desk staff in, keeps their tokens, and sends the access token on every call to an agent and to the case system. The agents require a valid access token on `POST /invocations` and pass it on to the case system. The case system requires a valid access token on every request but `/ping`, records the user an agent acted for, and takes the reviewer and the reviewer role from the token.
+Four pieces consume its tokens. The client's server signs desk staff in, keeps their tokens, and sends the access token on every call to an agent and to the case system. The agents require a valid access token on `POST /invocations` and pass it on: the intake agents to the case system, the label expert to the retrieval service. The case system requires a valid access token on every request but `/ping`, records the user an agent acted for, and takes the reviewer and the reviewer role from the token. The retrieval service (`knowledge/`) requires a valid access token with audience `lab-knowledge` on every request but `/ping`, and takes nothing else from it.
 
 ## Terms
 
@@ -54,7 +54,7 @@ flowchart LR
 | Redirect URI | `http://localhost:3000/auth/callback` |
 | Post-logout redirect URI | `http://localhost:3000/` |
 | Default scopes | `basic`, `profile`, `email` |
-| Mappers | Audience `lab-agents`; audience `lab-case-system`; hard-coded claim `client_id` = `desk` (access token); realm roles as top-level `roles` (access token and ID token) |
+| Mappers | Audience `lab-agents`; audience `lab-case-system`; audience `lab-knowledge`; hard-coded claim `client_id` = `desk` (access token); realm roles as top-level `roles` (access token and ID token) |
 
 | User | Name | Email | Realm roles | Password |
 |---|---|---|---|---|
@@ -72,7 +72,7 @@ A JWT signed with RS256 by a key at the realm's `jwks_uri`.
 | Claim | Value | Read by AgentCore's JWT authorizer as |
 |---|---|---|
 | `iss` | `http://localhost:8090/realms/lab` | The issuer of the discovery URL |
-| `aud` | Contains `lab-agents` and `lab-case-system` | Allowed audiences |
+| `aud` | Contains `lab-agents`, `lab-case-system` and `lab-knowledge` | Allowed audiences |
 | `client_id` | `desk` | Allowed client IDs |
 | `roles` | Array of the user's realm role names, composites expanded; contains `reviewer` only for reviewers | A custom-claim rule (a string array contains a value) |
 | `sub`, `preferred_username`, `name` | The user's id (fixed in the realm file), username and full name | — |
@@ -221,6 +221,15 @@ Both case-system servers check the access token with `shared/access-token.ts` be
 | Review server | `POST /cases/<id>/review` | A valid token whose `roles` hold `reviewer`; checked before the case is looked up (403 `not_a_reviewer`) | The reviewer: `name` as the audit actor, `sub` as `actor_subject`. A body naming a `reviewer` is 400 |
 | Both | `GET /ping` | Nothing | — |
 
+## The retrieval service
+
+The retrieval service (`knowledge/src/search/`) checks the access token with `shared/access-token.ts` before the body is read, in the same order as the case system, with audience `lab-knowledge`, allowed client `desk` and no minimum remaining life. A refusal is 401 with `WWW-Authenticate: Bearer error="invalid_token"` and `{error, reason, detail}`; a provider that cannot be asked is 503 `identity_unavailable`.
+
+| Route | Needs | Takes from the token |
+|---|---|---|
+| `POST /mcp` | A valid token | Nothing: the tools search a public corpus and record nothing about the caller |
+| `GET /ping` | Nothing | — |
+
 ## From sign-in to an audit entry
 
 ```mermaid
@@ -232,7 +241,7 @@ sequenceDiagram
   participant S as Case system
   B->>C: sign in (Authorization Code with PKCE, see above)
   C->>K: code, verifier, client secret
-  K-->>C: access token (aud lab-agents, lab-case-system; client_id desk; roles), ID token
+  K-->>C: access token (aud lab-agents, lab-case-system, lab-knowledge; client_id desk; roles), ID token
   C-->>B: session cookie
   B->>C: POST /api/inquiries (cookie)
   C->>C: session; token has 180 s left, or renew; record who entered it
@@ -257,6 +266,7 @@ sequenceDiagram
 | Client | The ID token, from the token endpoint at sign-in | `desk` (the ID token's `aud`) | Signature, issuer, nonce, expiry; the browser that started the sign-in | Who the user is, and whether they hold `reviewer` |
 | Agent | The access token, from the client | `lab-agents` | Signature (RS256), issuer, `client_id` `desk`, 150 s left | The caller, given to the handler; the token itself, passed on |
 | Case system | The access token, from an agent or from the client | `lab-case-system` | Signature (RS256), issuer, `client_id` `desk`, not expired | The user an agent acted for; the reviewer and the reviewer role |
+| Retrieval service | The access token: the label expert sends its caller's; the knowledge gate sends `dana.desk`'s | `lab-knowledge` | Signature (RS256), issuer, `client_id` `desk`, not expired | Nothing |
 
 ## Where secrets live
 

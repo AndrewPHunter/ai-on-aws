@@ -1,35 +1,25 @@
-// One run of the intake agent: what it keeps, the rules it applies to tool calls, what it records,
-// and how it ends. Shared by both implementations. Each has its own loop (one written by hand, one
-// that is Strands') and comes here at the same points, so the two cannot drift apart on a rule:
+// One run of the intake agent: what it keeps beyond what every run keeps, and the rules it applies to tool
+// calls. Shared by both implementations. Each has its own loop (one written by hand, one that is Strands')
+// and comes here at the same points, so the two cannot drift apart on a rule:
 //
 //   before a tool call   refusalBeforeCall   may this call be made at all?
 //   after each attempt   afterCall           is it settled, repeated once by code, or unknown?
-//   after a model turn   askAgainWithoutThinking
-//   at the end           completed, stoppedAt..., failed
 //
-// Nothing here calls a model or a tool.
+// What every agent records, how a turn is asked again, and how a run ends are in ../run/: steps.ts,
+// turns.ts and endings.ts. Nothing here calls a model or a tool.
 
-import type { CaseAction, InvocationResponse, Step } from '../../../shared/agent-contract.ts';
+import type { CaseAction, Citation } from '../../../shared/agent-contract.ts';
 import type { AgentIdentity } from '../contract/server.ts';
-import { Deadline } from '../run/record.ts';
+import type { Limits } from '../run/limits.ts';
+import { startRunState } from '../run/state.ts';
+import type { RunState } from '../run/state.ts';
+import type { Refusal } from '../run/steps.ts';
 import { WRITING_TOOLS, caseActionFrom } from '../tools/case-system.ts';
 import type { ToolOutcome } from '../tools/tool-set.ts';
 
-export type Limits = {
-  // Model turns in one run.
-  maxTurns: number;
-  // Time for the whole run. Kept below what the caller will wait, so the caller hears how it ended.
-  runMs: number;
-  modelMs: number;
-  toolMs: number;
-};
-
-export type IntakeRun = {
-  identity: AgentIdentity;
-  now: () => Date;
-  limits: Limits;
-  deadline: Deadline;
-  steps: Step[];
+export type IntakeRun = RunState & {
+  // The intake agent cites nothing: its reply is an acknowledgement, not an answer from a source.
+  citations: Citation[];
   caseActions: CaseAction[];
   // The case this run opened, or found already open for this message.
   openedCaseId: string | undefined;
@@ -39,11 +29,8 @@ export type IntakeRun = {
 
 export function startRun(identity: AgentIdentity, now: () => Date, limits: Limits): IntakeRun {
   return {
-    identity,
-    now,
-    limits,
-    deadline: new Deadline(now, limits.runMs),
-    steps: [],
+    ...startRunState(identity, now, limits),
+    citations: [],
     caseActions: [],
     openedCaseId: undefined,
     unsettled: undefined,
@@ -51,9 +38,6 @@ export function startRun(identity: AgentIdentity, now: () => Date, limits: Limit
 }
 
 // --- Rules -------------------------------------------------------------------------------------------
-
-// A call the agent's code will not make, and what the model is told instead.
-export type Refusal = { error: string; detail: string };
 
 function caseIdIn(args: unknown): unknown {
   return typeof args === 'object' && args !== null ? Reflect.get(args, 'case_id') : undefined;
@@ -121,107 +105,4 @@ function noteCaseAction(run: IntakeRun, tool: string, outcome: ToolOutcome): voi
   if (tool === 'create_case') {
     run.openedCaseId = action.case_id;
   }
-}
-
-// This model can redraft a two-sentence reply in its head until the turn's output allowance is gone,
-// and then answer nothing. Such a turn is asked again once, with thinking off for the rest of the run.
-export function askAgainWithoutThinking(turn: { wroteNothing: boolean; ranOutOfOutput: boolean; thinking: boolean }): boolean {
-  return turn.wroteNothing && turn.ranOutOfOutput && turn.thinking;
-}
-
-// --- What the model is told about a call -----------------------------------------------------------
-
-export function toldAbout(outcome: ToolOutcome): string {
-  return JSON.stringify(outcome.kind === 'answered' ? outcome.payload : { error: 'no_answer', detail: outcome.reason });
-}
-
-// --- The record ------------------------------------------------------------------------------------
-
-export function recordToolCall(
-  run: IntakeRun,
-  call: {
-    tool: string;
-    requestedBy: 'model' | 'agent';
-    args: unknown;
-    outcome: ToolOutcome;
-    startedAt: string;
-    durationMs: number;
-  },
-): void {
-  const { outcome } = call;
-  run.steps.push({
-    kind: 'tool',
-    started_at: call.startedAt,
-    duration_ms: call.durationMs,
-    tool: call.tool,
-    requested_by: call.requestedBy,
-    arguments: call.args,
-    result: outcome.kind === 'answered' ? outcome.payload : { error: 'no_answer', detail: outcome.reason },
-    is_error: outcome.kind === 'no_answer' || outcome.isError,
-  });
-}
-
-// A call that was asked for and not made, with what the model was told instead.
-export function recordNotCalled(run: IntakeRun, tool: string, args: unknown, told: unknown): void {
-  run.steps.push({
-    kind: 'tool',
-    started_at: run.now().toISOString(),
-    duration_ms: 0,
-    tool,
-    requested_by: 'model',
-    arguments: args,
-    result: told,
-    is_error: true,
-  });
-}
-
-// Records a refusal and returns it as the text the model is told.
-export function recordRefusal(run: IntakeRun, tool: string, args: unknown, refusal: Refusal): string {
-  recordNotCalled(run, tool, args, refusal);
-  return JSON.stringify(refusal);
-}
-
-export function recordError(run: IntakeRun, message: string, startedAt?: string, durationMs = 0): void {
-  run.steps.push({ kind: 'error', started_at: startedAt ?? run.now().toISOString(), duration_ms: durationMs, message });
-}
-
-// --- How a run ends --------------------------------------------------------------------------------
-
-function ended(run: IntakeRun, outcome: InvocationResponse['outcome'], stopReason: string | null, reply: string): InvocationResponse {
-  return {
-    agent: run.identity,
-    outcome,
-    stop_reason: stopReason,
-    reply,
-    citations: [],
-    case_actions: run.caseActions,
-    steps: run.steps,
-  };
-}
-
-export function completed(run: IntakeRun, reply: string): InvocationResponse {
-  return ended(run, 'completed', null, reply);
-}
-
-export function stoppedAtTimeLimit(run: IntakeRun): InvocationResponse {
-  return ended(run, 'stopped', `The run reached its time limit of ${Math.round(run.limits.runMs / 1000)} s.`, '');
-}
-
-export function stoppedAtTurnLimit(run: IntakeRun): InvocationResponse {
-  return ended(run, 'stopped', `The run reached its limit of ${run.limits.maxTurns} turns with the model.`, '');
-}
-
-// An empty reply is not an answer.
-export function stoppedWithoutReply(run: IntakeRun, finishReason: string): InvocationResponse {
-  return ended(run, 'stopped', `The model ended its turn (${finishReason}) without writing a reply.`, '');
-}
-
-// The reply was cut off at the output allowance and the loop was given no text to return.
-export function stoppedCutOff(run: IntakeRun): InvocationResponse {
-  return ended(run, 'stopped', 'The model reached its output allowance part way through its reply, and the reply was not returned.', '');
-}
-
-// The run could not go on. It never carries a reply: a failed run has nothing it can vouch for.
-export function failed(run: IntakeRun, reason: string): InvocationResponse {
-  return ended(run, 'failed', reason, '');
 }

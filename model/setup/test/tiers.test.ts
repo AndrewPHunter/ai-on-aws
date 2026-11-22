@@ -11,8 +11,11 @@ function validTiers(): Record<string, any> {
   return {
     requirements: { minDriverMajor: 580, minComputeCapability: '7.5' },
     marginMiB: 512,
-    reservedForOtherModelsMiB: 2048,
+    embeddingPeakMiB: 2964,
+    rerankerPeakMiB: 1882,
     imageDiskMiB: 37000,
+    embeddingDownloadMiB: 1200,
+    rerankerDownloadMiB: 2300,
     tiers: [
       { name: 'large', profile: 'qwen3.5-9b-w4a16', measuredPeakMiB: 16134, downloadMiB: 11000 },
       { name: 'small', profile: 'qwen3.5-4b-w4a16-20k', measuredPeakMiB: 9232, downloadMiB: 5400 },
@@ -33,7 +36,6 @@ test('10. each rule of a valid tiers file, broken alone, is reported by its own 
     ['capability as number', (t) => (t.requirements.minComputeCapability = 7.5), capability],
     ['capability without minor', (t) => (t.requirements.minComputeCapability = '7'), capability],
     ['margin negative', (t) => (t.marginMiB = -1), 'marginMiB must be a non-negative integer'],
-    ['reserve fractional', (t) => (t.reservedForOtherModelsMiB = 1.5), 'reservedForOtherModelsMiB must be a non-negative integer'],
     ['image disk missing', (t) => delete t.imageDiskMiB, 'imageDiskMiB must be a non-negative integer'],
     ['tiers empty', (t) => (t.tiers = []), 'tiers must be a non-empty array'],
     ['tiers not an array', (t) => (t.tiers = { large: {} }), 'tiers must be a non-empty array'],
@@ -77,9 +79,51 @@ test('11. the shipped tiers file is valid, its profiles define what compose.yaml
   assert.deepEqual(
     result.tiers.tiers.map((tier) => [tier.name, needMiB(result.tiers, tier)]),
     [
-      ['large', 18694],
-      ['medium', 13340],
-      ['small', 11792],
+      ['large', 21492],
+      ['medium', 16138],
+      ['small', 14590],
     ],
   )
+})
+
+test("M1. a tier's need is chat peak + embedding peak + reranker peak + margin; a missing or negative peak is refused", () => {
+  const tiers = validTiers()
+  tiers.marginMiB = 100
+  tiers.embeddingPeakMiB = 20
+  tiers.rerankerPeakMiB = 3
+  const result = validateTiers(tiers)
+  if (!result.ok) throw new Error(result.errors.join('; '))
+  const large = result.tiers.tiers[0]
+  if (large === undefined) throw new Error('the fixture has no first tier')
+  assert.equal(needMiB(result.tiers, large), 16134 + 20 + 3 + 100)
+
+  const shipped = validateTiers(JSON.parse(readFileSync(modelFile('tiers.json'), 'utf8')))
+  if (!shipped.ok) throw new Error(shipped.errors.join('; '))
+  assert.equal(shipped.tiers.embeddingPeakMiB, 2964)
+  assert.equal(shipped.tiers.rerankerPeakMiB, 1882)
+  assert.equal(shipped.tiers.marginMiB, 512)
+
+  for (const key of ['embeddingPeakMiB', 'rerankerPeakMiB']) {
+    for (const [label, breakIt] of [
+      ['missing', (t: Record<string, any>) => delete t[key]],
+      ['negative', (t: Record<string, any>) => (t[key] = -1)],
+    ] as const) {
+      const broken = validTiers()
+      breakIt(broken)
+      assert.deepEqual(validateTiers(broken), { ok: false, errors: [`${key} must be a positive integer`] }, `${key} ${label}`)
+    }
+  }
+})
+
+test('M13. every tier\'s profile gives the chat server an explicit start-up fraction; without it the chat server cannot restart beside the other two', () => {
+  // vLLM refuses to start unless --gpu-memory-utilization times the card is free, 0.92 by default. With the
+  // embedding and reranker servers running that much never is, so a chat server restarted on its own exits.
+  const result = validateTiers(JSON.parse(readFileSync(modelFile('tiers.json'), 'utf8')))
+  if (!result.ok) throw new Error(result.errors.join('; '))
+  for (const tier of result.tiers.tiers) {
+    const read = readEnv(readFileSync(modelFile(`profiles/${tier.profile}.env`), 'utf8'), ['CHAT_EXTRA_ARGS'])
+    if (!read.ok) throw new Error(`profiles/${tier.profile}.env: ${read.message}`)
+    const extra = read.values.get('CHAT_EXTRA_ARGS') ?? ''
+    assert.match(extra, /(^|\s)--gpu-memory-utilization (0\.[0-9]*[1-9][0-9]*|1)(\s|$)/, `profiles/${tier.profile}.env: CHAT_EXTRA_ARGS=${extra}`)
+  }
 })

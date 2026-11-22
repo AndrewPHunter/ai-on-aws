@@ -46,8 +46,17 @@ if ! docker network inspect --format '{{.Name}}' "$network" >/dev/null 2>&1; the
   exit 2
 fi
 
+# Each checkout of the repository gets its own gate image and compose project, named from the checkout's path,
+# so a gate run from one checkout never runs an image another checkout built.
+repo_dir=$(dirname -- "$(dirname -- "$identity_dir")")
+checkout=$(printf '%s' "$repo_dir" | cksum | cut -d ' ' -f 1)
+IDENTITY_GATE_IMAGE_TAG="checkout-$checkout"
+export IDENTITY_GATE_IMAGE_TAG
+gate_project="ai-on-aws-identity-gate-$checkout"
+say "image ai-on-aws-identity-gate:$IDENTITY_GATE_IMAGE_TAG"
+
 gate_compose() {
-  env IDENTITY_GATE_NETWORK="$network" docker compose -f "$identity_dir/gate/compose.yaml" \
+  env IDENTITY_GATE_NETWORK="$network" docker compose -p "$gate_project" -f "$identity_dir/gate/compose.yaml" \
     --env-file "$identity_dir/.env" "$@"
 }
 
@@ -86,7 +95,7 @@ if [ "$failures" = unreadable ]; then
 fi
 
 rc=0
-env REVOCATION_FAILURES="$failures" IDENTITY_GATE_NETWORK="$network" docker compose -f "$identity_dir/gate/compose.yaml" \
+env REVOCATION_FAILURES="$failures" IDENTITY_GATE_NETWORK="$network" docker compose -p "$gate_project" -f "$identity_dir/gate/compose.yaml" \
   --env-file "$identity_dir/.env" run --rm -T -e REVOCATION_FAILURES="$failures" stack-gate \
   node /repo/platform/identity/gate/stack-gate-merge.ts <"$report" >"$merged" || rc=$?
 if { [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ]; } && [ -s "$merged" ]; then

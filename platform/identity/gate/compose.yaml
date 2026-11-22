@@ -15,7 +15,8 @@ x-gate: &gate
       USER node
       COPY --chown=node:node package.json package-lock.json ./
       RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
-  image: ai-on-aws-identity-gate:local
+  # Named for the checkout it was built from, so two checkouts never run each other's gate. The scripts set the tag.
+  image: ai-on-aws-identity-gate:${IDENTITY_GATE_IMAGE_TAG:?run platform/identity/gate.sh or stack-gate.sh, which name the image for this checkout}
   volumes:
     - ../src:/repo/platform/identity/src:ro
     - ./:/repo/platform/identity/gate:ro

@@ -7,7 +7,7 @@ An agent is an actor in which one step of the behaviour is decided by inference.
 | An actor has | In the intake agent | Where |
 |---|---|---|
 | A mailbox | `POST /invocations`. One message per request | `contract/server.ts` |
-| State that nothing else can touch | The run: its steps, its case actions, the case it opened, whether a write is unsettled, its deadline. And the conversation with the model | `IntakeRun` in `intake/run.ts`; the conversation held by the loop |
+| State that nothing else can touch | The run: its steps, its case actions, the case it opened, whether a write is unsettled, its deadline. And the conversation with the model | `IntakeRun` in `intake/run.ts`, built on `RunState` in `run/state.ts`; the conversation held by the loop |
 | A behaviour: what it does when a message arrives | Ask the model, apply the rules, call the case system, answer | `intake/handwritten.ts`, or Strands' `Agent` with four hooks in `intake/strands.ts` |
 | Messages it sends to other actors | Requests to the model server and to the case system, and one answer to the caller | `model/chat.ts` or Strands' `OpenAIModel`; `tools/case-system.ts` or Strands' `McpClient` |
 | A lifetime | One message. Each message gets a new run with new state, and nothing is kept once it is answered | `startRun` in `intake/run.ts` |
@@ -126,7 +126,7 @@ flowchart TD
 | Whether a write that got no answer is repeated | Code | `afterCall` in `intake/run.ts`: once, with identical content |
 | Whether a case exists, is a repeat or is complete | The case system | Its own rules, keyed on the message identifier and the sender |
 | What the reply says | Inference | Nothing. The reply is returned as written |
-| How the run ends | Code | The named endings in `intake/run.ts` |
+| How the run ends | Code | The named endings in `run/endings.ts` |
 | Whether a case is approved | A person | The case system records who and when |
 
 ## Always true, in this view

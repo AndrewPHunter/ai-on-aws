@@ -28,26 +28,16 @@ import type { Caller } from '../../../shared/access-token.ts';
 import type { InboundMessage, InvocationResponse } from '../../../shared/agent-contract.ts';
 import type { AgentIdentity } from '../contract/server.ts';
 import type { ChatMessage, ChatModel, ChatResult, ToolCall } from '../model/chat.ts';
+import { completed, failed, stoppedAtTimeLimit, stoppedAtTurnLimit, stoppedWithoutReply } from '../run/endings.ts';
+import type { Limits } from '../run/limits.ts';
 import { timed } from '../run/record.ts';
 import type { Timed } from '../run/record.ts';
+import { recordError, recordRefusal, recordToolCall, toldAbout } from '../run/steps.ts';
+import { askAgainWithoutThinking } from '../run/turns.ts';
 import type { Connected, ToolOutcome, ToolSet } from '../tools/tool-set.ts';
 import { SYSTEM_PROMPT, userTurn } from './prompt.ts';
-import {
-  afterCall,
-  askAgainWithoutThinking,
-  completed,
-  failed,
-  recordError,
-  recordRefusal,
-  recordToolCall,
-  refusalBeforeCall,
-  startRun,
-  stoppedAtTimeLimit,
-  stoppedAtTurnLimit,
-  stoppedWithoutReply,
-  toldAbout,
-} from './run.ts';
-import type { IntakeRun, Limits } from './run.ts';
+import { afterCall, refusalBeforeCall, startRun } from './run.ts';
+import type { IntakeRun } from './run.ts';
 
 export type IntakeDeps = {
   identity: AgentIdentity;

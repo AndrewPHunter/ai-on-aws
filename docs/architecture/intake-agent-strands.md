@@ -11,11 +11,11 @@ Strands is used the way it comes. Its default model is Amazon Bedrock, which thi
 | Part | Hand-written agent | Strands agent |
 |---|---|---|
 | Prompt and layout of the message | `intake/prompt.ts` | The same file |
-| Rules of a run, its record, its endings | `intake/run.ts` | The same file |
-| Limits and sampling settings | `intake/settings.ts` | The same file |
-| Startup and environment | `intake/serve.ts` | The same file |
+| Rules of a run, its record, its endings | `intake/run.ts` (rules); `run/state.ts`, `run/steps.ts`, `run/turns.ts`, `run/endings.ts` (state, record, endings) | The same files |
+| Limits and sampling settings | `intake/settings.ts` (limits), `run/sampling.ts` (sampling) | The same files |
+| Startup and environment | `intake/serve.ts`, `run/serve.ts` | The same files |
 | HTTP surface, including the access-token check | `contract/server.ts`, `shared/access-token.ts` | The same files |
-| Context headers and the caller's token on requests to the case system, reading a case system answer | `tools/case-system.ts` (`caseSystemHeaders`) | The same functions |
+| Context headers and the caller's token on requests to the case system, reading a case system answer | `tools/case-system.ts` (`caseSystemHeaders`), which reads answers through `tools/mcp-answers.ts` | The same functions |
 | The loop | `intake/handwritten.ts` | Strands' `Agent` |
 | Request to the model | `model/chat.ts`: chat completions, one JSON response | Strands' `OpenAIModel` on its default: the Responses API, streamed |
 | Connection to the case system | `@modelcontextprotocol/sdk` 1.32.2 client | Strands' `McpClient`, on `@modelcontextprotocol/client` 2.4.0 |
@@ -29,10 +29,10 @@ flowchart LR
 
     subgraph Agent["Agent container, port 8080"]
         Main["intake/main-strands.ts<br/>wiring"]
-        Serve["intake/serve.ts, settings.ts<br/>SHARED"]
+        Serve["intake/serve.ts, settings.ts,<br/>run/serve.ts, sampling.ts<br/>SHARED"]
         Server["contract/server.ts<br/>SHARED"]
         Ours["intake/strands.ts<br/>builds the Agent, four hooks,<br/>CaseTool, how the run ends"]
-        Run["intake/run.ts<br/>SHARED: rules, record, endings"]
+        Run["intake/run.ts, run/state.ts,<br/>steps.ts, turns.ts, endings.ts<br/>SHARED: rules, record, endings"]
         Prompt["intake/prompt.ts<br/>SHARED"]
         CaseFns["tools/case-system.ts<br/>SHARED: context headers,<br/>meaning of a result"]
         subgraph SDK["Strands SDK"]
@@ -71,7 +71,7 @@ sequenceDiagram
     participant S as contract/server.ts
     participant O as intake/strands.ts
     participant A as Strands Agent
-    participant R as intake/run.ts
+    participant R as intake/run.ts and run/
     participant K as Case system
     participant V as Model server
 
@@ -105,7 +105,7 @@ sequenceDiagram
 
 ## Where each rule is applied
 
-The rule is one function in `run.ts` in both agents. This table shows what each agent does with its answer.
+The rule is one function in `intake/run.ts` or `run/turns.ts` in both agents. This table shows what each agent does with its answer.
 
 | Rule | Hand-written loop | Strands |
 |---|---|---|

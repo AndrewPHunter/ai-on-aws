@@ -1,0 +1,81 @@
+# The Bedrock Knowledge Bases stand-in: the search engine that holds the label chunks, and the retrieval service
+# that gives agents keyword search over them as MCP tools. Started with the rest of the lab from the root
+# compose.yaml. The index is built separately, into a running stack, with knowledge/index.sh.
+name: ai-on-aws-knowledge
+
+services:
+  search:
+    # opensearchproject/opensearch:3.9.0, pinned by the digest of its multi-architecture index
+    # (linux/amd64, linux/arm64)
+    image: opensearchproject/opensearch@sha256:3bf4fe26aeb9f7b03c0ebcb1302bb24e855ee6b89fd926d26a71a83ef6f7e076
+    environment:
+      discovery.type: single-node
+      # The security plugin is off: no TLS and no sign-in on the engine. It publishes no port, so only containers
+      # on the stack's network reach it (see knowledge/README.md, "Not present").
+      DISABLE_SECURITY_PLUGIN: "true"
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      OPENSEARCH_JAVA_OPTS: "-Xms1g -Xmx1g"
+    # No port is published.
+    volumes:
+      - search-data:/usr/share/opensearch/data
+    # No read_only: at every start OpenSearch writes config/opensearch.keystore into its configuration folder,
+    # whose other files must come from the image, so neither a read-only root nor a tmpfs over that folder works
+    # (see knowledge/README.md, "Hardening").
+    tmpfs:
+      - /tmp:uid=1000,gid=1000,mode=0770
+      - /usr/share/opensearch/logs:uid=1000,gid=1000,mode=0770
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    healthcheck:
+      # Healthy once the cluster answers and is not red.
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9200/_cluster/health | grep -Eq '\"status\":\"(green|yellow)\"'"]
+      interval: 5s
+      timeout: 5s
+      # Started beside the whole stack, it has been seen to take over a minute to answer.
+      start_period: 180s
+      retries: 5
+
+  knowledge:
+    build:
+      context: ..
+      dockerfile: toolchain/Dockerfile
+      target: run
+      args:
+        PIECE: knowledge
+    image: ai-on-aws-knowledge:local
+    command: ["node", "knowledge/src/search/server.ts"]
+    environment:
+      SEARCH_URL: http://search:9200
+      SEARCH_INDEX: labels
+      # The access token every request but /ping must carry, checked as the case system checks it.
+      AUTH_DISCOVERY_URL: http://identity:8080/realms/lab/.well-known/openid-configuration
+      AUTH_ISSUER: http://localhost:8090/realms/lab
+      AUTH_ALLOWED_AUDIENCE: lab-knowledge
+      AUTH_ALLOWED_CLIENTS: desk
+      AUTH_ROLES_CLAIM: roles
+    ports:
+      # Published on this machine only: MCP for agents.
+      - "127.0.0.1:8002:8000"
+    depends_on:
+      search:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8000/ping').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  # The search engine's indexes, so they survive the container being removed.
+  search-data:
