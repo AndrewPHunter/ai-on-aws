@@ -137,7 +137,7 @@ Screening completed means the intake agent's response has outcome `completed`. A
 | The whole run | 280 s |
 | A round starts no later than | 125 s into the run, so its calls end inside the run |
 | Token life the orchestrator requires | 280 s, the whole run. A sub-agent requires 150 s, and a call starts with at least 155 s left |
-| What the client waits for the orchestrator, and the token life it requires first | 295 s and 290 s. The other agents keep 180 s |
+| What the client waits for the orchestrator, and the token life it requires first | 295 s for both. The other agents keep 180 s |
 
 ## Not present
 
