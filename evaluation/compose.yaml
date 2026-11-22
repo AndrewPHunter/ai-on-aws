@@ -7,18 +7,16 @@ services:
     # The evaluation piece's image, built by evaluation/run.sh from the run stage of toolchain/Dockerfile.
     image: ${EVALUATION_IMAGE:?run evaluation/run.sh}
     environment:
-      # The runner signs in as dana.desk through the desk client, as the gates do. Only these two values are taken
+      # The runner gets its token as its own client, evaluation, by client credentials. Only this value is taken
       # from platform/identity/.env.
-      IDENTITY_DESK_CLIENT_SECRET: ${IDENTITY_DESK_CLIENT_SECRET:?run platform/identity/setup.sh}
-      IDENTITY_DANA_PASSWORD: ${IDENTITY_DANA_PASSWORD:?run platform/identity/setup.sh}
+      IDENTITY_EVALUATION_CLIENT_SECRET: ${IDENTITY_EVALUATION_CLIENT_SECRET:?run platform/identity/setup.sh}
     working_dir: /repo
     volumes:
       # The sample it reads, and the run folder it writes.
       - ./data:/repo/evaluation/data
       - ./sample.json:/repo/evaluation/sample.json:ro
-      # The sign-in helpers the gates use, and the code the command line imports beside its own (the manifest's
-      # schema and the shared reference rule, the expert's number rule).
-      - ../platform/identity/src:/repo/platform/identity/src:ro
+      # The code the command line imports beside its own (the manifest's schema and the shared reference rule, the
+      # expert's number rule).
       - ../knowledge/src:/repo/knowledge/src:ro
       - ../agents/src:/repo/agents/src:ro
     networks:

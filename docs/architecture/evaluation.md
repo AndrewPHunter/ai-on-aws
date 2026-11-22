@@ -29,7 +29,7 @@ A harness that measures the label expert ([expert-agent.md](expert-agent.md)) on
 |---|---|---|---|
 | `sample.sh` | The piece's image, no network | `knowledge/data/benchmark/qa.jsonl`, `knowledge/corpus/manifest.json`, `evaluation/sample.json` | `evaluation/data/sample.jsonl`; with `--record`, `evaluation/sample.json` |
 | `reword.sh` | The image for writing requests and reading answers; the operator's machine for the calls | The sample, the benchmark (each question's drug name and context), the adapter's answers | `evaluation/data/sample-reworded.jsonl`, `sample-reworded.json`; with `--check`, `reword-check.csv` |
-| `run.sh` | The piece's image, on the stack's network | The variant's file; the identity provider (to sign in); the label expert | `responses.jsonl`, `run.json` |
+| `run.sh` | The piece's image, on the stack's network | The variant's file; the identity provider (for a token as the client `evaluation`); the label expert | `responses.jsonl`, `run.json` |
 | `score.sh` | The piece's image, no network | The run's variant's file, the run, the chunks (`knowledge/data`, for each passage's section), the benchmark (for wording overlap), each rubric's judgments and filled check file if present | `scores.json` |
 | `compare.sh` | The piece's image, no network | Two runs' `run.json` and `scores.json` | `compare-<run-a>.json` beside run B |
 | `judge.sh` | The image for writing requests and reading verdicts; the operator's machine for the calls | The run's variant's file, the run, the adapter's answers | `judgments-<rubric>.jsonl`, `judge-<rubric>.json`; with `--check`, `judge-check-<rubric>.csv` |
@@ -72,7 +72,7 @@ flowchart LR
     RW --> SR
     SL --> RN
     SR -- "--sample reworded" --> RN
-    RN -- "sign in as dana.desk" --> ID
+    RN -- "client credentials as evaluation" --> ID
     RN -- "POST /invocations, Bearer token,<br/>at most 4 at once" --> EX
     RN --> RS
     RS --> SC

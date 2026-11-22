@@ -1,21 +1,18 @@
 // Gate for the retrieval path (knowledge/README.md, "The gate").
 //
 // Runs on the stack's network, as one of its containers would, with the data folder and the tracked files mounted
-// read-only. It signs in as dana.desk through the desk client, as the identity gate does, then checks the retrieval
+// read-only. It gets a token as its own client, knowledge-gate, by client credentials, then checks the retrieval
 // service and the index against the data the index was built from. Every statement is checked even after one fails.
 //
-// Usage: node knowledge/src/gate/gate.ts   (IDENTITY_DESK_CLIENT_SECRET and IDENTITY_DANA_PASSWORD must be set)
+// Usage: node knowledge/src/gate/gate.ts   (IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET must be set)
 // Exit codes: 0 every statement holds, 1 one does not, 2 the gate could not run. The JSON report goes to standard
-// output, progress to standard error. Neither carries a password, a token or label text: statements name
+// output, progress to standard error. Neither carries a secret, a token or label text: statements name
 // identifiers, codes and counts only.
-
-import { randomBytes } from 'node:crypto';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
-import { signInFormAction } from '../../../platform/identity/src/login-form.ts';
-import { codeChallengeS256, codeVerifier } from '../../../platform/identity/src/pkce.ts';
+import { MachineTokenFailed, machineToken } from '../../../shared/machine-token.ts';
 import { sectionMatches } from '../references.ts';
 import { CouldNotRun, readData, readQuestions } from './data.ts';
 import type { Question } from './data.ts';
@@ -26,12 +23,9 @@ import type { Reply } from './service.ts';
 const KNOWLEDGE = 'http://knowledge:8000';
 const SEARCH = 'http://search:9200';
 const ALIAS = 'labels';
-const IDENTITY = 'http://identity:8080';
-const BROWSER_IDENTITY = 'http://localhost:8090';
-const REALM = '/realms/lab';
-const CLIENT_ID = 'desk';
-const REDIRECT_URI = 'http://localhost:3000/auth/callback';
-const USER = 'dana.desk';
+const TOKEN_ENDPOINT = 'http://identity:8080/realms/lab/protocol/openid-connect/token';
+const CLIENT_ID = 'knowledge-gate';
+const SCOPES = ['labels:search'];
 const TIMEOUT_MS = 20_000;
 const QUESTIONS = 200;
 const TOP = 5;
@@ -63,70 +57,17 @@ function requiredEnv(name: string): string {
 const request = (url: string, init: RequestInit = {}): Promise<Response> =>
   fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(TIMEOUT_MS), ...init });
 
-// ---------- sign-in, as the identity gate does it ----------
-
-function toTransport(url: string): string {
-  const parsed = new URL(url);
-  if (parsed.origin === BROWSER_IDENTITY || parsed.origin === IDENTITY) return `${IDENTITY}${parsed.pathname}${parsed.search}`;
-  throw new CouldNotRun(`an identity URL on an unexpected origin: ${parsed.origin}`);
-}
+// ---------- the token, as the client knowledge-gate ----------
 
 async function accessToken(): Promise<string> {
-  const secret = requiredEnv('IDENTITY_DESK_CLIENT_SECRET');
-  const password = requiredEnv('IDENTITY_DANA_PASSWORD');
-  const cookies = new Map<string, string>();
-  const take = (response: Response): void => {
-    for (const line of response.headers.getSetCookie()) {
-      const pair = line.split(';', 1)[0] ?? '';
-      const at = pair.indexOf('=');
-      if (at > 0) cookies.set(pair.slice(0, at).trim(), pair.slice(at + 1).trim());
-    }
-  };
-  const cookie = (): string => [...cookies].map(([name, value]) => `${name}=${value}`).join('; ');
-
-  const verifier = codeVerifier(randomBytes(32));
-  const state = randomBytes(16).toString('base64url');
-  const authorize = new URL(`${IDENTITY}${REALM}/protocol/openid-connect/auth`);
-  authorize.search = new URLSearchParams({
-    response_type: 'code',
-    client_id: CLIENT_ID,
-    redirect_uri: REDIRECT_URI,
-    scope: 'openid',
-    state,
-    code_challenge: codeChallengeS256(verifier),
-    code_challenge_method: 'S256',
-  }).toString();
-  const page = await request(authorize.toString());
-  take(page);
-  if (page.status !== 200) throw new CouldNotRun(`the sign-in page answered ${page.status}`);
-  const action = toTransport(signInFormAction(await page.text()));
-  const posted = await request(action, {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: cookie() },
-    body: new URLSearchParams({ username: USER, password, credentialId: '' }).toString(),
-  });
-  await posted.arrayBuffer();
-  const callback = new URL(posted.headers.get('location') ?? '', action);
-  const code = callback.searchParams.get('code');
-  if ((posted.status !== 302 && posted.status !== 303) || code === null || callback.searchParams.get('state') !== state) {
-    throw new CouldNotRun(`signing in as ${USER} did not return a code (status ${posted.status})`);
+  const secret = requiredEnv('IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET');
+  try {
+    const got = await machineToken({ tokenEndpoint: TOKEN_ENDPOINT, clientId: CLIENT_ID, clientSecret: secret, scopes: SCOPES, timeoutMs: TIMEOUT_MS }, { fetch, now: Date.now });
+    return got.token;
+  } catch (error) {
+    if (error instanceof MachineTokenFailed) throw new CouldNotRun(error.message);
+    throw error;
   }
-  const exchange = await request(`${IDENTITY}${REALM}/protocol/openid-connect/token`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'authorization_code',
-      code,
-      redirect_uri: REDIRECT_URI,
-      code_verifier: verifier,
-      client_id: CLIENT_ID,
-      client_secret: secret,
-    }).toString(),
-  });
-  const tokens: unknown = await exchange.json();
-  const token = typeof tokens === 'object' && tokens !== null ? Reflect.get(tokens, 'access_token') : undefined;
-  if (exchange.status !== 200 || typeof token !== 'string') throw new CouldNotRun(`the token exchange answered ${exchange.status}`);
-  return token;
 }
 
 // ---------- the service ----------
