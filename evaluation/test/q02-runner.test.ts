@@ -33,7 +33,9 @@ async function options(runDir: string, url: string, overrides: Partial<RunOption
   };
 }
 
-const ok = (): AgentReply => ({ status: 200, body: response({ labelAnswer: 'answered' }), delayMs: 30 });
+// Each answer waits 0.5 s, so the calls the runner starts together are still open when the next arrives, however
+// busy the machine (Q02 counts how many were open at once).
+const ok = (): AgentReply => ({ status: 200, body: response({ labelAnswer: 'answered' }), delayMs: 500 });
 
 test('Q02. the contract request with a bearer token, at most 4 at once, each response recorded whole with status and duration', async (t) => {
   const dir = await folder(t);
@@ -111,8 +113,10 @@ test('Q04. resuming sends nothing already recorded; --retry-failed sends only th
 });
 
 test('Q05. each kind of failed call is recorded with its reason', async (t) => {
-  const rows: { reply: AgentReply; reason: string; status: number | null }[] = [
-    { reply: 'hold', reason: 'no answer within 0.2 s', status: null },
+  // Only the row whose agent never answers has a short call limit (its expiry is the point); the others keep the
+  // runner's own, so a slow answer cannot become "no answer".
+  const rows: { reply: AgentReply; reason: string; status: number | null; callTimeoutMs?: number }[] = [
+    { reply: 'hold', reason: 'no answer within 3 s', status: null, callTimeoutMs: 3000 },
     { reply: { status: 500, body: { error: 'internal' } }, reason: 'status 500', status: 500 },
     { reply: { status: 200, raw: 'not json at all' }, reason: 'the body is not JSON', status: 200 },
     { reply: { status: 200, body: { outcome: 'completed' } }, reason: 'the answer is outside the agent contract', status: 200 },
@@ -120,7 +124,7 @@ test('Q05. each kind of failed call is recorded with its reason', async (t) => {
   for (const row of rows) {
     const dir = await folder(t);
     const agent = await startAgentStandIn(t, () => row.reply);
-    const result = await runQuestions(await options(dir, agent.url, { questions: questions(1), callTimeoutMs: 200 }));
+    const result = await runQuestions(await options(dir, agent.url, { questions: questions(1), ...(row.callTimeoutMs === undefined ? {} : { callTimeoutMs: row.callTimeoutMs }) }));
     assert.equal(result.exitCode, 1, row.reason);
     const [only] = await readRecords(dir);
     assert.equal(only?.ok, false);

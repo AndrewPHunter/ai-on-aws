@@ -33,7 +33,10 @@ const checkToken = createAccessTokenCheck(
     rolesClaim: 'roles',
     minRemainingSeconds: 150,
   },
-  { now: () => now, keyRefetchWaitMs: 30_000, timeoutMs: 2000 },
+  // Time is not what these tests test: the provider's keys are fetched from the test's own issuer, in the test's
+  // process, which may be busy with other tests; 30 s is far above anything a busy machine needs. (R17's provider
+  // closes each connection at once, so it does not wait on this limit.)
+  { now: () => now, keyRefetchWaitMs: 30_000, timeoutMs: 30_000 },
 );
 
 const loopback = '127.0.0.1';

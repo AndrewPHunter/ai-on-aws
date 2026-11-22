@@ -39,7 +39,7 @@ export async function startTokens(t: TestContext): Promise<Tokens> {
   t.after(() => issuer.close());
   const check = createAccessTokenCheck(
     { discoveryUrl: issuer.discoveryUrl, issuer: ISSUER, audience: 'lab-knowledge', allowedClients: ['desk'], rolesClaim: 'roles', minRemainingSeconds: 0 },
-    { now, keyRefetchWaitMs: 30_000, timeoutMs: 2000 },
+    { now, keyRefetchWaitMs: 30_000, timeoutMs: 30_000 },
   );
   const mint = (options: Partial<MintOptions> = {}): Promise<string> =>
     issuer.mintAccessToken({ lifetimeSeconds: 600, ...options, claims: { ...DANA, ...options.claims } });

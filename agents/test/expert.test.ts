@@ -468,18 +468,20 @@ test('E11. the reading allowance: shown best first while they fit, one that does
 });
 
 test('E12. a find or search that could not be made, or an answer the agent cannot read, ends the run failed with its own sentence; the model is told nothing and not asked again', async (t) => {
-  const cases: Array<{ name: string; reply: EngineScript['searches']; expire?: boolean; sentence: string }> = [
+  // The tool-limit row's retrieval service never answers, so the limit's expiry is the point: 3 s, its own.
+  const SHORT_TOOL_MS = 3000;
+  const cases: Array<{ name: string; reply: EngineScript['searches']; expire?: boolean; toolMs?: number; sentence: string }> = [
     { name: 'index not built', reply: [indexNotFound], sentence: SEARCH_FAILURES['index_not_built'] ?? '' },
     { name: 'engine unreachable', reply: ['drop'], sentence: SEARCH_FAILURES['search_unreachable'] ?? '' },
     { name: 'engine timed out', reply: ['hold'], expire: true, sentence: SEARCH_FAILURES['search_timed_out'] ?? '' },
     { name: 'unexpected answer', reply: [{ status: 200, body: { nothing: 'expected' } }], sentence: SEARCH_FAILURES['search_unexpected_answer'] ?? '' },
-    { name: 'no answer within the tool limit', reply: ['hold'], sentence: retrievalDidNotAnswerWithin(EXPERT_TEST_LIMITS.toolMs) },
+    { name: 'no answer within the tool limit', reply: ['hold'], toolMs: SHORT_TOOL_MS, sentence: retrievalDidNotAnswerWithin(SHORT_TOOL_MS) },
   ];
   for (const row of cases) {
     await t.test(row.name, async (t) => {
       const r = await rig(t, [toolCalls(find('Examplamab')), toolCalls(search(EXAMPLAMAB.setId, 'dose'))], { searches: row.reply });
       if (row.expire === true) r.retrieval.standIn.onHold(() => r.retrieval.expire());
-      const response = await runExpert(r.options, QUESTION);
+      const response = await runExpert({ ...r.options, ...(row.toolMs === undefined ? {} : { limits: { toolMs: row.toolMs } }) }, QUESTION);
       assert.equal(response.outcome, 'failed');
       assert.equal(response.stop_reason, row.sentence);
       assert.notEqual(row.sentence, '');
@@ -662,6 +664,7 @@ test('E17. the turn limit and the time limit stop the run with the same sentence
   });
 
   await t.test('time limit', async (t) => {
+    // The test's clock passes the run's limit; the real timer, at 60 s, cannot be what stops it.
     const clock = agentClock(AGENT_START);
     const tokens = await startExpertTokens(t);
     const retrieval = await startRetrieval(t, tokens);
@@ -672,7 +675,7 @@ test('E17. the turn limit and the time limit stop the run with the same sentence
     });
     const response = await runExpert({ model, mcpUrl: retrieval.mcpUrl, caller: await tokens.caller(), clock }, QUESTION);
     assert.equal(response.outcome, 'stopped');
-    assert.equal(response.stop_reason, 'The run reached its time limit of 5 s.');
+    assert.equal(response.stop_reason, 'The run reached its time limit of 60 s.');
     assert.equal(model.requests.length, 1);
     // No call was made with no time left.
     assert.equal(retrieval.standIn.received.length, 0);
