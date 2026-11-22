@@ -44,13 +44,18 @@ async function rig(t: TestContext, script: (request: ModelRequest, nth: number) 
 const creates = (calls: Array<{ tool: string }>): number => calls.filter((c) => c.tool === 'create_case').length;
 
 test('strands 1. an inquiry through the Strands loop and its MCP client: a case action from the tool\'s answer, and its steps', async (t) => {
-  const { run } = await rig(t, (_request, nth) => (nth === 0 ? ask(['create_case', { event: 'rash' }]) : say('Recorded as case C-MODEL.')));
+  const { cases, run } = await rig(t, (_request, nth) => (nth === 0 ? ask(['create_case', { event: 'rash' }]) : say('Recorded as case C-MODEL.')));
   const response = await run();
   assert.equal(response.outcome, 'completed');
   assert.deepEqual(response.case_actions, [{ kind: 'case_opened', case_id: 'C-7', status: 'incomplete' }]);
   assert.deepEqual(
     response.steps.map((s) => s.kind),
     ['model', 'tool', 'model'],
+  );
+  assert.deepEqual(
+    [...new Set(cases.requests.map((r) => r.headers.authorization))],
+    ['Bearer token-for-the-case-system'],
+    'a request to the case system carried another token than the exchanged one',
   );
 });
 
