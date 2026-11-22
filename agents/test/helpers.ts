@@ -762,7 +762,8 @@ export type TokenRig = {
   mint: (options?: Partial<MintOptions>) => Promise<string>;
 };
 
-export async function startTokenRig(t: TestContext): Promise<TokenRig> {
+// Takes a test's context, or anything that runs a function when its owner ends.
+export async function startTokenRig(t: { after(fn: () => unknown): void }): Promise<TokenRig> {
   const clock = agentClock(AGENT_START);
   const issuer = await startStandInIssuer({
     clientId: 'desk',

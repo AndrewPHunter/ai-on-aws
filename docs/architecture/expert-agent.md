@@ -2,7 +2,7 @@
 
 One agent in one container. It receives a question about a medicine and answers it only from the text of that medicine's approved label, as the [retrieval service](knowledge.md#search-and-retrieval) returns it. Every statement it returns has been checked in code against the passage it cites. It writes nowhere: it calls the model and the retrieval service's two tools, nothing else. To run it, see [agents/README.md](../../agents/README.md).
 
-It serves the same contract as the intake agents, through the same startup (`run/serve.ts`) and the same contract server. Its loop is Strands', used as the [intake agent on Strands](intake-agent-strands.md) uses it.
+It serves the same contract as the intake agents, through the same startup (`run/serve.ts`), on AWS's SDK server behind the local edge, as the intake agent on Strands does ([agent-runtime.md](agent-runtime.md)). Its loop is Strands', used as the [intake agent on Strands](intake-agent-strands.md) uses it.
 
 ## Terms
 
@@ -23,7 +23,7 @@ It serves the same contract as the intake agents, through the same startup (`run
 
 | Module | Owns | Knows nothing about |
 |---|---|---|
-| `expert/main.ts` | Starting the agent through `run/serve.ts`; this agent's output allowance | The rules of a run |
+| `expert/main.ts` | Starting the agent through `run/serve.ts` on the AgentCore SDK server; this agent's output allowance | The rules of a run |
 | `expert/serve.ts` | Reading `KNOWLEDGE_MCP_URL`, beside what `run/serve.ts` reads | Everything else |
 | `expert/settings.ts` | Every number of this agent: limits, output allowance, searches, reading allowance, answer limits | Where they are used |
 | `expert/prompt.ts` | What the model is told, and the message laid out for it (its text only, inside `<message>`) | Everything else |
@@ -31,7 +31,7 @@ It serves the same contract as the intake agents, through the same startup (`run
 | `expert/checks.ts` | Whether a final tool is accepted, and the reply it gives. Pure functions | Strands, the retrieval service, the clock |
 | `expert/retrieval.ts` | How an answer of the retrieval service is read, the sentence for each way it fails, how a section is named | The model, the loop |
 | `tools/mcp-answers.ts` (shared with the intake agents) | Reading why connecting to an MCP service failed and the payload of a tool result, in the words of the service named | Which service, the model, the loop |
-| `run/*`, `contract/server.ts`, `model/served.ts` (shared) | The state every run keeps, the record, the shared endings, startup, the HTTP contract, the wording of a model failure | This agent |
+| `run/*`, `contract/sdk-app.ts`, `contract/edge.ts`, `contract/runtime.ts`, `contract/runtime-contract.ts`, `model/served.ts` (shared) | The state every run keeps, the record, the shared endings, startup, the HTTP contract on the SDK server, the wording of a model failure | This agent |
 
 The shared endings in `run/endings.ts` take no `label_answer`. `expert/strands.ts` adds it to a completed response, and gives its three `stopped` endings of its own to the shared `stopped(run, reason)`.
 

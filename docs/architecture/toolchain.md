@@ -25,7 +25,7 @@ flowchart TD
   base --> lock[lock: npm resolves the lockfile]
   manifests --> lock
   lock --> lockfile[lockfile: one file] --> out[package-lock.json written by toolchain/lock.sh]
-  base --> rundeps[run-deps: run-time dependencies only]
+  base --> rundeps[run-deps: run-time dependencies only, no dev and no optional packages]
   manifests --> rundeps
   rundeps --> runstage[run: run-deps + one piece's src]
   piece[One piece's src folder] --> runstage
@@ -71,7 +71,7 @@ flowchart TD
 
 | Owner | Owns |
 |---|---|
-| Root `package.json` | Dependency versions, and the definition of the check |
+| Root `package.json` | Dependency versions, and the definition of the check. Its `overrides` hold five `@aws-sdk` packages that `bedrock-agentcore` brings in at the release of `@aws-sdk/client-bedrock-runtime` that Strands' entry in the lockfile holds (3.1174.0), so that adding `bedrock-agentcore` moved no version already locked. They go when Strands' AWS packages next move |
 | `package-lock.json` | The resolved dependency tree. Written only by `toolchain/lock.sh` |
 | `tsconfig.json` | What the compiler accepts |
 | `eslint.config.js` | The lint rules |
