@@ -46,25 +46,27 @@ test('invariant 5: every call carries a token got for its target alone, with eno
   const inquiryId = String(at((await inquire(setup, 'for a new run')).body, 'inquiry', 'id'));
   await settled(desk, inquiryId, setup);
   const before = agent.received.length;
-  // The session keeps a token with the given life for each scope it was granted, and carries the kept one or the one
-  // got for the call's scope ("<scope> for <refresh token>"). 100 s is short of an agent run (180 s); 10 s, of a case
+  // The session keeps a token with the given life for each scope it was granted ("<access>:<scope>"), and carries the
+  // one kept for the call's scope or the one got for it ("<scope> for <refresh token>"). 100 s is short of an agent run (180 s); 10 s, of a case
   // call (30 s).
   const rows = [
-    { name: 'a new inquiry, token long-lived', life: 3_600_000, renewed: null, send: (c: string) => inquire(c, 'long-lived'), seen: () => agent.waitFor((r) => textOf(r) === 'long-lived') },
-    { name: 'a new inquiry, token short of an agent run', life: 100_000, renewed: 'agents:intake', send: (c: string) => inquire(c, 'short'), seen: () => agent.waitFor((r) => textOf(r) === 'short') },
+    { name: 'a new inquiry, token long-lived', life: 3_600_000, scope: 'agents:intake', kept: true, send: (c: string) => inquire(c, 'long-lived'), seen: () => agent.waitFor((r) => textOf(r) === 'long-lived') },
+    { name: 'a new inquiry, token short of an agent run', life: 100_000, scope: 'agents:intake', kept: false, send: (c: string) => inquire(c, 'short'), seen: () => agent.waitFor((r) => textOf(r) === 'short') },
     {
       name: 'a new run of an inquiry, token short of an agent run',
       life: 100_000,
-      renewed: 'agents:intake',
+      scope: 'agents:intake',
+      kept: false,
       send: (c: string) => call(`${desk.url}/api/inquiries/${inquiryId}/runs`, { cookie: c, method: 'POST', body: { agent_id: 'first' } }),
       seen: () => agent.waitFor((r) => textOf(r) === 'for a new run' && agent.received.indexOf(r) >= before),
     },
-    { name: 'the case list', life: 10_000, renewed: 'cases:read', send: (c: string) => call(`${desk.url}/api/cases?status=awaiting_review`, { cookie: c }), seen: () => cases.waitFor((r) => r.path.startsWith('/cases?')) },
-    { name: 'a case', life: 10_000, renewed: 'cases:read', send: (c: string) => call(`${desk.url}/api/cases/AE-51`, { cookie: c }), seen: () => cases.waitFor((r) => r.path === '/cases/AE-51') },
+    { name: 'the case list', life: 10_000, scope: 'cases:read', kept: false, send: (c: string) => call(`${desk.url}/api/cases?status=awaiting_review`, { cookie: c }), seen: () => cases.waitFor((r) => r.path.startsWith('/cases?')) },
+    { name: 'a case', life: 10_000, scope: 'cases:read', kept: false, send: (c: string) => call(`${desk.url}/api/cases/AE-51`, { cookie: c }), seen: () => cases.waitFor((r) => r.path === '/cases/AE-51') },
     {
       name: 'a review',
       life: 10_000,
-      renewed: 'cases:review',
+      scope: 'cases:review',
+      kept: false,
       send: (c: string) => call(`${desk.url}/api/cases/AE-52/review`, { cookie: c, method: 'POST', body: { decision: 'approve' } }),
       seen: () => cases.waitFor((r) => r.path === '/cases/AE-52/review'),
     },
@@ -73,7 +75,7 @@ test('invariant 5: every call carries a token got for its target alone, with eno
     await t.test(row.name, async () => {
       const cookie = signedIn(desk, RILEY, `access-${n}`, row.life, `refresh-${n}`);
       assert.ok((await row.send(cookie)).status < 300);
-      assert.equal((await row.seen()).authorization, row.renewed === null ? `Bearer access-${n}` : `Bearer ${row.renewed} for refresh-${n}`);
+      assert.equal((await row.seen()).authorization, row.kept ? `Bearer access-${n}:${row.scope}` : `Bearer ${row.scope} for refresh-${n}`);
     });
   }
   await t.test('two calls for different targets arrive together', async () => {
@@ -112,7 +114,7 @@ test('invariant 6: the reviewer of a case is whoever is signed in, never a name 
     const reply = await call(`${desk.url}/api/cases/AE-61/review`, { cookie, method: 'POST', body: { decision: 'approve', note: 'synthetic note' } });
     assert.deepEqual(reply, { status: 200, body: { answered: 'by the case system' } });
     const forwarded = await cases.waitFor((r) => r.path === '/cases/AE-61/review');
-    assert.deepEqual({ authorization: forwarded.authorization, body: forwarded.body }, { authorization: 'Bearer access-riley', body: { decision: 'approve', note: 'synthetic note' } });
+    assert.deepEqual({ authorization: forwarded.authorization, body: forwarded.body }, { authorization: 'Bearer access-riley:cases:review', body: { decision: 'approve', note: 'synthetic note' } });
   });
   await t.test('a decision that names its reviewer is refused and not forwarded', async () => {
     const reply = await call(`${desk.url}/api/cases/AE-62/review`, { cookie, method: 'POST', body: { decision: 'approve', reviewer: 'Someone Else' } });
