@@ -28,7 +28,8 @@
 //
 // Like gate.ts, it stands in for the browser from inside the network, so URLs on the browser's addresses
 // (http://localhost:3000 for the client, http://localhost:8090 for the provider) are sent to the services'
-// names instead, with the same path and query.
+// names instead, with the same path and query. The requests it makes as a signed-in person through the client
+// are in ../src/desk.ts; the statements about their answers are made here.
 //
 // Usage: node stack-gate.ts   (the four people's passwords and the client secrets read in main must be set)
 // Every statement is checked even after one fails. Exit codes: 0 every statement holds, 1 one does not,
@@ -38,8 +39,26 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 
 import type { CaseRecord } from '../../../shared/case-contract.ts';
+import {
+  openCallback,
+  openLogin,
+  readCase,
+  readCaseList,
+  readInquiry,
+  sendAgain,
+  sendInquiry,
+  signInAtProvider,
+  signOut as signOutOfClient,
+  toTransport,
+  waitForRun,
+  type DeskAddresses,
+  type Jar,
+  type Reply,
+  type ResponseView,
+  type RunView,
+  type StepView,
+} from '../src/desk.ts';
 import { checkSignInPage, checkSignInRedirect, checkTokenAnswer, type Body } from '../src/judge.ts';
-import { signInFormAction } from '../src/login-form.ts';
 import { codeChallengeS256, codeVerifier } from '../src/pkce.ts';
 import {
   authorizationUrl,
@@ -72,6 +91,7 @@ const BROWSER_IDENTITY = 'http://localhost:8090';
 const END_SESSION = `${BROWSER_IDENTITY}/realms/lab/protocol/openid-connect/logout`;
 const AUTHORIZE = `${BROWSER_IDENTITY}/realms/lab/protocol/openid-connect/auth`;
 const DESK = { clientId: 'desk', redirectUri: `${BROWSER_APP}/auth/callback` };
+const ADDRESSES: DeskAddresses = { client: CLIENT, identity: IDENTITY, browserClient: BROWSER_APP, browserIdentity: BROWSER_IDENTITY };
 const DESK_SCOPES = 'openid agents:intake agents:expert agents:orchestrator cases:read cases:review';
 const NO_SUCH_CASE = 'AE-999999';
 const HTTP: Http = { timeoutMs: 20_000 };
@@ -138,12 +158,6 @@ function notCheckable(what: string, why: string): void {
 
 // ---------- HTTP ----------
 
-function toTransport(url: string): string {
-  if (url.startsWith(BROWSER_IDENTITY)) return IDENTITY + url.slice(BROWSER_IDENTITY.length);
-  if (url.startsWith(BROWSER_APP)) return CLIENT + url.slice(BROWSER_APP.length);
-  return url;
-}
-
 function get(url: string, cookie = '', headers: Record<string, string> = {}): Promise<Response> {
   return fetch(url, {
     redirect: 'manual',
@@ -156,7 +170,7 @@ function post(url: string, body: string, headers: Record<string, string>): Promi
   return fetch(url, { method: 'POST', redirect: 'manual', headers, body, signal: AbortSignal.timeout(HTTP.timeoutMs) });
 }
 
-/** A POST to the client from its own page, as the signed-in person. */
+/** A POST to the client from its own page, as the signed-in person, for a request ../src/desk.ts does not make. */
 function postAs(session: string, path: string, body: unknown): Promise<Response> {
   return post(`${CLIENT}${path}`, JSON.stringify(body), { 'content-type': 'application/json', cookie: session, origin: BROWSER_APP });
 }
@@ -184,36 +198,6 @@ const MESSAGE = JSON.stringify({ message: { id: 'stack-gate-1', received_at: '20
 // (docs/architecture/agent-runtime.md, "Where the two servers differ").
 const OUTSIDE_CONTRACT = JSON.stringify({ nonsense: true });
 
-// One cookie per name, with the attributes it was last set with.
-class Jar {
-  private readonly values = new Map<string, string>();
-  readonly attributes = new Map<string, string>();
-
-  take(response: Response): void {
-    for (const line of response.headers.getSetCookie()) {
-      const [pair = '', ...rest] = line.split(';');
-      const at = pair.indexOf('=');
-      if (at <= 0) continue;
-      const name = pair.slice(0, at).trim();
-      const value = pair.slice(at + 1).trim();
-      this.attributes.set(name, rest.map((part) => part.trim()).sort().join('; '));
-      if (value === '' || /max-age=0\b/i.test(line)) this.values.delete(name);
-      else this.values.set(name, value);
-    }
-  }
-
-  has(name: string): boolean {
-    return this.values.has(name);
-  }
-
-  header(only?: string): string {
-    return [...this.values]
-      .filter(([name]) => only === undefined || name === only)
-      .map(([name, value]) => `${name}=${value}`)
-      .join('; ');
-  }
-}
-
 // ---------- the people ----------
 
 type May = { agents: string[]; read_cases: boolean; decide_cases: boolean };
@@ -234,10 +218,9 @@ function sessionFor(sessions: Sessions, who: string, what: string): string | und
 // /auth/login, Keycloak's page, the password, and back to the callback, which is returned unrequested.
 async function startSignIn(person: Person, record: boolean): Promise<{ app: Jar; callback: string } | undefined> {
   const who = person.username;
-  const app = new Jar();
-  const login = await get(`${CLIENT}/auth/login`);
-  app.take(login);
-  const target = login.headers.get('location') ?? '';
+  const login = await openLogin(HTTP, ADDRESSES);
+  const app = login.cookies;
+  const target = login.location ?? '';
   if (record) {
     const query = target.startsWith(AUTHORIZE) ? new URL(target).searchParams : new URLSearchParams();
     statement(
@@ -261,16 +244,11 @@ async function startSignIn(person: Person, record: boolean): Promise<{ app: Jar;
     );
   }
   if (!target.startsWith(AUTHORIZE)) return undefined;
-  const provider = new CookieJar();
-  const page = await openSignInPage(HTTP, toTransport(target), provider);
-  let action: string;
-  try {
-    action = signInFormAction(page.html);
-  } catch (error) {
-    statement(false, `${who}: Keycloak shows its sign-in page`, (error as Error).message);
+  const submitted = await signInAtProvider(HTTP, ADDRESSES, target, who, person.password);
+  if (!submitted.shown) {
+    statement(false, `${who}: Keycloak shows its sign-in page`, submitted.detail);
     return undefined;
   }
-  const submitted = await postSignInForm(HTTP, toTransport(action), provider, who, person.password);
   const callback = submitted.location ?? '';
   const accepted = submitted.status === 302 && callback.startsWith(`${DESK.redirectUri}?`);
   if (record) {
@@ -292,11 +270,11 @@ async function signInStatements(person: Person): Promise<string | undefined> {
   }
   const { app, callback } = started;
   const signInCookie = app.header('desk_signin');
-  const completed = await get(toTransport(callback), signInCookie);
-  app.take(completed);
+  const completed = await openCallback(HTTP, ADDRESSES, callback, signInCookie);
+  app.take(completed.setCookies);
   statement(
     completed.status === 302 &&
-      completed.headers.get('location') === '/' &&
+      completed.location === '/' &&
       app.has('desk_session') &&
       app.attributes.get('desk_session') === 'HttpOnly; Path=/; SameSite=Lax' &&
       !app.has('desk_signin'),
@@ -305,17 +283,15 @@ async function signInStatements(person: Person): Promise<string | undefined> {
   );
   const session = app.header('desk_session');
 
-  const replay = await get(toTransport(callback), signInCookie);
-  await replay.arrayBuffer();
+  const replay = await openCallback(HTTP, ADDRESSES, callback, signInCookie);
   statement(replay.status === 400, `${who}: the same callback used again is 400`, `status ${replay.status}`);
 
   const fresh = await startSignIn(person, false);
   if (fresh === undefined) {
     statement(false, `${who}: a callback without the sign-in cookie is 400 and sets no session`, 'a second sign-in did not reach the callback');
   } else {
-    const bare = await get(toTransport(fresh.callback));
-    await bare.arrayBuffer();
-    const setsSession = bare.headers.getSetCookie().some((line) => line.startsWith('desk_session=') && !/max-age=0\b/i.test(line));
+    const bare = await openCallback(HTTP, ADDRESSES, fresh.callback);
+    const setsSession = bare.setCookies.some((line) => line.startsWith('desk_session=') && !/max-age=0\b/i.test(line));
     statement(bare.status === 400 && !setsSession, `${who}: a callback without the sign-in cookie is 400 and sets no session`, `status ${bare.status}`);
   }
 
@@ -375,8 +351,8 @@ async function signOutStatements(person: Person, sessions: Sessions): Promise<vo
   const what = `${who}: sign-out answers with the provider's end-session address, carrying no token`;
   const session = sessionFor(sessions, who, what);
   if (session === undefined) return;
-  const out = await post(`${CLIENT}/auth/logout`, '{}', { 'content-type': 'application/json', cookie: session, origin: BROWSER_APP });
-  const outText = await out.text();
+  const out = await signOutOfClient(HTTP, ADDRESSES, session);
+  const outText = out.text;
   let signOut: URL | undefined;
   try {
     const parsed = JSON.parse(outText) as { sign_out_url?: string };
@@ -400,20 +376,28 @@ async function signOutStatements(person: Person, sessions: Sessions): Promise<vo
 
 // ---------- what each person may and may not do, through the client ----------
 
-async function refusedStatement(sessions: Sessions, who: string, what: string, send: (session: string) => Promise<Response>): Promise<void> {
+async function refusedStatement(
+  sessions: Sessions,
+  who: string,
+  what: string,
+  send: (session: string) => Promise<Pick<Reply, 'status' | 'body'>>,
+): Promise<void> {
   const full = `${who}: ${what} is 403 not_allowed`;
   const session = sessionFor(sessions, who, full);
   if (session === undefined) return;
   const answer = await send(session);
-  const body = await jsonOf(answer);
+  const body = answer.body;
   statement(answer.status === 403 && body.error === 'not_allowed', full, `status ${answer.status}, ${String(body.error)}`);
 }
 
 async function permissionStatements(sessions: Sessions): Promise<void> {
   const inquiry = (agent: string) => (session: string) =>
-    postAs(session, '/api/inquiries', { sender: 'Dr Gate, gate@example.org', text: 'What is the usual starting dose?', agent_id: agent });
-  const caseList = (session: string) => get(`${CLIENT}/api/cases`, session);
-  const decide = (session: string) => postAs(session, `/api/cases/${NO_SUCH_CASE}/review`, { decision: 'approve' });
+    sendInquiry(HTTP, ADDRESSES, session, { sender: 'Dr Gate, gate@example.org', text: 'What is the usual starting dose?', agent_id: agent });
+  const caseList = (session: string) => readCaseList(HTTP, ADDRESSES, session);
+  const decide = async (session: string) => {
+    const answer = await postAs(session, `/api/cases/${NO_SUCH_CASE}/review`, { decision: 'approve' });
+    return { status: answer.status, body: await jsonOf(answer) };
+  };
 
   await refusedStatement(sessions, 'dana.desk', `sending an inquiry to ${EXPERT}`, inquiry(EXPERT));
   await refusedStatement(sessions, 'dana.desk', 'reading the case list', caseList);
@@ -427,7 +411,6 @@ async function permissionStatements(sessions: Sessions): Promise<void> {
     const session = sessionFor(sessions, who, what);
     if (session === undefined) continue;
     const answer = await caseList(session);
-    await answer.arrayBuffer();
     statement(answer.status === 200, what, `status ${answer.status}`);
   }
 
@@ -435,7 +418,7 @@ async function permissionStatements(sessions: Sessions): Promise<void> {
   const session = sessionFor(sessions, 'riley.reviewer', what);
   if (session !== undefined) {
     const answer = await decide(session);
-    const body = await jsonOf(answer);
+    const body = answer.body;
     statement(answer.status === 404 && body.error === 'case_not_found', what, `status ${answer.status}, ${String(body.error)}`);
   }
 }
@@ -467,29 +450,7 @@ const ORCHESTRATOR_INQUIRY =
 // call the agent refused or could not make is always recorded as an error.
 const RETRIEVAL_TOOLS = ['find_labels', 'search_label'];
 
-// A response as the gate reads it; a delegation step carries the sub-agent's whole response.
-type ResponseView = {
-  outcome?: string;
-  stop_reason?: string | null;
-  case_actions?: { kind?: string; case_id?: string }[];
-  steps?: StepView[];
-};
-type StepView = {
-  kind?: string;
-  tool?: string;
-  is_error?: boolean;
-  id?: string;
-  to_agent?: string;
-  failure?: string | null;
-  response?: ResponseView | null;
-};
-type RunView = {
-  state?: string;
-  started_by?: { name?: string } | null;
-  error?: string | null;
-  response?: ResponseView | null;
-};
-
+// A run as the gate reads it is RunView in ../src/desk.ts; a delegation step carries the sub-agent's whole response.
 type Sent = { inquiryId: string; run: RunView | undefined };
 
 /**
@@ -498,23 +459,17 @@ type Sent = { inquiryId: string; run: RunView | undefined };
  */
 async function sendAndWait(person: Person, session: string, agent: string, text: string, waitMs: number): Promise<Sent | undefined> {
   const who = person.username;
-  const sent = await postAs(session, '/api/inquiries', { sender: SENDER, text, agent_id: agent });
-  const created = (await jsonOf(sent)).inquiry as { id?: string; entered_by?: { name?: string } | null } | undefined;
+  const sent = await sendInquiry(HTTP, ADDRESSES, session, { sender: SENDER, text, agent_id: agent });
+  const created = sent.body.inquiry as { id?: string; entered_by?: { name?: string } | null } | undefined;
   statement(
     sent.status === 202 && created?.entered_by?.name === person.name,
     `${who}, ${agent}: an inquiry is accepted and records who entered it`,
     `status ${sent.status}, entered_by ${JSON.stringify(created?.entered_by ?? null)}`,
   );
   if (created?.id === undefined) return undefined;
-  let run: RunView | undefined;
-  const deadline = Date.now() + waitMs;
-  while (Date.now() < deadline) {
-    const read = (await jsonOf(await get(`${CLIENT}/api/inquiries/${encodeURIComponent(created.id)}`, session))).inquiry as { runs?: RunView[] } | undefined;
-    run = read?.runs?.[0];
-    if (run !== undefined && run.state !== 'running') break;
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-  return { inquiryId: created.id, run };
+  // When the wait ran out, the run as last read, so the statements can say how far it got.
+  const waited = await waitForRun(HTTP, ADDRESSES, session, created.id, waitMs);
+  return { inquiryId: created.id, run: waited.ended ? waited.run : waited.lastRead };
 }
 
 /** Sends an inquiry as the person and waits for its run to end. States that it was accepted and how the run ended. */
@@ -552,8 +507,8 @@ async function caseAuditStatement(sessions: Sessions, what: string, actor: strin
   }
   const session = sessionFor(sessions, 'riley.reviewer', what);
   if (session === undefined) return;
-  const answer = await get(`${CLIENT}/api/cases/${encodeURIComponent(opened.case_id)}`, session);
-  const record = (await jsonOf(answer)) as Partial<CaseRecord>;
+  const answer = await readCase(HTTP, ADDRESSES, session, opened.case_id);
+  const record = answer.body as Partial<CaseRecord>;
   const created = Array.isArray(record.audit) ? record.audit.find((entry) => entry.action === 'case_created') : undefined;
   statement(answer.status === 200 && created?.actor === actor, what, `status ${answer.status}, actor ${JSON.stringify(created?.actor ?? null)}`);
 }
@@ -686,17 +641,17 @@ async function orchestratorStatements(sessions: Sessions, person: Person): Promi
 // ---------- an inquiry belongs to who entered it ----------
 
 /** The answer's status and body, with `id` in the body replaced, so two answers about different ids compare. */
-async function answerAbout(response: Response, id: string): Promise<{ status: number; body: string }> {
-  return { status: response.status, body: (await response.text()).split(id).join('<id>') };
+function answerAbout(reply: Reply, id: string): { status: number; body: string } {
+  return { status: reply.status, body: reply.text.split(id).join('<id>') };
 }
 
 async function ownershipStatements(sessions: Sessions, inquiryId: string | undefined): Promise<void> {
   const unknown = randomUUID();
   // The inquiry carries its runs, so reading it covers them.
-  const asks: [string, (session: string, id: string) => Promise<Response>][] = [
-    ['reading', (session, id) => get(`${CLIENT}/api/inquiries/${encodeURIComponent(id)}`, session)],
+  const asks: [string, (session: string, id: string) => Promise<Reply>][] = [
+    ['reading', (session, id) => readInquiry(HTTP, ADDRESSES, session, id)],
     // An agent morgan may run, so that a refusal can only be about whose inquiry it is.
-    ['starting a run on', (session, id) => postAs(session, `/api/inquiries/${encodeURIComponent(id)}/runs`, { agent_id: INTAKE_AGENTS[0] })],
+    ['starting a run on', (session, id) => sendAgain(HTTP, ADDRESSES, session, id, INTAKE_AGENTS[0])],
   ];
   for (const [doing, send] of asks) {
     const what = `morgan.medinfo: ${doing} the inquiry dana.desk entered gets the same status and body (the id aside) as an inquiry id that does not exist`;
@@ -706,8 +661,8 @@ async function ownershipStatements(sessions: Sessions, inquiryId: string | undef
     }
     const session = sessionFor(sessions, 'morgan.medinfo', what);
     if (session === undefined) continue;
-    const theirs = await answerAbout(await send(session, inquiryId), inquiryId);
-    const none = await answerAbout(await send(session, unknown), unknown);
+    const theirs = answerAbout(await send(session, inquiryId), inquiryId);
+    const none = answerAbout(await send(session, unknown), unknown);
     statement(
       theirs.status === none.status && theirs.body === none.body,
       what,
@@ -748,10 +703,10 @@ async function directSignIn(person: Person, secrets: Secrets): Promise<Grant & {
     const jar = new CookieJar();
     const verifier = codeVerifier(randomBytes(32));
     const state = randomBytes(16).toString('base64url');
-    const page = await openSignInPage(HTTP, toTransport(authorizationUrl(AUTHORIZE, DESK, DESK_SCOPES, state, codeChallengeS256(verifier))), jar);
+    const page = await openSignInPage(HTTP, toTransport(ADDRESSES, authorizationUrl(AUTHORIZE, DESK, DESK_SCOPES, state, codeChallengeS256(verifier))), jar);
     const shown = checkSignInPage(page.status, page.html);
     if (shown.action === null) return { ok: false, detail: `${who}'s sign-in page: ${shown.violations.map((v) => `${v.statement}: ${v.detail}`).join('; ')}` };
-    const posted = await postSignInForm(HTTP, toTransport(shown.action), jar, who, person.password);
+    const posted = await postSignInForm(HTTP, toTransport(ADDRESSES, shown.action), jar, who, person.password);
     const redirect = checkSignInRedirect(posted, shown.action, DESK.redirectUri, state);
     if (redirect.code === null) return { ok: false, detail: `${who}'s sign-in: ${redirect.violations.map((v) => `${v.statement}: ${v.detail}`).join('; ')}` };
     const code = redirect.code;
