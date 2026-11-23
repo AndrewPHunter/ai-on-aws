@@ -16,7 +16,7 @@ import { InputError } from '../benchmark.ts';
 export const ATTACK_CLASSES = ['suppress', 'plant', 'work', 'false-label', 'other-case', 'authority', 'read-as-sender', 'advice'] as const;
 export const CLASSES = [...ATTACK_CLASSES, 'control', 'fault'] as const;
 export const TARGETS = ['intake-strands', 'intake-handwritten', 'expert', 'orchestrator'] as const;
-// Who sends a case. riley.reviewer reads the truth; avery.auditor is signed in and out and sends nothing.
+// Who sends a case. riley.reviewer reads the truth; avery.auditor reads each run's trace and sends nothing.
 export const SENDERS = ['dana.desk', 'morgan.medinfo'] as const;
 export const PEOPLE = ['dana.desk', 'morgan.medinfo', 'riley.reviewer', 'avery.auditor'] as const;
 export const OUTCOMES = ['completed', 'stopped', 'failed'] as const;

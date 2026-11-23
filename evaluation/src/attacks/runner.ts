@@ -1,6 +1,6 @@
 // The attack runner: plays the committed cases through the web client, each as the signed-in person it names, reads
-// the truth from the case system as riley.reviewer, judges each case (judge.ts) and writes one line per case to
-// <run-dir>/results.jsonl. Started by evaluation/attacks.sh, inside the stack's network.
+// each run's trace as avery.auditor and the truth from the case system as riley.reviewer, judges each case (judge.ts)
+// and writes one line per case to <run-dir>/results.jsonl. Started by evaluation/attacks.sh, inside the stack's network.
 //
 // It acts as a person only through ../../../platform/identity/src/desk.ts, as the stack gate does. It changes the
 // stack: it enters about 60 inquiries and opens cases, so it is for a trial stack.
@@ -8,6 +8,12 @@
 // Parts: `main` enters the victim's report, then plays every attack and control case and the sent-twice faults;
 // `case-system` and `knowledge` play only the faults run while that service is stopped (attacks.sh stops and starts
 // it). With the case system stopped the truth cannot be read, so those cases are judged on the responses alone.
+//
+// The record and the trace: the client returns a run to the person who started it without its steps. That run as the
+// person received it is what the judge searches as the record. Once the run has ended, avery.auditor reads its trace,
+// the run with the agent's whole response, steps included; the judge reads the response (its reply, outcome, steps,
+// delegated responses and claims) from the trace. A case with a run that ended but whose trace could not be read is
+// not run, and never judged on a response without its steps.
 //
 // The truth: the client's case list holds the 50 newest cases and no message ids, so the runner keeps every case id
 // it has seen with its version, and after each case reads, as riley.reviewer, every case that is new, whose version
@@ -18,13 +24,13 @@
 import { access, appendFile, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { readCase, readCaseList, readInquiry, sendAgain, sendInquiry, signIn, signOut, waitForRun } from '../../../platform/identity/src/desk.ts';
+import { readCase, readCaseList, readInquiry, readTrace, sendAgain, sendInquiry, signIn, signOut, waitForRun } from '../../../platform/identity/src/desk.ts';
 import type { DeskAddresses, Reply, RunView } from '../../../platform/identity/src/desk.ts';
 import type { Http } from '../../../platform/identity/src/provider.ts';
 import { invocationResponseSchema } from '../../../shared/agent-contract.ts';
 import type { CaseRecord, FoundCases } from '../../../shared/case-contract.ts';
 import { judgeCase } from './judge.ts';
-import type { CaseSeen, Observed, RunSeen, VictimSeen } from './judge.ts';
+import type { CaseSeen, Judgment, Observed, RunSeen, VictimSeen } from './judge.ts';
 import { exitCodeOf, formatTable } from './report.ts';
 import type { Judged } from './report.ts';
 import { PEOPLE, fillText, needsVictim, sendsOf } from './set.ts';
@@ -60,9 +66,10 @@ const idOf = (value: unknown): string | null => {
   return typeof id === 'string' && id !== '' ? id : null;
 };
 
-function seen(run: RunView | undefined, ended: boolean): RunSeen {
+/** A run as the judge sees it: `raw` is the run as the client returned it to the person, `response` the trace's. */
+function seen(run: RunView | undefined, ended: boolean, traced: unknown): RunSeen {
   if (!ended || run === undefined) return { ended: false, state: run?.state ?? null, raw: run ?? null, response: null, outside_contract: false };
-  const parsed = run.response === null || run.response === undefined ? null : invocationResponseSchema.safeParse(run.response);
+  const parsed = traced === null || traced === undefined ? null : invocationResponseSchema.safeParse(traced);
   return {
     ended: true,
     state: run.state ?? null,
@@ -71,6 +78,10 @@ function seen(run: RunView | undefined, ended: boolean): RunSeen {
     outside_contract: parsed !== null && !parsed.success,
   };
 }
+
+// Why a case is not run when a run of it ended and its trace could not be read: a fixed sentence that quotes nothing.
+const TRACE_NOT_READ = "a run that ended has no trace avery.auditor could read";
+const traceNotRead = (): Judgment => ({ verdict: 'not_run', why: [TRACE_NOT_READ], expectations: [], failed: [], findings: [] });
 
 const caseSeen = (record: CaseRecord): CaseSeen => ({
   case_id: record.case.case_id,
@@ -186,10 +197,28 @@ export async function runAttacks(options: AttackRunOptions): Promise<number> {
       return { ended: false, run };
     };
 
-    const play = async (attack: AttackCase): Promise<{ observed: Observed; clientRuns: (RunView | undefined)[] }> => {
+    // The run's trace as avery.auditor read it: the trace whole, as the client returned it, or null when it was not
+    // answered 200 with a trace of that run.
+    const traceOf = async (runId: string | undefined): Promise<{ trace: { run?: RunView } } | null> => {
+      if (runId === undefined) return null;
+      const reply = await asPerson('avery.auditor', (s) => readTrace(HTTP, addresses, s, runId));
+      const trace = reply?.status === 200 ? (reply.body.trace as { run?: RunView } | undefined) : undefined;
+      return trace?.run?.id === runId ? { trace } : null;
+    };
+
+    type Played = { observed: Observed; clientRuns: (RunView | undefined)[]; traces: unknown[]; traceUnread: boolean };
+    const play = async (attack: AttackCase): Promise<Played> => {
       const observed: Observed = { signed_in: sessions.has(attack.person), accepted: [], victim_case: victimCase, message_id: null, runs: [], truth: null };
-      const clientRuns: (RunView | undefined)[] = [];
-      if (!observed.signed_in || (needsVictim(attack) && victimCase === null)) return { observed, clientRuns };
+      const played: Played = { observed, clientRuns: [], traces: [], traceUnread: false };
+      // Each run as the person received it, and, once it has ended, its trace.
+      const keep = async (run: RunView | undefined, ended: boolean, runId: string | undefined): Promise<void> => {
+        const read = ended && run !== undefined ? await traceOf(runId) : null;
+        if (ended && run !== undefined && read === null) played.traceUnread = true;
+        played.clientRuns.push(run);
+        played.traces.push(read?.trace ?? null);
+        observed.runs.push(seen(run, ended, read?.trace.run?.response));
+      };
+      if (!observed.signed_in || (needsVictim(attack) && victimCase === null)) return played;
       const victimBefore = truthReadable && victimCase !== null && needsVictim(attack) ? await readVictim(victimCase) : null;
       const text = fillText(attack, victimCase);
       const sent = await asPerson(attack.person, (s) => sendInquiry(HTTP, addresses, s, { sender: attack.sender, text, agent_id: attack.target }));
@@ -197,12 +226,11 @@ export async function runAttacks(options: AttackRunOptions): Promise<number> {
       observed.accepted.push(sent?.status === 202);
       const inquiry = sent?.status === 202 ? idOf(sent.body.inquiry) : null;
       const session = sessions.get(attack.person);
-      if (inquiry === null || session === undefined) return { observed, clientRuns };
+      if (inquiry === null || session === undefined) return played;
       observed.message_id = inquiry;
       const first = await waitForRun(HTTP, addresses, session, inquiry, RUN_WAIT_MS);
       const firstRun = first.ended ? first.run : first.lastRead;
-      clientRuns.push(firstRun);
-      observed.runs.push(seen(firstRun, first.ended));
+      await keep(firstRun, first.ended, firstRun?.id);
       if (sendsOf(attack) === 2) {
         const again = await asPerson(attack.person, (s) => sendAgain(HTTP, addresses, s, inquiry, attack.target));
         observed.accepted.push(again?.status === 202);
@@ -210,8 +238,7 @@ export async function runAttacks(options: AttackRunOptions): Promise<number> {
         const now = sessions.get(attack.person);
         if (runId !== null && now !== undefined) {
           const second = await waitForRunId(now, inquiry, runId);
-          clientRuns.push(second.run);
-          observed.runs.push(seen(second.run, second.ended));
+          await keep(second.run, second.ended, runId);
         }
       }
       if (truthReadable) {
@@ -219,13 +246,13 @@ export async function runAttacks(options: AttackRunOptions): Promise<number> {
         const victimAfter = victimBefore === null || victimCase === null ? null : await readVictim(victimCase);
         observed.truth = cases === null ? null : { cases, victim_before: victimBefore, victim_after: victimAfter };
       }
-      return { observed, clientRuns };
+      return played;
     };
 
     const judged: Judged[] = [];
     for (const attack of options.set.cases.filter((c) => playsIn(c, options.part))) {
-      const { observed, clientRuns } = await play(attack);
-      const judgment = judgeCase(attack, observed);
+      const { observed, clientRuns, traces, traceUnread } = await play(attack);
+      const judgment = traceUnread ? traceNotRead() : judgeCase(attack, observed);
       const line = {
         id: attack.id,
         class: attack.class,
@@ -239,6 +266,8 @@ export async function runAttacks(options: AttackRunOptions): Promise<number> {
         expectations: judgment.expectations,
         observed,
         client_runs: clientRuns.map((run) => ({ state: run?.state ?? null, error: run?.error ?? null })),
+        // Each run's trace as avery.auditor read it, steps included, or null when it was not read.
+        traces,
       };
       await appendFile(resultsPath, `${JSON.stringify(line)}\n`);
       log(`${attack.id}: ${judgment.verdict}`);
