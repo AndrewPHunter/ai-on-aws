@@ -7,8 +7,9 @@ Amazon Bedrock AgentCore Runtime asks one thing of a container: `POST /invocatio
 | Intake, hand-written loop | The hand-written contract server, `agents/src/contract/server.ts`, with nothing from an SDK | Every layer written out and visible |
 | Intake, on Strands | AWS's SDK server: `BedrockAgentCoreApp` from the npm package `bedrock-agentcore` 0.4.6, behind a local edge | AWS's stack as it comes: Strands for the loop, the AgentCore SDK for the contract |
 | Label expert, on Strands | The same as the intake agent on Strands | The same |
+| Orchestrator, on Strands | The same as the intake agent on Strands | The same |
 
-The request and the answer are the same for all three: `shared/agent-contract.ts`. Each agent names its server in the definition it gives the shared start-up, `serveAgent` in `agents/src/run/serve.ts`: the intake agents through `intake/serve.ts`, the label expert in `expert/main.ts`. An agent on the SDK server logs at start that it is on the AgentCore SDK server, where it listens and the value of `LOCAL_RUNTIME_EDGE`; the hand-written agent logs its name and address.
+The request and the answer are the same for all four: `shared/agent-contract.ts`. Each agent names its server in the definition it gives the shared start-up, `serveAgent` in `agents/src/run/serve.ts`: the intake agents through `intake/serve.ts`, the label expert in `expert/main.ts`, the orchestrator in `orchestrator/main.ts`. An agent on the SDK server logs at start that it is on the AgentCore SDK server, where it listens and the value of `LOCAL_RUNTIME_EDGE`; the hand-written agent logs its name and address.
 
 ## Why the SDK server has an edge in front of it
 
@@ -102,7 +103,7 @@ The token is checked a second time in `process`, as the hand-written server does
 
 ## Where the two servers differ
 
-For the intake agent on Strands and the label expert, compared with the hand-written contract server:
+For the intake agent on Strands, the label expert and the orchestrator, compared with the hand-written contract server:
 
 | Situation | Hand-written contract server | SDK server, edge on | SDK server, edge off |
 |---|---|---|---|

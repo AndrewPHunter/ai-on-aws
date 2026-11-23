@@ -74,11 +74,28 @@ sequenceDiagram
 | Whether the message is screened | Code | Always, at the start of the run |
 | Whether the message reports an adverse event | The intake agent's own model and rules | Unchanged |
 | Which label questions to ask, and whether to ask again | The orchestrator's model | One tool, `ask_label_expert({ drug, question, replaces })`, in Strands' default loop. Tool calls of one turn run together, which is Strands' default |
-| Whether a question is put | Code | Every number in the question must be in the message (the expert's number rule); at most two questions a round and two rounds; the run must have a sub-agent call's time left |
+| Whether a question is put | Code | Its arguments must be a medicine and a question in words, and any question it names as replaced must have been put; every number in the question must be in the message (the expert's number rule); at most two questions a round and two rounds; the run must have a sub-agent call's time left |
 | What the model reads back | Code | For each question: the expert's label answer, or that it did not complete, its stop reason and its reply |
 | The answer to a label question | The label expert | Unchanged |
 | The reply | Code | A sentence for each case action, each question as it was put with the expert's reply word for word, and a plain sentence for anything unfinished. What the model wrote is in the run's steps |
 | How the run ends | Code | The table under "How it ends" |
+
+## Modules and what each owns
+
+| Module | Owns | Knows nothing about |
+|---|---|---|
+| `orchestrator/main.ts` | Starting the agent through `run/serve.ts` on the AgentCore SDK server, with the implementation `Strands`; the handler used while the model's name cannot be learnt, so that screening still runs | The rules of a run |
+| `orchestrator/serve.ts` | Reading `INTAKE_AGENT_URL` and `EXPERT_AGENT_URL`, beside what `run/serve.ts` reads | Everything else |
+| `orchestrator/settings.ts` | Every number of this agent: its limits, questions in a round, rounds | Where they are used |
+| `orchestrator/prompt.ts` | What the model is told, and the message laid out for it (its text only, inside `<message>`) | Everything else |
+| `orchestrator/strands.ts` | The run: screening, the tool, the hooks, the ids and when each question is decided, the steps, the response | HTTP, the token check |
+| `orchestrator/decisions.ts` | Whether a question is put, what the model is told about it, which questions the reply shows, how the run ends, the reply and its citations. Pure functions | Strands, the sub-agents, the clock |
+| `orchestrator/sub-agents.ts` | The two sub-agents, one call to either with the token for it and its time limit, the HTTP call, and the sentence for each way a call fails | The model, the loop |
+| `expert/checks.ts` (the label expert's) | The number rule, and moving the citation numbers of a reply as `replyFor` writes it | The orchestrator |
+| `tools/tool-token.ts` (shared) | Exchanging the caller's token for one meant for a tool server or an agent, each target's audience and scopes, and the sentence a failed exchange gives | The model, the loop |
+| `run/*`, `contract/*`, `model/served.ts` (shared) | The state every run keeps, the record, startup, the HTTP contract on the SDK server, the wording of a model failure | This agent |
+
+A question's id is given, and the question decided, when the model's turn ends (the `AfterModelCall` hook), in the order of the turn's calls, before Strands runs any of them. A round is a turn with at least one call to `ask_label_expert`, and a call counts towards its round's two whether or not it is put. The shared endings in `run/endings.ts` are not used: this agent's reply and reason come from `decisions.ts`.
 
 ## Who the orchestrator is to the sub-agents
 
@@ -126,18 +143,24 @@ Screening completed means the intake agent's response has outcome `completed`. A
 | The message contains instructions | They can change which questions are put. They cannot stop screening, change the message the intake agent receives, or add text to the reply |
 | An expert's reply contains instructions | The model reads it, so it can change later questions, inside the same limits and the same question check |
 
-## The numbers
+## The numbers, and where each is set
 
-| Number | Value |
-|---|---|
-| Model turns in a run | 3 |
-| Questions in a round | 2 |
-| Each model turn | 30 s |
-| Each call to a sub-agent | 155 s: the sub-agent's own 150 s, and the round trip |
-| The whole run | 280 s |
-| A round starts no later than | 125 s into the run, so its calls end inside the run |
-| Token life the orchestrator requires | 280 s, the whole run. A sub-agent requires 150 s, and a call starts with at least 155 s left |
-| What the client waits for the orchestrator, and the token life it requires first | 295 s for both. The other agents keep 180 s |
+| Number | Value | Set in |
+|---|---|---|
+| Model turns in a run | 3 | `ORCHESTRATOR_LIMITS`, `orchestrator/settings.ts` |
+| Questions in a round | 2 | `ORCHESTRATOR_SETTINGS`, `orchestrator/settings.ts` |
+| Rounds | 2 | `ORCHESTRATOR_SETTINGS` |
+| Each model turn | 30 s, for each request Strands' OpenAI client makes | `ORCHESTRATOR_LIMITS` |
+| Each call to a sub-agent | 155 s, its token exchange included: the sub-agent's own 150 s, and the round trip | `ORCHESTRATOR_LIMITS` |
+| The whole run | 280 s | `ORCHESTRATOR_LIMITS` |
+| A round starts no later than | 125 s into the run, so its calls end inside the run. Derived: a question is put only while the run has a call's 155 s left | The check in `orchestrator/decisions.ts` |
+| Token life the orchestrator requires | 280 s, the whole run. A sub-agent requires 150 s, and a call starts with at least 155 s left | `run/serve.ts`, from `ORCHESTRATOR_LIMITS` |
+| What the client waits for the orchestrator, and the token life it requires first | 295 s for both. The other agents keep 180 s | The client |
+| Temperature, seed and output allowance | shared | `run/sampling.ts` |
+
+## How it is tested
+
+`agents/test/orchestrator.test.ts`: one test for each line of "Always true" (orchestrator 1 to 10). Whether a question is put (2), how the run ends (6) and the reply with its citations (4, 5) are called as pure functions with plain values. The rest call the handler with the caller, a scripted token exchange and a scripted call to a sub-agent passed in, through the real Strands loop, against one scripted model server on loopback shared by the file; every response is checked against the contract schema. A time limit is shown with small limits passed in, or with the clock passed in and moved on by the scripted call. No token is signed, and no sub-agent runs. Whether the orchestrator and the real sub-agents agree, with a real model and real exchanges, is shown by the stack gate.
 
 ## Not present
 
@@ -147,3 +170,6 @@ Screening completed means the intake agent's response has outcome `completed`. A
 | Asking the sender a question and waiting for the answer | The agent contract is one message in and one response out |
 | A third round | A question the first two rounds leave unanswered is named in the reply |
 | A measure of how well it splits and asks again | Not measured yet |
+| Asking a turn cut off at the output allowance again with thinking off, as the other agents on Strands do | Strands does not count that request as a turn, so the run could pass three. A cut-off turn ends the model's loop |
+| A limit on a whole model turn | The 30 s is each request's. Strands' OpenAI client sends a request that timed out or failed with 408, 409, 429 or 5xx again, up to three in all, and Strands asks again after 429; the run's 280 s stops either |
+| A test of the run when the model's name cannot be learnt | Screening still runs and the model's loop counts as failed (`orchestrator/main.ts`, `run/serve.ts`); no test calls that path |

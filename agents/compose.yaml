@@ -1,8 +1,8 @@
 name: ai-on-aws-agents
 
-# What the three agents run with: the two implementations of the intake agent and the label expert. They
-# differ only in the file that starts them, the name they record under, the service they call, the server
-# that serves their contract, and the port published on this machine.
+# What the four agents run with: the two implementations of the intake agent, the label expert and the
+# orchestrator. They differ only in the file that starts them, the name they record under, the services they
+# call, the server that serves their contract, and the port published on this machine.
 x-agent: &agent
   build:
     context: ..
@@ -37,7 +37,8 @@ x-agent: &agent
 # and scope below.
 #
 # Before it connects to its tool server, each agent exchanges the token it was called with, as itself
-# (client id AGENT_ID, with its own secret), for one meant for that server, at the token endpoint here.
+# (client id AGENT_ID, with its own secret), for one meant for that server, at the token endpoint here. The
+# orchestrator does the same for each call to another agent.
 # The secrets come from platform/identity/.env, which the root compose.yaml reads for this file.
 x-auth: &auth
   AUTH_DISCOVERY_URL: http://identity:8080/realms/lab/.well-known/openid-configuration
@@ -72,7 +73,8 @@ services:
       <<: *auth
       AGENT_ID: intake-strands
       AUTH_ALLOWED_AUDIENCE: intake-strands
-      AUTH_ALLOWED_CLIENTS: desk
+      # The orchestrator calls it as its own client, to screen every message it receives.
+      AUTH_ALLOWED_CLIENTS: desk,orchestrator
       AUTH_REQUIRED_SCOPES: agents:intake
       EXCHANGE_CLIENT_SECRET: ${IDENTITY_INTAKE_STRANDS_CLIENT_SECRET:?run platform/identity/setup.sh}
       CASE_MCP_URL: http://case-system:8000/mcp
@@ -92,9 +94,10 @@ services:
       <<: *auth
       AGENT_ID: expert
       AUTH_ALLOWED_AUDIENCE: expert
-      # The evaluation harness calls the label expert as its own client.
-      AUTH_ALLOWED_CLIENTS: desk,evaluation
-      AUTH_REQUIRED_SCOPES: agents:expert
+      # The evaluation harness and the orchestrator call the label expert as their own clients. The orchestrator
+      # asks for agents:expert:delegated, which only its client may ask for.
+      AUTH_ALLOWED_CLIENTS: desk,evaluation,orchestrator
+      AUTH_REQUIRED_SCOPES: agents:expert,agents:expert:delegated
       EXCHANGE_CLIENT_SECRET: ${IDENTITY_EXPERT_CLIENT_SECRET:?run platform/identity/setup.sh}
       # The retrieval service's MCP endpoint, by its service name on the shared network.
       KNOWLEDGE_MCP_URL: http://knowledge:8000/mcp
@@ -102,3 +105,24 @@ services:
       LOCAL_RUNTIME_EDGE: "on"
     ports:
       - "127.0.0.1:8082:8080"
+
+  # The orchestrator, on Strands: has every message screened by the intake agent on Strands, and the label
+  # questions in it answered by the label expert, each called over the agent contract with a token exchanged
+  # for that agent. It writes its reply in code.
+  orchestrator:
+    <<: *agent
+    command: ["node", "agents/src/orchestrator/main.ts"]
+    environment:
+      <<: *auth
+      AGENT_ID: orchestrator
+      AUTH_ALLOWED_AUDIENCE: orchestrator
+      AUTH_ALLOWED_CLIENTS: desk
+      AUTH_REQUIRED_SCOPES: agents:orchestrator
+      EXCHANGE_CLIENT_SECRET: ${IDENTITY_ORCHESTRATOR_CLIENT_SECRET:?run platform/identity/setup.sh}
+      # The two agents it calls, by their service names on the shared network.
+      INTAKE_AGENT_URL: http://intake-strands:8080
+      EXPERT_AGENT_URL: http://expert:8080
+      # Served by AWS's SDK server, behind the local stand-in for AgentCore Runtime's front door, as above.
+      LOCAL_RUNTIME_EDGE: "on"
+    ports:
+      - "127.0.0.1:8083:8080"
