@@ -54,7 +54,7 @@ A run's steps are given only on the trace routes. Every other route gives a run 
 | `GET /api/inquiries`, `POST /api/inquiries` | The reader's own inquiries, newest first, at most 100, with `truncated`; a new inquiry, 202. Runs without steps |
 | `GET /api/inquiries/<id>`, `POST /api/inquiries/<id>/runs` | 200 with the inquiry, 202 with the new run, both without steps; 404 `inquiry_not_found` to anyone but the person who entered it |
 | `GET /api/traces` | 200 `{ traces, truncated }`: every person's runs, newest first, at most 100, each with when it started, who started it, the agent, its state, its outcome and the time it took. 403 `not_allowed` without `traces:read` |
-| `GET /api/traces/<run_id>` | 200 `{ trace: { inquiry, run } }`: the message as it was received, and the run with the agent's whole response, steps included. 403 `not_allowed` without `traces:read`, decided before the store is read; 404 `unknown_run` for a run that does not exist |
+| `GET /api/traces/<run_id>` | 200 `{ trace: { inquiry, run } }`: the message as it was received, and the run with the agent's whole response, steps included. A run still running is 200 with `state` `running` and no response yet. A stored response that no longer matches the agent contract is 200 with the run shown as `failed`, the store's reason as its `error`, and no response. 403 `not_allowed` without `traces:read`, decided before the store is read; 404 `unknown_run` for a run that does not exist |
 
 In this phase the steps still arrive in the agent's response and are stored by the client with the rest of it, so `traces:read` is a permission on reading them, not yet a store of traces of their own.
 
@@ -62,7 +62,7 @@ In this phase the steps still arrive in the agent's response and are stored by t
 
 - **Inquiries, Cases and System work,** with each of the four [agents](../agents/README.md). An inquiry can be sent to any agent the signed-in person may run, and again to another.
 - **The read-outs for citations, whether the label answered, label searches and calls to another agent have not been looked at in a browser with real output.** Replies and case actions have; so have the model and tool step read-outs, which the Traces screen uses unchanged.
-- **The Traces screen, and the Inquiries screen as it is now laid out without a run's steps, have not been looked at in a browser.** Both are typechecked, linted and built.
+- **The Traces screen, and the Inquiries screen as it is now laid out without a run's steps, have not been looked at in a browser.** `toolchain/check.sh` shows that both typecheck, lint and build.
 - **Label search and evaluation have no screen.**
 
 ## Always true
