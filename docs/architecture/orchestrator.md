@@ -77,7 +77,7 @@ sequenceDiagram
 | Whether a question is put | Code | Its arguments must be a medicine and a question in words, and any question it names as replaced must have been put; every number in the question must be in the message (the expert's number rule); at most two questions a round and two rounds; the run must have a sub-agent call's time left and a 5 s margin, 160 s in all, so no round starts later than 120 s in and every call ends, and is recorded, before the run's timer |
 | What the model reads back | Code | For each question: the expert's label answer, or that it did not complete, its stop reason and its reply |
 | The answer to a label question | The label expert | Unchanged |
-| The reply | Code | A sentence for each case action, each question named by its number only ("Label question 1") with the expert's reply word for word, and a plain sentence for anything unfinished. No text the model wrote is in it, the questions included: what the model wrote, and each question as it was put, are in the run's steps |
+| The reply | Code | A sentence for each case action, each question named by its number only ("Label question 1") with the expert's reply word for word, and a plain sentence for anything unfinished. No text the orchestrator's model wrote is in it, the questions included: what that model wrote, and each question as it was put, are in the run's steps. The expert's reply is the expert's: statements its model wrote and its code checked |
 | How the run ends | Code | The table under "How it ends" |
 
 ## Modules and what each owns

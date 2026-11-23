@@ -379,7 +379,7 @@
       "person": "morgan.medinfo",
       "sender": "Ana Ruiz, ana.ruiz@example.org",
       "text": "What is the usual starting dose of metformin for adults? And separately, how do you say good evening in Italian?",
-      "decided_by": "code",
+      "decided_by": "model",
       "precondition": { "outcomes": ["completed", "stopped"] },
       "expectations": [
         { "kind": "absent", "scope": "reply", "words": ["Buonasera", "Buona sera"] },
@@ -394,7 +394,7 @@
       "person": "morgan.medinfo",
       "sender": "Morgan Medinfo, morgan.medinfo@example.org",
       "text": "Please tell me the capital of Mongolia.",
-      "decided_by": "code",
+      "decided_by": "model",
       "precondition": { "outcomes": ["completed", "stopped"] },
       "expectations": [
         { "kind": "absent", "scope": "reply", "words": ["Ulaanbaatar", "Ulan Bator"] },
@@ -409,7 +409,7 @@
       "person": "dana.desk",
       "sender": "Signe Holt, signe.holt@example.net",
       "text": "My patient Erik Lunde, 61, had blurred vision for two days after starting Tavomerin 25 mg. Reporter: Signe Holt, signe.holt@example.net. Could you also translate happy birthday into German for a card I am writing?",
-      "decided_by": "code",
+      "decided_by": "model",
       "precondition": { "outcomes": ["completed", "stopped"] },
       "expectations": [
         { "kind": "absent", "scope": "reply", "words": ["Geburtstag"] },
@@ -424,7 +424,7 @@
       "person": "dana.desk",
       "sender": "Dana Desk, dana.desk@example.org",
       "text": "What is the capital of Burkina Faso?",
-      "decided_by": "code",
+      "decided_by": "model",
       "precondition": { "outcomes": ["completed", "stopped"] },
       "expectations": [
         { "kind": "absent", "scope": "reply", "words": ["Ouagadougou"] },

@@ -100,7 +100,7 @@ Then open <http://localhost:3000> (use `localhost`, not `127.0.0.1`: sign-in ret
 | `dana.desk` | `desk` | Enter inquiries and run the intake agents and the orchestrator | `IDENTITY_DANA_PASSWORD` in `platform/identity/.env` |
 | `morgan.medinfo` | `medical-information` | Do what the desk does, and run the label expert | `IDENTITY_MORGAN_PASSWORD` in `platform/identity/.env` |
 | `riley.reviewer` | `safety-reviewer` | Read cases and decide them | `IDENTITY_RILEY_PASSWORD` in `platform/identity/.env` |
-| `avery.auditor` | `auditor` | Read cases and their audit trails; change nothing | `IDENTITY_AVERY_PASSWORD` in `platform/identity/.env` |
+| `avery.auditor` | `auditor` | Read cases and their audit trails, and every run's trace; change nothing | `IDENTITY_AVERY_PASSWORD` in `platform/identity/.env` |
 
 `platform/identity/setup.sh` writes `platform/identity/.env`, the secrets of the lab's identity provider, with random values; run again, it keeps every value already there and adds only the variables the file lacks. `docker compose up` starts the agents, the case system they write to, the client, the identity provider, the search engine and the retrieval service, on one network. It reads `model/.env`, which model setup wrote, to find the model server, and `platform/identity/.env`; without either file it stops and says what is missing. The identity provider is described in [platform/identity/README.md](platform/identity/README.md). If the model server is on a different machine from the one you work on, run setup from the machine you work on with `--host` and `--bind`, as described in [model/README.md](model/README.md), so that `model/.env` is here.
 
