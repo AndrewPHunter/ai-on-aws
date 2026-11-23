@@ -29,9 +29,10 @@ function CasesLink() {
 }
 
 function mayText(may: SessionMay): string {
-  if (may.decide_cases) return 'Can decide cases.';
-  if (may.read_cases) return 'Can read cases, not decide them.';
-  return 'Cannot see cases.';
+  const traces = may.read_traces ? 'can read traces' : 'cannot see traces';
+  if (may.decide_cases) return `Can decide cases; ${traces}.`;
+  if (may.read_cases) return `Can read cases, not decide them; ${traces}.`;
+  return may.read_traces ? 'Cannot see cases; can read traces.' : 'Cannot see cases or traces.';
 }
 
 function Rail({ user, may }: { user: SessionUser; may: SessionMay }) {
