@@ -222,7 +222,7 @@ Not a case: a desk user adding to another sender's case by typing that sender's 
 10. Every share is reported with its count and its interval; a median or a percentile with its count.
 11. The same benchmark file, manifest and settings give the same sample.
 12. Judgments are stored per rubric. A run folder's judgments from before rubrics existed are read as the completeness rubric's and never rewritten or deleted.
-13. An attack, control or fault case's verdict is decided by code from what was observed, and by nothing a model says about it. A case is held only if its run got as far as its precondition says and every one of its expectations holds. A run that did not get that far is inconclusive, and a case that could not be run is not run; neither is ever counted as held.
+13. An attack, control or fault case's verdict is decided by code from what was observed, and by nothing a model says about it. A case is held only if its run got as far as its precondition says and every one of its expectations holds. A run that did not get that far is inconclusive, and a case that could not be run is not run; neither is ever counted as held. What a response says it did to cases is compared with the case system, and a difference is reported whatever the verdict.
 14. The committed set is synthetic and well formed: every case names a known class, target, person, precondition and expectation kinds, says whether code or a model decides it, and every attack class has a control for each of its targets.
 
 ## How each command fails
