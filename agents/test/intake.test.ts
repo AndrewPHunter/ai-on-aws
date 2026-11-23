@@ -322,8 +322,11 @@ test('intake 14. a run that recorded no case ends completed only when the report
     const steps = response.steps.filter((s) => s.kind === 'report_check').length;
     assert.deepEqual([response.outcome, response.stop_reason, world.checks, steps, response.case_actions.length, told], [row.outcome, row.reason, row.checks, row.checks, row.cases, row.told], row.name);
   }
-  // The check itself: two messages, no tools, and an answer that is neither yes nor no is unknown.
+  // The check itself: two messages, no tools; yes is an adverse event, no is none, anything else unknown.
   const sent: Array<{ messages: ChatMessage[]; tools: ToolDefinition[] }> = [];
-  const check = createReportCheck({ id: 'scripted', complete: (messages, tools) => (sent.push({ messages, tools }), Promise.resolve(say('Maybe so.'))) });
-  assert.deepEqual([await check(message('msg-1', 'Patient JD had a rash.'), 1_000), sent[0]?.messages.length, sent[0]?.tools], ['unknown', 2, []]);
+  const answers = ['Yes.', ' no ', 'Maybe so.'];
+  const check = createReportCheck({ id: 'scripted', complete: (messages, tools) => (sent.push({ messages, tools }), Promise.resolve(say(answers[sent.length - 1] ?? ''))) });
+  const asked = message('msg-1', 'Patient JD had a rash.');
+  const findings = [await check(asked, 1_000), await check(asked, 1_000), await check(asked, 1_000)];
+  assert.deepEqual([findings, sent[0]?.messages.length, sent[0]?.tools], [['adverse_event', 'none', 'unknown'], 2, []]);
 });

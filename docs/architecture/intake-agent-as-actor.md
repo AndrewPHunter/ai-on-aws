@@ -12,7 +12,7 @@ An agent is an actor in which one step of the behaviour is decided by inference.
 | Messages it sends to other actors | Requests to the model server and to the case system, requests for the identity provider's discovery document and keys, and one answer to the caller | `model/chat.ts` or Strands' `OpenAIModel`; `tools/case-system.ts` or Strands' `McpClient`; `shared/access-token.ts` |
 | A lifetime | One message. Each message gets a new run with new state, and nothing is kept once it is answered | `startRun` in `intake/run.ts` |
 
-One step of the behaviour is not written in code: what to do next, given the conversation so far. That step is asked of a model. Every other step is ordinary code.
+Two steps of the behaviour are not written in code. What to do next, given the conversation so far, is asked of the agent's model; that is where it decides whether the message is a report. When the model replies and the run has recorded no case, the report check asks the same question again: a second inference, made by code in a separate request that is shown the message alone, whose yes or no code then acts on. Every other step is ordinary code.
 
 ## The actors and their messages
 
@@ -49,7 +49,7 @@ Every message is a request that waits for its answer, with a time limit. None is
 
 ## The behaviour for one message
 
-A six-sided box is decided by inference. A diamond is decided by code. A slanted box is a message sent to another actor. A rounded box is an ending.
+A six-sided box is decided by the agent's model. The report check is a slanted box, a message to the model server, whose answer is a second inference made by code; the diamond after it reads that answer as yes, no or neither. Every other diamond is decided by code. A slanted box is a message sent to another actor. A rounded box is an ending.
 
 ```mermaid
 flowchart TD
