@@ -98,7 +98,7 @@ Scopes. A role grants a scope through the realm's scope mappings; the scope's au
 | `agents:expert:delegated` | `desk`, `medical-information` | `expert` | `POST /invocations` on the label expert, with a token the orchestrator got by exchange. Only the `orchestrator` client may ask for it |
 | `agents:orchestrator` | `desk`, `medical-information` | `orchestrator` | `POST /invocations` on the orchestrator |
 | `cases:write` | `desk`, `medical-information` | `case-system` | `create_case`, `add_follow_up` |
-| `cases:lookup` | No role | `case-system` | `find_case`. No client may ask for it, so no token carries it and an intake agent is offered no lookup |
+| `cases:lookup` | No role is mapped to it | `case-system` | `find_case`. No client may ask for it, so no token carries it and an intake agent is offered no lookup |
 | `cases:read` | `safety-reviewer`, `auditor` | `case-system` | `GET /cases`, `GET /cases/<id>` |
 | `cases:review` | `safety-reviewer` | `case-system` | `POST /cases/<id>/review` |
 | `labels:search` | `desk`, `medical-information`, `evaluation`, `knowledge-gate` | `knowledge` | `find_labels`, `search_label` |

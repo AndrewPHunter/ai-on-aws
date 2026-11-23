@@ -48,7 +48,7 @@ Three tools, and no others. The MCP server offers each only to a token holding i
 
 A receipt is `{ case_id, status, version, missing }`: which case, where it stands, and the elements it still lacks. A tool that changes a case never answers with what the case holds. A refused conflict (`case_already_opened_for_this_message`, `follow_up_already_recorded_for_this_message`) names the case as it stands by the same receipt.
 
-`find_case` is offered only to a token holding `cases:lookup`, and the lab's realm grants that scope to nobody, so no agent has a lookup. Whole cases are read by people, on the review server.
+`find_case` is offered only to a token holding `cases:lookup`, and in the lab's realm no client may ask for that scope, so no agent has a lookup. Whole cases are read by people, on the review server.
 
 The four elements are an identifiable patient, an identifiable reporter, a suspect drug and an adverse event.
 

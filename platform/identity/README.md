@@ -70,7 +70,7 @@ Four synthetic people, each with one lab role and a permanent password, and two 
 
 `cases:write` and `labels:search` go with the roles that run an agent (invariant 2), because the agent asks for them when it exchanges that person's token, and an exchange that leaves out a scope asked for ends the run. `agents:intake` and `agents:expert:delegated` go with the roles that run the orchestrator for the same reason: it asks for them when it exchanges the person's token for each sub-agent. `desk` grants `labels:search` because the label expert exchanges a desk user's token, sent to it by the orchestrator, for the retrieval service. `agents:expert:delegated` is no use to the `desk` client, which may not ask for it.
 
-`cases:lookup` is in the realm, names the audience `case-system`, and guards the case system's `find_case`. No role grants it and no client may ask for it, so no token carries it and an intake agent is offered no lookup.
+`cases:lookup` is in the realm, names the audience `case-system`, and guards the case system's `find_case`. No client may ask for it, so no token carries it and an intake agent is offered no lookup (gate statement G9 shows an intake agent's client refused it). No role is mapped to it either; that alone is not the control.
 
 The administrator for the admin console at <http://localhost:8090/admin/> is `IDENTITY_ADMIN_USERNAME` with `IDENTITY_ADMIN_PASSWORD`, in the same file. Changes made in the console are lost at the next start.
 
