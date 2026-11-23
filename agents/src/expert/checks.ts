@@ -297,3 +297,12 @@ export function checkCannotAnswer(input: unknown, history: RetrievalHistory): Ca
 export function replyFor(statements: readonly CheckedStatement[]): string {
   return statements.map((statement, index) => `${statement.text} [${index + 1}]`).join('\n\n');
 }
+
+// A reply as replyFor writes it, with the citation number at the end of each paragraph moved on by `by`, for a
+// reply placed after others whose citations come first in one list. Nothing else in the reply changes.
+export function withCitationsMovedBy(reply: string, by: number): string {
+  return reply
+    .split('\n\n')
+    .map((paragraph) => paragraph.replace(/ \[(\d+)\]$/, (_whole, number: string) => ` [${Number(number) + by}]`))
+    .join('\n\n');
+}
