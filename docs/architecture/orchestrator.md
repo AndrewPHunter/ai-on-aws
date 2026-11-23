@@ -77,7 +77,7 @@ sequenceDiagram
 | Whether a question is put | Code | Its arguments must be a medicine and a question in words, and any question it names as replaced must have been put; every number in the question must be in the message (the expert's number rule); at most two questions a round and two rounds; the run must have a sub-agent call's time left |
 | What the model reads back | Code | For each question: the expert's label answer, or that it did not complete, its stop reason and its reply |
 | The answer to a label question | The label expert | Unchanged |
-| The reply | Code | A sentence for each case action, each question as it was put with the expert's reply word for word, and a plain sentence for anything unfinished. What the model wrote is in the run's steps |
+| The reply | Code | A sentence for each case action, each question named by its number only ("Label question 1") with the expert's reply word for word, and a plain sentence for anything unfinished. No text the model wrote is in it, the questions included: what the model wrote, and each question as it was put, are in the run's steps |
 | How the run ends | Code | The table under "How it ends" |
 
 ## Modules and what each owns
@@ -140,7 +140,7 @@ Screening completed means the intake agent's response has outcome `completed`. A
 | An exchange is refused, or the identity provider does not answer | The same |
 | The model's loop fails, or ends with a question unanswered | Screening still runs. `stopped`, `label_question_unanswered` |
 | The model asks a question holding a number the message does not | The question is not put; the model is told; the reply says so |
-| The message contains instructions | They can change which questions are put. They cannot stop screening, change the message the intake agent receives, or add text to the reply |
+| The message contains instructions | They can change which questions are put. They cannot stop screening, change the message the intake agent receives, or add text to the reply, because no text the model wrote is placed in it: a question is named there by its number only |
 | An expert's reply contains instructions | The model reads it, so it can change later questions, inside the same limits and the same question check |
 
 ## The numbers, and where each is set

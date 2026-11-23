@@ -140,9 +140,10 @@ function caseActionSentences(run: RunResult): string[] {
 }
 
 // The reply, written by code, and its citations. It begins as the ending's row says; then a sentence for each case
-// action; then each question shown, as it was put, followed by the expert's reply word for word with its citation
-// numbers moved by the number of citations before it, or a plain sentence when it was not put or not answered.
-// Nothing the orchestrator's model wrote is in it except the questions as they were put.
+// action; then each question shown, named by its number only ("Label question 1" for q1), followed by the expert's
+// reply word for word with its citation numbers moved by the number of citations before it, or a plain sentence
+// when it was not put or not answered. Nothing the orchestrator's model wrote is in it: a question as it was put is
+// in the run's steps only.
 export function replyWithCitations(run: RunResult): { reply: string; citations: Citation[] } {
   const ending = howItEnds(run);
   const parts: string[] = [];
@@ -158,18 +159,19 @@ export function replyWithCitations(run: RunResult): { reply: string; citations: 
 
   const citations: Citation[] = [];
   for (const question of shownQuestions(run.questions)) {
+    const heading = `Label question ${question.id.slice(1)}`;
     if (!question.put) {
-      parts.push(`Question ${question.id} was not put to the label expert. ${question.reason}`);
+      parts.push(`${heading} was not put to the label expert. ${question.reason}`);
       continue;
     }
     const response = question.call?.response;
     if (response !== undefined && response !== null && response.outcome === 'completed') {
-      parts.push(`${question.text}\n\n${withCitationsMovedBy(response.reply, citations.length)}`);
+      parts.push(`${heading}\n\n${withCitationsMovedBy(response.reply, citations.length)}`);
       citations.push(...response.citations);
       continue;
     }
     const why = toldToModel(question)['stop_reason'];
-    parts.push(`${question.text}\n\nThe label expert did not answer this question. ${typeof why === 'string' ? why : ''}`.trimEnd());
+    parts.push(`${heading}\n\nThe label expert did not answer this question. ${typeof why === 'string' ? why : ''}`.trimEnd());
   }
   return { reply: parts.join('\n\n'), citations };
 }

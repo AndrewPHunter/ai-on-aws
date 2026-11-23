@@ -111,7 +111,7 @@ const requestsFor = (model: ScriptedModel, text: string): ModelRequest[] => mode
 // Plain values for the pure functions.
 const CLEAN: CallResult = { failure: null, response: intakeSaid('m') };
 const put = (id: string, said: DelegatedResponse | null, replaces: string | null = null): Question => ({
-  id, put: true, asked: { drug: 'Examplamab', question: `Question ${id}?`, replaces }, text: `Examplamab: Question ${id}?`, call: { failure: said ? null : 'The label expert could not be reached.', response: said },
+  id, put: true, asked: { drug: 'Model-named-medicine', question: `Model-written question ${id}?`, replaces }, text: `Model-named-medicine: Model-written question ${id}?`, call: { failure: said ? null : 'The label expert could not be reached.', response: said },
 });
 const notPut = (id: string): Question => ({ id, put: false, reason: 'It holds a number that is not in the message.' });
 const result = (questions: Question[], screening: CallResult = CLEAN, finished = true): RunResult => ({ screening, questions, loop: finished ? { finished } : { finished, reason: 'The model answered with status 400.' } });
@@ -149,7 +149,7 @@ test('orchestrator', async (t) => {
     const { response } = await runOne(model, 'Is Examplamab safe in pregnancy?', { call: agents.call });
     assert.deepEqual(agents.calls.map((call) => call.to.id), ['intake-strands'], 'a refused question reached the label expert');
     assert.ok(requestsFor(model, 'Is Examplamab safe in pregnancy?')[1]?.outputs[0]?.output.includes('not_put'), 'the model was not told');
-    assert.ok(response.reply.includes('q1'), 'the reply does not name it');
+    assert.ok(response.reply.includes('Label question 1'), 'the reply does not name it');
     const askedTwice = shared.calls.filter((call) => call.to.id === 'expert').map((call) => call.request.message.id);
     assert.deepEqual(askedTwice, [...new Set(askedTwice)], 'a question was sent again');
   });
@@ -166,9 +166,10 @@ test('orchestrator', async (t) => {
   await t.test('orchestrator 4. the reply is code\'s: no model text, each expert reply word for word with its numbers moved, a replaced question not shown', () => {
     assert.equal(twoRounds.response.reply.includes('MODEL-WROTE-THIS'), false, 'the model\'s text is in the reply');
     const { reply } = replyWithCitations(result([put('q1', expertSaid('Alpha.', 'Beta.')), put('q2', expertSaid('Gamma.')), put('q3', expertSaid('Delta.')), put('q4', expertSaid('Epsilon.'), 'q3')]));
-    assert.ok(reply.includes('Examplamab: Question q2?\n\nGamma. [3]'), 'a reply after another is not word for word with its number moved');
-    assert.ok(reply.includes('Examplamab: Question q4?\n\nEpsilon. [4]'));
-    assert.equal(reply.includes('Question q3?') || reply.includes('Delta.'), false, 'a replaced question is shown');
+    assert.ok(reply.includes('Label question 2\n\nGamma. [3]'), 'a reply after another is not word for word with its number moved');
+    assert.ok(reply.includes('Label question 4\n\nEpsilon. [4]'));
+    assert.equal(reply.includes('Label question 3') || reply.includes('Delta.'), false, 'a replaced question is shown');
+    assert.deepEqual(['Model-named-medicine', 'Model-written question'].filter((text) => reply.includes(text)), [], 'text the model wrote for a question is in the reply');
   });
 
   await t.test('orchestrator 5. citations are the shown replies\', each number naming its own; case actions are the intake agent\'s; no label_answer', () => {
