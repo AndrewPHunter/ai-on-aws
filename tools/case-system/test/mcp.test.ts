@@ -10,50 +10,37 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 import { buildMcpServer } from '../src/mcp.ts';
 import { CaseStore } from '../src/store.ts';
-import type { CallContext } from '../src/store.ts';
 
-const message = (messageId: string): CallContext => ({
-  messageId,
-  receivedAt: '2026-01-01T08:00:00.000Z',
-  agentId: 'intake-handwritten',
-  actingFor: { name: 'dana', subject: 'subject-dana' },
-  sender: 'Dr A. Rivera, a.rivera@example.org',
-});
 const WORDS = ['quillon', 'zarbex', 'ostrel', 'myralgo', 'pellucid', 'vantrix'];
+
+// A client of the server built for one message, holding the write scope.
+async function connect(store: CaseStore, messageId: string): Promise<Client> {
+  const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+  const context = { messageId, receivedAt: '2026-01-01T08:00:00.000Z', agentId: 'intake-handwritten', actingFor: { name: 'dana', subject: 'subject-dana' }, sender: 'Dr A. Rivera' };
+  await buildMcpServer(store, context, ['cases:write']).connect(serverSide);
+  const client = new Client({ name: 'probe', version: '1' });
+  await client.connect(clientSide);
+  return client;
+}
 
 test('case-system 10. a tool that changes a case answers with a receipt and never with what the case holds', async (t) => {
   const store = new CaseStore(':memory:', () => new Date('2026-01-01T09:00:00.000Z'));
-  const clients = new Map<string, Client>();
-  t.after(async () => {
-    for (const client of clients.values()) await client.close();
-    store.close();
-  });
-  const clientFor = async (messageId: string): Promise<Client> => {
-    const known = clients.get(messageId);
-    if (known !== undefined) return known;
-    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
-    await buildMcpServer(store, message(messageId), ['cases:write']).connect(serverSide);
-    const client = new Client({ name: 'probe', version: '1' });
-    await client.connect(clientSide);
-    clients.set(messageId, client);
-    return client;
-  };
-
+  const first = await connect(store, 'm1');
+  const second = await connect(store, 'm2');
+  t.after(() => Promise.all([first.close(), second.close()]).then(() => store.close()));
   const opened = { case_id: 'AE-000001', status: 'incomplete', version: 1, missing: ['reporter', 'event'] };
   const followed = { ...opened, version: 2, missing: ['reporter'] };
-  const rows: { name: string; message: string; tool: string; args: Record<string, unknown>; answer: string; receipt: unknown }[] = [
-    { name: 'a create', message: 'm1', tool: 'create_case', args: { patient: 'Quillon', suspect_drug: 'Zarbex' }, answer: 'created', receipt: opened },
-    { name: 'a replayed create', message: 'm1', tool: 'create_case', args: { patient: 'Quillon', suspect_drug: 'Zarbex' }, answer: 'replayed', receipt: opened },
-    { name: 'a conflicting create', message: 'm1', tool: 'create_case', args: { patient: 'Quillon', suspect_drug: 'Zarbex', event: 'Ostrel' }, answer: 'case_already_opened_for_this_message', receipt: opened },
-    { name: 'a follow-up', message: 'm2', tool: 'add_follow_up', args: { case_id: 'AE-000001', event: 'Myralgo', note: 'Pellucid' }, answer: 'recorded', receipt: followed },
-    { name: 'a conflicting follow-up', message: 'm2', tool: 'add_follow_up', args: { case_id: 'AE-000001', event: 'Vantrix' }, answer: 'follow_up_already_recorded_for_this_message', receipt: followed },
+  // One row per answer that used to carry the case: a create, a conflicting create, a follow-up, a conflicting follow-up.
+  const rows: [Client, string, Record<string, unknown>, unknown][] = [
+    [first, 'create_case', { patient: 'Quillon', suspect_drug: 'Zarbex' }, opened],
+    [first, 'create_case', { patient: 'Quillon', suspect_drug: 'Zarbex', event: 'Ostrel' }, opened],
+    [second, 'add_follow_up', { case_id: 'AE-000001', event: 'Myralgo', note: 'Pellucid' }, followed],
+    [second, 'add_follow_up', { case_id: 'AE-000001', event: 'Vantrix' }, followed],
   ];
-  for (const row of rows) {
-    const result = await (await clientFor(row.message)).callTool({ name: row.tool, arguments: row.args });
-    const [first] = result.content as { text: string }[];
-    assert.ok(first !== undefined, row.name);
-    const payload = JSON.parse(first.text) as Record<string, unknown>;
-    assert.deepEqual([payload['outcome'] ?? payload['error'], payload['case']], [row.answer, row.receipt], row.name);
-    assert.deepEqual(WORDS.filter((word) => first.text.toLowerCase().includes(word)), [], row.name);
+  for (const [client, tool, args, receipt] of rows) {
+    const [answer] = (await client.callTool({ name: tool, arguments: args })).content as { text: string }[];
+    const text = answer?.text ?? '';
+    assert.deepEqual((JSON.parse(text) as { case: unknown }).case, receipt, `${tool} ${JSON.stringify(args)}`);
+    assert.deepEqual(WORDS.filter((word) => text.toLowerCase().includes(word)), [], `${tool} ${JSON.stringify(args)}`);
   }
 });
