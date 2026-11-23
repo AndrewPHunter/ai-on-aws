@@ -79,24 +79,6 @@ const CONTENT_TYPES: Record<string, string> = {
   '.map': 'application/json',
 };
 
-// Pieces of the system that are designed but do not exist yet. Reported so the status page says so.
-const NOT_BUILT: readonly PieceStatus[] = [
-  {
-    id: 'knowledge',
-    name: 'Label search',
-    role: 'Finds the passages of the approved label that answer a question.',
-    state: 'not_built',
-    detail: 'Not built yet.',
-  },
-  {
-    id: 'evaluation',
-    name: 'Evaluation',
-    role: 'Scores the agents against a set of prepared inquiries.',
-    state: 'not_built',
-    detail: 'Not built yet.',
-  },
-];
-
 const NO_AGENT: PieceStatus = {
   id: 'agents',
   name: 'Agents',
@@ -385,7 +367,7 @@ export function createClientServer(deps: ClientDeps): Server {
       );
     const [pinged, identityState] = await Promise.all([Promise.all([caseSystem, ...agents]), identityPiece]);
     const noAgent = config.agents.length === 0 ? [NO_AGENT] : [];
-    return { checked_at: checkedAt, pieces: [...pinged, ...noAgent, identityState, ...NOT_BUILT] };
+    return { checked_at: checkedAt, pieces: [...pinged, ...noAgent, identityState] };
   }
 
   // Every API route is given the signed-in user's session.

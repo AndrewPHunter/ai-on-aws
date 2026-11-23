@@ -8,7 +8,7 @@ function withoutTrailingSlash(url: string): string {
 }
 
 // Identifiers the status report uses for the parts that are not agents.
-const RESERVED_IDS: readonly string[] = ['case-system', 'identity', 'agents', 'knowledge', 'evaluation'];
+const RESERVED_IDS: readonly string[] = ['case-system', 'identity', 'agents'];
 
 // The scopes an agent can require of the token it is sent.
 export const AGENT_SCOPES = ['agents:intake', 'agents:expert', 'agents:orchestrator'] as const;
