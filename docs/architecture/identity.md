@@ -85,7 +85,7 @@ Roles. Every account also holds `default-roles-lab`, Keycloak's default role for
 | `desk` | People: enters inquiries and runs the intake agents and the orchestrator | `dana.desk` |
 | `medical-information` | People: does what the desk does, and runs the label expert | `morgan.medinfo` |
 | `safety-reviewer` | People: reads adverse event cases and decides them | `riley.reviewer` |
-| `auditor` | People: reads every case and its audit trail; changes nothing | `avery.auditor` |
+| `auditor` | People: reads every case and its audit trail, and every run's trace in the client; changes nothing | `avery.auditor` |
 | `evaluation` | A machine: the evaluation harness's service account | `service-account-evaluation` |
 | `knowledge-gate` | A machine: the knowledge gate's service account | `service-account-knowledge-gate` |
 
@@ -102,12 +102,13 @@ Scopes. A role grants a scope through the realm's scope mappings; the scope's au
 | `cases:read` | `safety-reviewer`, `auditor` | `case-system` | `GET /cases`, `GET /cases/<id>` |
 | `cases:review` | `safety-reviewer` | `case-system` | `POST /cases/<id>/review` |
 | `labels:search` | `desk`, `medical-information`, `evaluation`, `knowledge-gate` | `knowledge` | `find_labels`, `search_label` |
+| `traces:read` | `auditor` | None | `GET /api/traces`, `GET /api/traces/<run_id>` on the client. Only the `desk` client may ask for it. The client checks the session's grant; no service receives a token carrying it |
 
 Clients. Every client is confidential, with no password grant, implicit flow, device grant or CIBA, and default scopes `basic`, `profile`, `email`. Each client that issues tokens has two mappers: a hard-coded `client_id` claim naming itself (access token), and the realm roles as a top-level `roles` claim (access token and ID token).
 
 | Client | What it is | How it gets a token | May ask for | May exchange | Secret |
 |---|---|---|---|---|---|
-| `desk` | The client's server | Authorization Code with PKCE, and refresh | `agents:intake`, `agents:expert`, `agents:orchestrator`, `cases:read`, `cases:review` | No | `IDENTITY_DESK_CLIENT_SECRET` |
+| `desk` | The client's server | Authorization Code with PKCE, and refresh | `agents:intake`, `agents:expert`, `agents:orchestrator`, `cases:read`, `cases:review`, `traces:read` | No | `IDENTITY_DESK_CLIENT_SECRET` |
 | `intake-handwritten` | The hand-written intake agent | Token exchange only | `cases:write` | Yes | `IDENTITY_INTAKE_HANDWRITTEN_CLIENT_SECRET` |
 | `intake-strands` | The intake agent on Strands | Token exchange only | `cases:write` | Yes | `IDENTITY_INTAKE_STRANDS_CLIENT_SECRET` |
 | `expert` | The label expert | Token exchange only | `labels:search` | Yes | `IDENTITY_EXPERT_CLIENT_SECRET` |
@@ -125,7 +126,7 @@ Clients. Every client is confidential, with no password grant, implicit flow, de
 | Redirect URI | `http://localhost:3000/auth/callback` |
 | Post-logout redirect URI | `http://localhost:3000/` |
 | Default scopes | `basic`, `profile`, `email` |
-| Optional scopes | `agents:intake`, `agents:expert`, `agents:orchestrator`, `cases:read`, `cases:review` |
+| Optional scopes | `agents:intake`, `agents:expert`, `agents:orchestrator`, `cases:read`, `cases:review`, `traces:read` |
 | Mappers | Hard-coded claim `client_id` = `desk` (access token); realm roles as top-level `roles` (access token and ID token) |
 
 | Account | Name | Email | Realm roles | Password |
@@ -148,7 +149,7 @@ A JWT signed with RS256 by a key at the realm's `jwks_uri`.
 | Claim | Value | Read by AgentCore's JWT authorizer as |
 |---|---|---|
 | `iss` | `http://localhost:8090/realms/lab` | The issuer of the discovery URL |
-| `aud` | The audiences of the scopes granted, and no other. A person's token for `agents:intake` names both intake agents; a token for any case-system scope names `case-system`. A token got by exchange names the one audience asked for | Allowed audiences |
+| `aud` | The audiences of the scopes granted, and no other. A person's token for `agents:intake` names both intake agents; a token for any case-system scope names `case-system`; `traces:read` adds none. A token got by exchange names the one audience asked for | Allowed audiences |
 | `client_id` | The client the token was issued to: `desk` for a person's token, the agent for a token it got by exchange, `evaluation` or `knowledge-gate` for a machine's | Allowed client IDs |
 | `scope` | The scopes granted, separated by spaces. Keycloak adds others, such as `profile` and `email`, which no service reads | Allowed scopes (the token must hold at least one) |
 | `roles` | Array of the account's realm role names, composites expanded: its one lab role, `default-roles-lab` and what that includes | A custom-claim rule (a string array contains a value) |
@@ -162,14 +163,15 @@ How a token is got decides what it holds. Each row is a statement of the gate:
 | Request | Scopes granted | Audiences | Gate |
 |---|---|---|---|
 | Sign-in through `desk`, asking for `openid` and every scope `desk` may ask for | Exactly those the person's role grants | Those scopes' audiences | G1, G2 |
-| Refresh with `scope=openid <one granted scope>` | That scope alone of the lab's scopes | That scope's audiences alone | G3 |
+| Refresh with `scope=openid <one granted scope>` | That scope alone of the lab's scopes | That scope's audiences alone; none for `traces:read` | G3 |
 | The same, with the refresh token that refresh returned | The whole grant again, or any other granted scope | As asked | G4 |
 | Refresh for a scope `desk` may ask for that the role does not grant | Not that scope; answered 200 | None of that scope's | G5 |
 | `desk` asking for a scope it may not ask for (`labels:search`, `agents:expert:delegated`) | Refused 400 `invalid_scope`, at a refresh and at the authorization endpoint | — | G6 |
 | An agent's exchange | Every scope asked for, and no other of the lab's scopes | The one audience asked for | G7, G8 |
+| An agent's exchange asking for a scope its client may not ask for (`traces:read` among them, for all four agents' clients) | Refused 400 `invalid_scope` | — | G9 |
 | The orchestrator's exchange of a person's token for it, for a sub-agent | The sub-agent's scope alone of the lab's scopes | That sub-agent alone | G15 |
 | A sub-agent's exchange of the token the orchestrator got for it | Every scope asked for, and no other of the lab's scopes | Its tool server alone | G16 |
-| A machine's client credentials | The scope asked for; a scope its client may not ask for is refused 400 `invalid_scope` | That scope's audiences | G11, G12 |
+| A machine's client credentials | The scope asked for; a scope its client may not ask for (`traces:read` among them) is refused 400 `invalid_scope` | That scope's audiences | G11, G12 |
 
 Keycloak leaves out of a token a scope the person's role does not grant, and still answers 200 (G5). So a token request that succeeds says nothing about what the person may do: the service's check is the control. A token without the service's audience is refused there as `wrong_audience` (401); a token with the audience but none of the service's scopes, as `insufficient_scope` (403). A client asking for a scope it may not ask for at all is a different case: the provider refuses it with `invalid_scope`.
 
@@ -356,7 +358,7 @@ The orchestrator makes the same exchange, through the same file, once for each c
 | The label expert | Audience `knowledge`, scope `labels:search` | The retrieval service's MCP endpoint | `Authorization: Bearer` on every request (connect, tool list, every tool call), and no other header of the caller's |
 | The orchestrator | Audience `intake-strands`, scope `agents:intake`, to screen the message; audience `expert`, scope `agents:expert:delegated`, for each label question | The intake agent on Strands, or the label expert: `POST /invocations` | `Authorization: Bearer`, with the agent contract's request |
 
-What the provider issues, as the gate states it (G7, G8; G15 for the orchestrator's exchange, G16 for a sub-agent's exchange of the token the orchestrator got): `aud` is the one audience asked for; `client_id` and `azp` are the agent; `sub`, `preferred_username`, `name` and `roles` are those of the token exchanged; `scope` holds every scope asked for and no other of the lab's scopes; `exp` is that of the token exchanged. No refresh token comes with it. Only the four agents' clients have token exchange on. The provider refuses to exchange a token the agent, the orchestrator among them, is not an audience of (403 `Client is not within the token audience`, G9), and refuses an agent a scope its client may not ask for (400 `invalid_scope`, G9): an intake agent or the label expert asking for the other kind of agent's scopes or for `agents:expert:delegated`, an intake agent asking for `cases:lookup`, and the orchestrator asking for `labels:search`. `desk`, the two audience-only clients and both machines cannot exchange (G10).
+What the provider issues, as the gate states it (G7, G8; G15 for the orchestrator's exchange, G16 for a sub-agent's exchange of the token the orchestrator got): `aud` is the one audience asked for; `client_id` and `azp` are the agent; `sub`, `preferred_username`, `name` and `roles` are those of the token exchanged; `scope` holds every scope asked for and no other of the lab's scopes; `exp` is that of the token exchanged. No refresh token comes with it. Only the four agents' clients have token exchange on. The provider refuses to exchange a token the agent, the orchestrator among them, is not an audience of (403 `Client is not within the token audience`, G9), and refuses an agent a scope its client may not ask for (400 `invalid_scope`, G9): an intake agent or the label expert asking for the other kind of agent's scopes or for `agents:expert:delegated`, an intake agent asking for `cases:lookup`, the orchestrator asking for `labels:search`, and any of the four agents' clients asking for `traces:read`. `desk`, the two audience-only clients and both machines cannot exchange (G10).
 
 | Result | The run | Reason given |
 |---|---|---|
@@ -414,10 +416,10 @@ Each of these runs in a container on the stack's default network (`<compose-proj
 | Party | Started by | As | How | Secrets given | What it does with it |
 |---|---|---|---|---|---|
 | Gate | `platform/identity/gate.sh` | The four people; each agent and each machine as its client | Authorization Code with PKCE through `desk`, standing in for the browser: requests the sign-in page, posts Keycloak's form, reads the redirect to the callback without requesting it, and exchanges the code itself. Then refreshes, each agent's exchanges, the orchestrator's exchanges with each sub-agent's exchange of what it got, and each machine's client credentials | Every client secret and the four passwords | Checks the tokens' signatures and claims; tries the requests that must be refused |
-| Stack gate | `platform/identity/stack-gate.sh` | The four people; for tokens it presents itself, also `intake-handwritten`, `expert`, `orchestrator` and both machines | Through the client: `/auth/login`, Keycloak's form, the client's callback; the client exchanges the code and the gate holds cookies. For its own tokens: through `desk` directly, four exchanges (one as `intake-handwritten`, one as `expert`, two as `orchestrator`), and client credentials | The four passwords; the `desk`, `intake-handwritten`, `expert`, `orchestrator`, `evaluation` and `knowledge-gate` secrets | Uses the desk as a browser would, knocks on every agent and tool server with no token, and presents its own tokens to each service and to the agents |
+| Stack gate | `platform/identity/stack-gate.sh` | The four people; for tokens it presents itself, also `intake-handwritten`, `expert`, `orchestrator` and both machines | Through the client: `/auth/login`, Keycloak's form, the client's callback; the client exchanges the code and the gate holds cookies. For its own tokens: through `desk` directly, four exchanges (one as `intake-handwritten`, one as `expert`, two as `orchestrator`), and client credentials | The four passwords; the `desk`, `intake-handwritten`, `expert`, `orchestrator`, `evaluation` and `knowledge-gate` secrets | Uses the desk as a browser would, reads the runs it made back as their person and their traces as `avery.auditor`, knocks on every agent and tool server with no token, and presents its own tokens to each service and to the agents |
 | Knowledge gate | `knowledge/gate.sh` | Client `knowledge-gate` | Client credentials with its own secret, scope `labels:search` (`shared/machine-token.ts`) | `IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET` | Calls the retrieval service's MCP endpoint with the token. A token that cannot be got is exit 2 |
 | Evaluation runner | `evaluation/run.sh` | Client `evaluation` | Client credentials with its own secret, scope `agents:expert` (`shared/machine-token.ts`). Gets a new token before the current one has under 200 s left | `IDENTITY_EVALUATION_CLIENT_SECRET` | Sends it to the label expert on `POST /invocations`; the expert exchanges it for its own token for the retrieval service. A question for which no token could be got is recorded with the reason `no access token could be got` |
-| Attack runner | `evaluation/attacks.sh` | The four people | Through the client, as the stack gate does (`platform/identity/src/desk.ts`): `/auth/login`, Keycloak's form, the client's callback; the client exchanges the code and the runner holds only cookies. A person whose session ends (401) signs in again once | The four passwords, and no client secret | Sends each attack, control and fault case's inquiry as its person, and reads cases as `riley.reviewer` |
+| Attack runner | `evaluation/attacks.sh` | The four people | Through the client, as the stack gate does (`platform/identity/src/desk.ts`): `/auth/login`, Keycloak's form, the client's callback; the client exchanges the code and the runner holds only cookies. A person whose session ends (401) signs in again once | The four passwords, and no client secret | Sends each attack, control and fault case's inquiry as its person, reads each ended run's trace as `avery.auditor`, and reads cases as `riley.reviewer` |
 
 ## From sign-in to an audit entry
 
@@ -578,8 +580,8 @@ On a trial stack built from this repository, run under Docker on an Apple-silico
 
 | Gate | Command | Result |
 |---|---|---|
-| Identity gate | `platform/identity/gate.sh` | 222 statements held, none failed |
-| Stack gate | `platform/identity/stack-gate.sh` | 119 statements held, none failed, none in `not_checked`. Its run through the orchestrator ended `completed` in 29 s: a case opened by the intake agent, one label question put to the label expert |
+| Identity gate | `platform/identity/gate.sh` | 251 statements held, none failed (2026-11-23, with the scope `traces:read`) |
+| Stack gate | `platform/identity/stack-gate.sh` | 132 statements held, none failed, none in `not_checked` (2026-11-23, with the trace routes): each person's run read back holds no steps, the trace routes are 403 to everyone but the auditor, and the statements about delegations and retrieval are taken from the trace |
 | Knowledge gate, with its token as its own client `knowledge-gate` | `knowledge/gate.sh` | 20 statements held |
 | The same three gates, on a stack started from the earlier realm with an inquiry store and a label index, then moved to the new realm with its volumes kept, by removing `platform/identity/.env`, running set-up, and stopping and starting the stack with `--build` | as above | 151, 102 and 20 statements held, none failed. Measured before the gates had their statements about the orchestrator |
 

@@ -8,14 +8,15 @@ import type { Elements } from '../../../shared/case-contract.ts';
 import { deciderOf, fillText, holdsWord, needsVictim, sendsOf } from './set.ts';
 import type { AttackCase, Decider, Expectation, ExpectationKind } from './set.ts';
 
-/** One run as the client returned it: whether it ended within the wait, its state, and its response if it kept to the contract. */
+/** One run: whether it ended within the wait, its state, and the agent's response from its trace if it kept to the contract. */
 export type RunSeen = {
   ended: boolean;
   state: string | null;
   // The run exactly as the client returned it to the person, before any parse: the record is read from it.
   raw: unknown;
+  // The agent's whole response, steps included, as the run's trace holds it.
   response: InvocationResponse | null;
-  // The run completed at the client but its response did not parse as the agent contract's.
+  // The run completed at the client but the response in its trace did not parse as the agent contract's.
   outside_contract: boolean;
 };
 

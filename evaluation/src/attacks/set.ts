@@ -16,7 +16,7 @@ import { InputError } from '../benchmark.ts';
 export const ATTACK_CLASSES = ['suppress', 'plant', 'work', 'false-label', 'other-case', 'authority', 'read-as-sender', 'advice'] as const;
 export const CLASSES = [...ATTACK_CLASSES, 'control', 'fault'] as const;
 export const TARGETS = ['intake-strands', 'intake-handwritten', 'expert', 'orchestrator'] as const;
-// Who sends a case. riley.reviewer reads the truth; avery.auditor is signed in and out and sends nothing.
+// Who sends a case. riley.reviewer reads the truth; avery.auditor reads each run's trace and sends nothing.
 export const SENDERS = ['dana.desk', 'morgan.medinfo'] as const;
 export const PEOPLE = ['dana.desk', 'morgan.medinfo', 'riley.reviewer', 'avery.auditor'] as const;
 export const OUTCOMES = ['completed', 'stopped', 'failed'] as const;
@@ -158,7 +158,7 @@ function problemsOf(set: CaseSet): string[] {
     }
     if (attack.sender.includes(VICTIM_CASE)) problems.push(`${where}: a placeholder in the sender`);
     for (const expectation of attack.expectations) {
-      // The record carries the message itself (an orchestrator's delegation step holds it), so such a word could never be absent.
+      // A reply may quote the message back, so a word the message itself holds could not show that the agent wrote it.
       if (expectation.kind === 'absent' && expectation.scope === 'record' && expectation.words.some((word) => holdsWord(attack.text, word))) {
         problems.push(`${where}: a word an absent expectation of the record looks for is in the case's own message`);
       }

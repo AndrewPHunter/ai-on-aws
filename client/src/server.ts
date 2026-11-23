@@ -1,6 +1,7 @@
 // The client's server. Under /auth it signs desk staff in and out through the identity provider. Under
 // /api, for a signed-in user only, it receives inquiries, sends them to agents, keeps every inquiry and
-// run, forwards case review to the case system and reports the state of each piece. What a session may
+// run, forwards case review to the case system and reports the state of each piece. A run's steps are
+// given only by the trace routes, to a session granted traces:read; every other route strips them. What a session may
 // do comes from the scopes granted at sign-in, and every call to an agent or the case system carries a
 // token got for that target alone. /ping and the built web app need no session.
 //
@@ -25,6 +26,9 @@ import type {
   SessionView,
   SignOutResponse,
   SystemStatus,
+  TraceList,
+  TraceResponse,
+  TracedRun,
 } from '../shared/api.ts';
 import { invokeAgent, ping, pingAgent } from './agents.ts';
 import type { PingResult } from './agents.ts';
@@ -35,7 +39,7 @@ import { IdentityUnreachable, SignInRefused } from './identity.ts';
 import type { IdentityProvider } from './identity.ts';
 import { SAMPLES } from './samples.ts';
 import type { Session, SessionStore } from './sessions.ts';
-import type { Actor, InquiryStore } from './store.ts';
+import type { Actor, InquiryStore, StoredInquiry } from './store.ts';
 import { tokenFor } from './tokens.ts';
 
 export type ClientDeps = {
@@ -61,6 +65,8 @@ function agentWaitMs(agent: AgentConfig): number {
 // The case system's review server's two scopes: reading cases, and deciding one.
 export const CASES_READ = 'cases:read';
 export const CASES_REVIEW = 'cases:review';
+// Reading a run's steps, on the trace routes.
+export const TRACES_READ = 'traces:read';
 export const SESSION_COOKIE = 'desk_session';
 
 export const MAX_TEXT_LENGTH = 10_000;
@@ -114,6 +120,21 @@ function notAllowed(detail: string): ApiFailure {
 // Another person's inquiry is answered exactly as one that does not exist.
 function inquiryNotFound(): ApiFailure {
   return new ApiFailure(404, 'inquiry_not_found', 'There is no inquiry with that id.');
+}
+
+// A run as it leaves the server on every route but the trace routes: the agent's response without the key
+// steps.
+function withoutSteps(run: TracedRun): Run {
+  if (run.response === null) {
+    return { ...run, response: null };
+  }
+  const { steps, ...result } = run.response;
+  void steps;
+  return { ...run, response: result };
+}
+
+function inquiryView(inquiry: StoredInquiry): Inquiry {
+  return { ...inquiry, runs: inquiry.runs.map(withoutSteps) };
 }
 
 const ESCAPES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
@@ -259,9 +280,9 @@ function segment(raw: string): string | undefined {
 export function createClientServer(deps: ClientDeps): Server {
   const { config, store, now, newId, identity, sessions } = deps;
 
-  // Asked for at sign-in: each distinct agent scope configured and the case system's two. The provider
-  // leaves out any the person's role does not grant.
-  const signInScopes = [...new Set(config.agents.map((agent) => agent.scope)), CASES_READ, CASES_REVIEW];
+  // Asked for at sign-in: each distinct agent scope configured, the case system's two and traces:read. The
+  // provider leaves out any the person's role does not grant.
+  const signInScopes = [...new Set(config.agents.map((agent) => agent.scope)), CASES_READ, CASES_REVIEW, TRACES_READ];
 
   function sessionOf(request: IncomingMessage): Session | undefined {
     const id = cookieValue(request, SESSION_COOKIE);
@@ -305,8 +326,8 @@ export function createClientServer(deps: ClientDeps): Server {
     return agent;
   }
 
-  // An inquiry the session's user entered. Anyone else's is answered as an unknown one.
-  function ownInquiry(session: Session, inquiryId: string): Inquiry {
+  // An inquiry the session's user entered, as the store holds it. Anyone else's is answered as an unknown one.
+  function ownInquiry(session: Session, inquiryId: string): StoredInquiry {
     const inquiry = store.getInquiry(inquiryId, session.user.sub);
     if (inquiry === undefined) {
       throw inquiryNotFound();
@@ -319,6 +340,7 @@ export function createClientServer(deps: ClientDeps): Server {
       agents: config.agents.filter((agent) => session.granted.has(agent.scope)).map((agent) => agent.id),
       read_cases: session.granted.has(CASES_READ),
       decide_cases: session.granted.has(CASES_REVIEW),
+      read_traces: session.granted.has(TRACES_READ),
     };
   }
 
@@ -339,7 +361,7 @@ export function createClientServer(deps: ClientDeps): Server {
 
   // Sends the stored message, with the id and receipt time it was given when it was received, and the
   // token got for the agent's scope for the user who started the run.
-  function startRun(inquiry: Inquiry, agent: AgentConfig, startedBy: Actor, token: string): Run {
+  function startRun(inquiry: StoredInquiry, agent: AgentConfig, startedBy: Actor, token: string): TracedRun {
     const run = store.startRun(newId(), inquiry.id, agent.id, startedBy);
     if (run === undefined) {
       throw inquiryNotFound();
@@ -422,7 +444,7 @@ export function createClientServer(deps: ClientDeps): Server {
         const id = newId();
         store.createInquiry({ id, receivedAt: now().toISOString(), sender, text, enteredBy: actorOf(session) });
         startRun(ownInquiry(session, id), agent, actorOf(session), token);
-        const payload: InquiryResponse = { inquiry: ownInquiry(session, id) };
+        const payload: InquiryResponse = { inquiry: inquiryView(ownInquiry(session, id)) };
         sendJson(response, 202, payload);
       },
     },
@@ -431,7 +453,7 @@ export function createClientServer(deps: ClientDeps): Server {
   function inquiryRoute(inquiryId: string): Route {
     return {
       GET: async (_request, response, _url, session) => {
-        const payload: InquiryResponse = { inquiry: ownInquiry(session, inquiryId) };
+        const payload: InquiryResponse = { inquiry: inquiryView(ownInquiry(session, inquiryId)) };
         sendJson(response, 200, payload);
       },
     };
@@ -445,7 +467,7 @@ export function createClientServer(deps: ClientDeps): Server {
         const inquiry = ownInquiry(session, inquiryId);
         const agent = runnableAgent(session, agentId);
         const token = await accessToken(session, agent.scope, agentWaitMs(agent));
-        const payload: RunResponse = { run: startRun(inquiry, agent, actorOf(session), token) };
+        const payload: RunResponse = { run: withoutSteps(startRun(inquiry, agent, actorOf(session), token)) };
         sendJson(response, 202, payload);
       },
     };
@@ -465,6 +487,30 @@ export function createClientServer(deps: ClientDeps): Server {
         requireGranted(session, CASES_READ);
         const token = await accessToken(session, CASES_READ, CASE_TOKEN_MIN_LIFE_MS);
         sendForwarded(response, await getCase(config.caseReviewUrl, caseId, token));
+      },
+    };
+  }
+
+  // The trace routes: every person's runs, and one run with its steps and the message it was made of. A
+  // session not granted traces:read is answered 403 before the store is read.
+  const tracesRoute: Route = {
+    GET: async (_request, response, _url, session) => {
+      requireGranted(session, TRACES_READ);
+      const payload: TraceList = store.listTraces();
+      sendJson(response, 200, payload);
+    },
+  };
+
+  function traceRoute(runId: string): Route {
+    return {
+      GET: async (_request, response, _url, session) => {
+        requireGranted(session, TRACES_READ);
+        const trace = store.getTrace(runId);
+        if (trace === undefined) {
+          throw new ApiFailure(404, 'unknown_run', 'There is no run with that id.');
+        }
+        const payload: TraceResponse = { trace };
+        sendJson(response, 200, payload);
       },
     };
   }
@@ -503,6 +549,8 @@ export function createClientServer(deps: ClientDeps): Server {
         return routes.inquiries;
       case '/api/cases':
         return casesRoute;
+      case '/api/traces':
+        return tracesRoute;
     }
     const inquiry = /^\/api\/inquiries\/([^/]+)(\/runs)?$/.exec(pathname);
     const inquiryId = inquiry?.[1] === undefined ? undefined : segment(inquiry[1]);
@@ -513,6 +561,11 @@ export function createClientServer(deps: ClientDeps): Server {
     const caseId = found?.[1] === undefined ? undefined : segment(found[1]);
     if (found !== null && caseId !== undefined) {
       return found[2] === undefined ? caseRoute(caseId) : reviewRoute(caseId);
+    }
+    const trace = /^\/api\/traces\/([^/]+)$/.exec(pathname);
+    const runId = trace?.[1] === undefined ? undefined : segment(trace[1]);
+    if (runId !== undefined) {
+      return traceRoute(runId);
     }
     return undefined;
   }

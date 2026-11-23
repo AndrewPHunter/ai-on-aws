@@ -5,17 +5,22 @@
 // on the stack's network and is the browser, a stranger and a token holder at once. In order:
 //   1. knocks on each of the four agents, both case-system servers and the retrieval service without a token;
 //   2. signs each of the four people in through the client and Keycloak's own sign-in page, and checks the
-//      cookies, the refused callbacks, what /api/session says each may do, and a cross-site POST;
+//      cookies, the refused callbacks, what /api/session says each may do, whether it says they may read traces,
+//      and a cross-site POST;
 //   3. asks the client, as each person, for something they may not do (403 not_allowed) and for something they may;
 //   4. sends an inquiry to each intake agent as dana.desk and a question to the label expert as morgan.medinfo,
-//      and follows each run to its end: through the agent's exchange to its tool server, and, where the run
+//      and follows each run to its end: the run read back by its person holds no steps, and its trace, read as
+//      avery.auditor, gives the steps; through the agent's exchange to its tool server, and, where the run
 //      reached it, to the audit entry of the case it opened or the retrieval service's answer; then sends
-//      dana.desk's inquiry holding both a report and a label question to the orchestrator, and follows that run
-//      through its delegations to the intake agent on Strands and the label expert, and on to their tool servers;
-//   5. asks the client, as morgan.medinfo, for the inquiry dana.desk entered;
-//   6. gets tokens of its own from the provider, as the identity gate does (../src/provider.ts), and presents
+//      dana.desk's inquiry holding both a report and a label question to the orchestrator, and follows that run,
+//      from its trace, through its delegations to the intake agent on Strands and the label expert, and on to
+//      their tool servers;
+//   5. asks the client for traces: both trace routes are 403 to dana.desk, morgan.medinfo and riley.reviewer;
+//      to avery.auditor the list holds the runs made in step 4 and a run's trace holds steps;
+//   6. asks the client, as morgan.medinfo, for the inquiry dana.desk entered;
+//   7. gets tokens of its own from the provider, as the identity gate does (../src/provider.ts), and presents
 //      each to a service, which must accept it or refuse it for the stated reason;
-//   7. signs each person out.
+//   8. signs each person out.
 //
 // It changes the stack it is run against: it enters four inquiries, all from the sender "Dr Gate,
 // gate@example.org", and up to three cases may be opened from them: one by each intake agent from its inquiry,
@@ -45,6 +50,8 @@ import {
   readCase,
   readCaseList,
   readInquiry,
+  readTrace,
+  readTraceList,
   sendAgain,
   sendInquiry,
   signInAtProvider,
@@ -200,7 +207,7 @@ const OUTSIDE_CONTRACT = JSON.stringify({ nonsense: true });
 
 // ---------- the people ----------
 
-type May = { agents: string[]; read_cases: boolean; decide_cases: boolean };
+type May = { agents: string[]; read_cases: boolean; decide_cases: boolean; read_traces: boolean };
 type Person = { username: string; name: string; password: string; may: May };
 
 /** The client sessions of the people who signed in, by username. */
@@ -297,7 +304,7 @@ async function signInStatements(person: Person): Promise<string | undefined> {
 
   const view = await get(`${CLIENT}/api/session`, session);
   const viewText = await view.text();
-  let viewed: { user?: { username?: unknown; name?: unknown }; may?: { agents?: unknown; read_cases?: unknown; decide_cases?: unknown } } = {};
+  let viewed: { user?: { username?: unknown; name?: unknown }; may?: { agents?: unknown; read_cases?: unknown; decide_cases?: unknown; read_traces?: unknown } } = {};
   try {
     viewed = JSON.parse(viewText) as typeof viewed;
   } catch {
@@ -315,6 +322,11 @@ async function signInStatements(person: Person): Promise<string | undefined> {
       viewed.may.decide_cases === person.may.decide_cases,
     `${who}: /api/session names ${person.name} and says they may ${describeMay(person.may)}`,
     `status ${view.status}, ${JSON.stringify({ username: viewed.user?.username, name: viewed.user?.name, may: viewed.may ?? null })}`,
+  );
+  statement(
+    view.status === 200 && viewed.may?.read_traces === person.may.read_traces,
+    `${who}: /api/session says they ${person.may.read_traces ? 'may' : 'may not'} read traces`,
+    `status ${view.status}, read_traces ${JSON.stringify(viewed.may?.read_traces ?? null)}`,
   );
   // The list's shape is AgentList in client/shared/api.ts: { agents: [{ id, name, description }] }.
   const listed = await jsonOf(await get(`${CLIENT}/api/agents`, session));
@@ -450,14 +462,38 @@ const ORCHESTRATOR_INQUIRY =
 // call the agent refused or could not make is always recorded as an error.
 const RETRIEVAL_TOOLS = ['find_labels', 'search_label'];
 
-// A run as the gate reads it is RunView in ../src/desk.ts; a delegation step carries the sub-agent's whole response.
-type Sent = { inquiryId: string; run: RunView | undefined };
+// A run as the gate reads it is RunView in ../src/desk.ts. Read back by the person who started it, it has no
+// steps; its trace, read as avery.auditor, has the agent's whole response, where a delegation step carries the
+// sub-agent's whole response.
+/** A run's trace as avery.auditor read it: the agent's response from it, or why it could not be read. */
+type Traced = { ok: true; response: ResponseView | null | undefined } | { ok: false; why: string };
+/** An inquiry the gate sent, its run as the person read it back, and that run's trace (undefined when no run was read back). */
+type Sent = { inquiryId: string; run: RunView | undefined; trace: Traced | undefined };
+
+/** Reads the run's trace as avery.auditor. */
+async function traceOf(sessions: Sessions, run: RunView): Promise<Traced> {
+  const session = sessions.get('avery.auditor');
+  if (session === undefined) return { ok: false, why: "avery.auditor did not sign in, so the run's trace was not read" };
+  if (run.id === undefined) return { ok: false, why: 'the run was read back without an id, so its trace was not read' };
+  const answer = await readTrace(HTTP, ADDRESSES, session, run.id);
+  const trace = answer.body.trace as { run?: RunView } | undefined;
+  if (answer.status !== 200 || trace?.run?.id !== run.id) {
+    return { ok: false, why: `avery.auditor's read of the run's trace answered status ${answer.status}${answer.status === 200 ? ' without a trace of that run' : ''}` };
+  }
+  return { ok: true, response: trace.run.response };
+}
+
+/** The response in the run's trace, when it was read. */
+const tracedResponse = (sent: Sent | undefined): ResponseView | null | undefined => (sent?.trace?.ok === true ? sent.trace.response : undefined);
+/** Why the run's trace could not be read, when a run was read back and its trace was not. */
+const traceUnread = (sent: Sent | undefined): string | undefined => (sent?.trace?.ok === false ? sent.trace.why : undefined);
 
 /**
- * Sends an inquiry as the person, states that it was accepted and records who entered it, and waits up to
- * `waitMs` for its run to end. Undefined when the inquiry was not accepted.
+ * Sends an inquiry as the person, states that it was accepted and records who entered it, waits up to `waitMs`
+ * for its run to end, states that the run the person reads back holds no steps, and reads the run's trace as
+ * avery.auditor. Undefined when the inquiry was not accepted.
  */
-async function sendAndWait(person: Person, session: string, agent: string, text: string, waitMs: number): Promise<Sent | undefined> {
+async function sendAndWait(sessions: Sessions, person: Person, session: string, agent: string, text: string, waitMs: number): Promise<Sent | undefined> {
   const who = person.username;
   const sent = await sendInquiry(HTTP, ADDRESSES, session, { sender: SENDER, text, agent_id: agent });
   const created = sent.body.inquiry as { id?: string; entered_by?: { name?: string } | null } | undefined;
@@ -469,13 +505,18 @@ async function sendAndWait(person: Person, session: string, agent: string, text:
   if (created?.id === undefined) return undefined;
   // When the wait ran out, the run as last read, so the statements can say how far it got.
   const waited = await waitForRun(HTTP, ADDRESSES, session, created.id, waitMs);
-  return { inquiryId: created.id, run: waited.ended ? waited.run : waited.lastRead };
+  const run = waited.ended ? waited.run : waited.lastRead;
+  const noSteps = `${who}, ${agent}: the run ${who} reads back holds no steps`;
+  const response: unknown = run?.response;
+  if (typeof response === 'object' && response !== null) statement(!('steps' in response), noSteps);
+  else notCheckable(noSteps, `the run read back has no response; ${howItEnded(run)}`);
+  return { inquiryId: created.id, run, trace: run === undefined ? undefined : await traceOf(sessions, run) };
 }
 
 /** Sends an inquiry as the person and waits for its run to end. States that it was accepted and how the run ended. */
-async function runStatements(person: Person, session: string, agent: string, text: string): Promise<Sent | undefined> {
+async function runStatements(sessions: Sessions, person: Person, session: string, agent: string, text: string): Promise<Sent | undefined> {
   const who = person.username;
-  const sent = await sendAndWait(person, session, agent, text, RUN_WAIT_MS);
+  const sent = await sendAndWait(sessions, person, session, agent, text, RUN_WAIT_MS);
   const what = `${who}, ${agent}: the run ends with the agent's answer inside the contract, records who started it, and did not stop at a token, its tool server or its exchange`;
   if (sent === undefined) {
     statement(false, what, 'the inquiry was not accepted, so no run was started');
@@ -526,10 +567,15 @@ function intakeCaseAudit(sessions: Sessions, agent: string, sent: Sent | undefin
 const answeredByRetrieval = (response: ResponseView | null | undefined): boolean =>
   response?.steps?.some((step) => step.kind === 'retrieval' || (step.kind === 'tool' && RETRIEVAL_TOOLS.includes(step.tool ?? '') && step.is_error === false)) === true;
 
-/** If the expert's run has a step the retrieval service answered, the service accepted the expert's token. */
+/** If the expert's run has a step the retrieval service answered, in its trace, the service accepted the expert's token. */
 function retrievalStatement(sent: Sent | undefined): void {
   const what = `${EXPERT}: the retrieval service accepted the token the expert sent it (the run has a step the service answered)`;
-  if (answeredByRetrieval(sent?.run?.response)) {
+  const unread = traceUnread(sent);
+  if (unread !== undefined) {
+    statement(false, what, unread);
+    return;
+  }
+  if (answeredByRetrieval(tracedResponse(sent))) {
     statement(true, what);
     return;
   }
@@ -547,19 +593,21 @@ const howDelegationEnded = (step: StepView): string =>
     : `it ended ${String(step.response.outcome)} with stop reason ${JSON.stringify(step.response.stop_reason ?? null)}`;
 
 /**
- * dana.desk sends one message holding a report and a label question to the orchestrator, and the run is followed
- * through its delegations: screening by the intake agent on Strands, always, and the label expert for each
- * question the model put, each with the sub-agent's whole response.
+ * dana.desk sends one message holding a report and a label question to the orchestrator, and the run is followed,
+ * in its trace, through its delegations: screening by the intake agent on Strands, always, and the label expert
+ * for each question the model put, each with the sub-agent's whole response. Returns what was sent.
  */
-async function orchestratorStatements(sessions: Sessions, person: Person): Promise<void> {
+async function orchestratorStatements(sessions: Sessions, person: Person): Promise<Sent | undefined> {
   const who = person.username;
   const prefix = `${who}, ${ORCHESTRATOR}`;
   const session = sessionFor(sessions, who, `${prefix}: an inquiry holding a report and a label question is accepted and its run followed`);
-  const sent = session === undefined ? undefined : await sendAndWait(person, session, ORCHESTRATOR, ORCHESTRATOR_INQUIRY, ORCHESTRATOR_RUN_WAIT_MS);
+  const sent = session === undefined ? undefined : await sendAndWait(sessions, person, session, ORCHESTRATOR, ORCHESTRATOR_INQUIRY, ORCHESTRATOR_RUN_WAIT_MS);
   const noRun = session === undefined ? `${who} did not sign in, so no run was started` : 'the inquiry was not accepted, so no run was started';
   const run = sent?.run;
+  // How the run ended is read from the run as the person read it back; its steps from its trace.
   const response = run?.response;
-  const delegations = delegationsOf(response);
+  const unread = traceUnread(sent);
+  const delegations = delegationsOf(tracedResponse(sent));
   const screening = delegations.find((step) => step.id === 'screening' && step.to_agent === SCREENER);
   const screened = screening?.response ?? null;
 
@@ -579,7 +627,8 @@ async function orchestratorStatements(sessions: Sessions, person: Person): Promi
         outcome: response?.outcome,
         stop_reason: response?.stop_reason ?? null,
         started_by: run?.started_by ?? null,
-        screening: screening === undefined ? 'no screening step' : { failure: screening.failure ?? null, response: screened === null ? null : 'present' },
+        screening:
+          unread !== undefined ? unread : screening === undefined ? 'no screening step' : { failure: screening.failure ?? null, response: screened === null ? null : 'present' },
       }),
     );
   }
@@ -587,6 +636,8 @@ async function orchestratorStatements(sessions: Sessions, person: Person): Promi
   const notAtToken = `${prefix}: screening did not stop at a token: the delegated ${SCREENER} response's stop reason is none of the gate's token stop reasons, and the delegation has no exchange failure`;
   if (sent === undefined) {
     statement(false, notAtToken, noRun);
+  } else if (unread !== undefined) {
+    statement(false, notAtToken, unread);
   } else if (screening === undefined) {
     statement(false, notAtToken, `the run has no screening step; ${howItEnded(run)}`);
   } else {
@@ -597,23 +648,30 @@ async function orchestratorStatements(sessions: Sessions, person: Person): Promi
     );
   }
 
-  await caseAuditStatement(
-    sessions,
-    `${ORCHESTRATOR}: the case the delegated ${SCREENER} run opened, read by riley.reviewer through the client, has a case_created audit entry whose actor is ${SCREENER}`,
-    SCREENER,
-    screened,
-    sent === undefined
-      ? noRun
-      : screening === undefined
-        ? `the run has no screening step; ${howItEnded(run)}`
-        : `the delegated ${SCREENER} run opened no case; ${howDelegationEnded(screening)}`,
-  );
+  const screenedCase = `${ORCHESTRATOR}: the case the delegated ${SCREENER} run opened, read by riley.reviewer through the client, has a case_created audit entry whose actor is ${SCREENER}`;
+  if (unread !== undefined) {
+    statement(false, screenedCase, unread);
+  } else {
+    await caseAuditStatement(
+      sessions,
+      screenedCase,
+      SCREENER,
+      screened,
+      sent === undefined
+        ? noRun
+        : screening === undefined
+          ? `the run has no screening step; ${howItEnded(run)}`
+          : `the delegated ${SCREENER} run opened no case; ${howDelegationEnded(screening)}`,
+    );
+  }
 
   // Every label-question delegation is judged: none may have stopped at a token or failed its exchange, and at
   // least one must have a response.
   const asked = delegations.filter((step) => step.to_agent === EXPERT);
   const answeredWhat = `${prefix}: the run holds a delegation step to ${EXPERT} with a response, and no delegation to ${EXPERT} stopped at a token or failed its exchange`;
-  if (asked.length === 0) {
+  if (unread !== undefined) {
+    statement(false, answeredWhat, unread);
+  } else if (asked.length === 0) {
     notCheckable(answeredWhat, sent === undefined ? noRun : `the run put no label question to ${EXPERT}; ${howItEnded(run)}`);
   } else {
     statement(
@@ -626,7 +684,9 @@ async function orchestratorStatements(sessions: Sessions, person: Person): Promi
 
   const retrievedWhat = `${ORCHESTRATOR}: the retrieval service accepted the token the expert sent it for the orchestrator's question (a delegated ${EXPERT} response has a step the service answered)`;
   const expertResponses = asked.filter((step) => step.response !== null && step.response !== undefined);
-  if (expertResponses.some((step) => answeredByRetrieval(step.response))) {
+  if (unread !== undefined) {
+    statement(false, retrievedWhat, unread);
+  } else if (expertResponses.some((step) => answeredByRetrieval(step.response))) {
     statement(true, retrievedWhat);
   } else if (expertResponses.length === 0) {
     notCheckable(retrievedWhat, sent === undefined ? noRun : `the run has no delegated ${EXPERT} response; ${howItEnded(run)}`);
@@ -634,6 +694,66 @@ async function orchestratorStatements(sessions: Sessions, person: Person): Promi
     notCheckable(
       retrievedWhat,
       `no delegated ${EXPERT} response has a step the retrieval service answered; ${expertResponses.map((step) => `${String(step.id)}: ${howDelegationEnded(step)}`).join('; ')}`,
+    );
+  }
+  return sent;
+}
+
+// ---------- who may read traces ----------
+
+/** A run the gate made, and who made it. */
+type Made = { person: Person; sent: Sent };
+
+/**
+ * Both trace routes are refused to everyone but avery.auditor; to avery.auditor the list holds every run the gate
+ * made, and a run's trace holds the agent's steps.
+ */
+async function traceStatements(sessions: Sessions, made: readonly Made[]): Promise<void> {
+  const runIds = made.flatMap(({ sent }) => (sent.run?.id === undefined ? [] : [sent.run.id]));
+  // A run the gate made, so that the refusal is of a real run's trace; an id no run has when the gate made none.
+  const someRun = runIds[0] ?? randomUUID();
+  for (const who of ['dana.desk', 'morgan.medinfo', 'riley.reviewer']) {
+    const what = `${who}: both trace routes, the list and a run's trace, are 403`;
+    const session = sessionFor(sessions, who, what);
+    if (session === undefined) continue;
+    const list = await readTraceList(HTTP, ADDRESSES, session);
+    const one = await readTrace(HTTP, ADDRESSES, session, someRun);
+    statement(
+      list.status === 403 && one.status === 403,
+      what,
+      `list status ${list.status}, trace status ${one.status}${runIds.length === 0 ? ', for an id no run has, since the gate made no run' : ''}`,
+    );
+  }
+
+  const listed = 'avery.auditor: the trace list is 200 and holds every run this gate made as dana.desk and morgan.medinfo';
+  const session = sessionFor(sessions, 'avery.auditor', listed);
+  if (session !== undefined) {
+    if (runIds.length === 0) {
+      notCheckable(listed, 'the gate made no run that was read back with an id');
+    } else {
+      const list = await readTraceList(HTTP, ADDRESSES, session);
+      const traces = Array.isArray(list.body.traces) ? (list.body.traces as { run_id?: unknown }[]) : [];
+      const missing = runIds.filter((id) => !traces.some((trace) => trace.run_id === id)).length;
+      statement(
+        list.status === 200 && missing === 0,
+        listed,
+        `status ${list.status}, ${missing} of ${runIds.length} run(s) not listed, truncated ${JSON.stringify(list.body.truncated ?? null)}`,
+      );
+    }
+  }
+
+  // The trace read as avery.auditor when the run ended, of the first run read back with a response.
+  const withSteps = "avery.auditor: a run's trace is 200 and holds the agent's steps";
+  const answered = made.find(({ sent }) => sent.run?.response !== null && sent.run?.response !== undefined);
+  if (answered === undefined) {
+    notCheckable(withSteps, 'no run the gate made was read back with a response');
+  } else {
+    const trace = answered.sent.trace;
+    const steps = trace?.ok === true ? trace.response?.steps : undefined;
+    statement(
+      Array.isArray(steps) && steps.length > 0,
+      withSteps,
+      trace?.ok === false ? trace.why : `the trace of ${answered.person.username}'s run holds ${Array.isArray(steps) ? steps.length : 'no'} steps`,
     );
   }
 }
@@ -923,16 +1043,26 @@ async function main(): Promise<number> {
       username: 'dana.desk',
       name: 'Dana Desk',
       password: requiredEnv('IDENTITY_DANA_PASSWORD'),
-      may: { agents: [...INTAKE_AGENTS, ORCHESTRATOR], read_cases: false, decide_cases: false },
+      may: { agents: [...INTAKE_AGENTS, ORCHESTRATOR], read_cases: false, decide_cases: false, read_traces: false },
     },
     {
       username: 'morgan.medinfo',
       name: 'Morgan Medinfo',
       password: requiredEnv('IDENTITY_MORGAN_PASSWORD'),
-      may: { agents: [...INTAKE_AGENTS, EXPERT, ORCHESTRATOR], read_cases: false, decide_cases: false },
+      may: { agents: [...INTAKE_AGENTS, EXPERT, ORCHESTRATOR], read_cases: false, decide_cases: false, read_traces: false },
     },
-    { username: 'riley.reviewer', name: 'Riley Reviewer', password: requiredEnv('IDENTITY_RILEY_PASSWORD'), may: { agents: [], read_cases: true, decide_cases: true } },
-    { username: 'avery.auditor', name: 'Avery Auditor', password: requiredEnv('IDENTITY_AVERY_PASSWORD'), may: { agents: [], read_cases: true, decide_cases: false } },
+    {
+      username: 'riley.reviewer',
+      name: 'Riley Reviewer',
+      password: requiredEnv('IDENTITY_RILEY_PASSWORD'),
+      may: { agents: [], read_cases: true, decide_cases: true, read_traces: false },
+    },
+    {
+      username: 'avery.auditor',
+      name: 'Avery Auditor',
+      password: requiredEnv('IDENTITY_AVERY_PASSWORD'),
+      may: { agents: [], read_cases: true, decide_cases: false, read_traces: true },
+    },
   ];
   const secrets: Secrets = {
     deskSecret: requiredEnv('IDENTITY_DESK_CLIENT_SECRET'),
@@ -960,20 +1090,26 @@ async function main(): Promise<number> {
   await permissionStatements(sessions);
 
   let danaInquiry: string | undefined;
+  const made: Made[] = [];
   for (const agent of INTAKE_AGENTS) {
     const what = `dana.desk, ${agent}: an inquiry is accepted and the run ends inside the contract`;
     const session = sessionFor(sessions, 'dana.desk', what);
-    const sent = session === undefined ? undefined : await runStatements(named('dana.desk'), session, agent, INTAKE_REPORTS[agent]);
+    const sent = session === undefined ? undefined : await runStatements(sessions, named('dana.desk'), session, agent, INTAKE_REPORTS[agent]);
     danaInquiry ??= sent?.inquiryId;
+    if (sent !== undefined) made.push({ person: named('dana.desk'), sent });
     await intakeCaseAudit(sessions, agent, sent);
   }
   {
     const what = `morgan.medinfo, ${EXPERT}: a question is accepted and the run ends inside the contract`;
     const session = sessionFor(sessions, 'morgan.medinfo', what);
-    const sent = session === undefined ? undefined : await runStatements(named('morgan.medinfo'), session, EXPERT, EXPERT_QUESTION);
+    const sent = session === undefined ? undefined : await runStatements(sessions, named('morgan.medinfo'), session, EXPERT, EXPERT_QUESTION);
+    if (sent !== undefined) made.push({ person: named('morgan.medinfo'), sent });
     retrievalStatement(sent);
   }
-  await orchestratorStatements(sessions, named('dana.desk'));
+  const orchestrated = await orchestratorStatements(sessions, named('dana.desk'));
+  if (orchestrated !== undefined) made.push({ person: named('dana.desk'), sent: orchestrated });
+
+  await traceStatements(sessions, made);
 
   await ownershipStatements(sessions, danaInquiry);
 

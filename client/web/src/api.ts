@@ -18,6 +18,8 @@ import type {
   SessionView,
   SignOutResponse,
   SystemStatus,
+  TraceList,
+  TraceResponse,
 } from '../../shared/api.ts';
 
 export class ApiFailure extends Error {
@@ -176,6 +178,23 @@ export function useSendAgain(inquiryId: string) {
       void queryClient.invalidateQueries({ queryKey: ['inquiry', inquiryId] });
       void queryClient.invalidateQueries({ queryKey: ['inquiries'] });
     },
+  });
+}
+
+export function useTraces() {
+  return useQuery({
+    queryKey: ['traces'],
+    queryFn: () => request<TraceList>('/api/traces'),
+    refetchInterval: (query) => (query.state.data?.traces.some((trace) => trace.state === 'running') === true ? 1500 : 15_000),
+  });
+}
+
+export function useTrace(runId: string | undefined) {
+  return useQuery({
+    queryKey: ['trace', runId],
+    queryFn: async () => (await request<TraceResponse>(`/api/traces/${encodeURIComponent(runId ?? '')}`)).trace,
+    enabled: runId !== undefined,
+    refetchInterval: (query) => (query.state.data?.run.state === 'running' ? 1000 : false),
   });
 }
 
