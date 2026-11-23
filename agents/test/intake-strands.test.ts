@@ -1,4 +1,4 @@
-// The intake agent on Strands: five probes that its hooks are wired to the rules the hand-written agent's tests
+// The intake agent on Strands: six probes that its hooks are wired to the rules the hand-written agent's tests
 // already show (docs/architecture/intake-agent-strands.md, "Where each rule is applied"). Through the real Strands
 // loop and its real MCP client, at the handler, with a scripted model server and a scripted case system on
 // loopback.
@@ -12,6 +12,8 @@ import { z } from 'zod';
 import { invocationResponseSchema } from '../../shared/agent-contract.ts';
 import type { InvocationResponse } from '../../shared/agent-contract.ts';
 import type { TokenExchange } from '../../shared/token-exchange.ts';
+import type { Finding } from '../src/intake/report-check.ts';
+import { TOLD_ONCE } from '../src/intake/run.ts';
 import { handleInquiry } from '../src/intake/strands.ts';
 import { CALLER, ask, clock, message, result, say, startMcp, startModel } from './support.ts';
 import type { ModelAnswer, ModelRequest, ToolAnswer } from './support.ts';
@@ -23,7 +25,7 @@ const CASE_FIELDS = { case_id: optional, patient: optional, suspect_drug: option
 const exchange: TokenExchange = () => Promise.resolve({ kind: 'token', token: 'token-for-the-case-system', expiresAt: new Date('2026-03-01T10:05:00.000Z'), scopes: ['cases:write'] });
 const createdAs = (caseId: string): ToolAnswer => result({ outcome: 'created', case: { case_id: caseId, status: 'incomplete' } });
 
-async function rig(t: TestContext, script: (request: ModelRequest, nth: number) => ModelAnswer, create: (nth: number) => ToolAnswer = () => createdAs('C-7')) {
+async function rig(t: TestContext, script: (request: ModelRequest, nth: number) => ModelAnswer, create: (nth: number) => ToolAnswer = () => createdAs('C-7'), finding: Finding = 'none') {
   const model = await startModel(t, script);
   const cases = await startMcp(t, {
     create_case: { shape: CASE_FIELDS, answer: (_args, nth) => create(nth) },
@@ -34,7 +36,7 @@ async function rig(t: TestContext, script: (request: ModelRequest, nth: number) 
   const run = async (limits: Partial<typeof LIMITS> = {}): Promise<InvocationResponse> =>
     invocationResponseSchema.parse(
       await handleInquiry(
-        { identity: { id: 'intake-strands-test', implementation: 'Strands' }, model: model.settings, caseMcpUrl: cases.url, exchange, now: clock().now, limits: { ...LIMITS, ...limits } },
+        { identity: { id: 'intake-strands-test', implementation: 'Strands' }, model: model.settings, caseMcpUrl: cases.url, exchange, now: clock().now, limits: { ...LIMITS, ...limits }, reportCheck: () => Promise.resolve(finding) },
         message('msg-1', 'Patient JD had a rash after Examplamab.'),
         CALLER,
       ),
@@ -96,4 +98,17 @@ test('strands 5. a model server that fails ends the run failed, with a step, not
   const response = await run();
   assert.equal(response.outcome, 'failed');
   assert.equal(response.steps.filter((s) => s.kind === 'error').length, 1);
+});
+
+test('strands 6. a report check that finds an adverse event invokes the same Agent again with the told-once turn, and the run ends by the rule', async (t) => {
+  const { model, run } = await rig(
+    t,
+    (request, nth) => (!request.user.includes(TOLD_ONCE) ? say('Not a report.') : nth === 0 ? ask(['create_case', { event: 'rash' }]) : say('Recorded.')),
+    undefined,
+    'adverse_event',
+  );
+  const response = await run();
+  assert.deepEqual([response.outcome, response.case_actions.map((a) => a.case_id)], ['completed', ['C-7']]);
+  assert.equal(response.steps.filter((s) => s.kind === 'report_check').length, 1);
+  assert.ok(['Patient JD had a rash', TOLD_ONCE].every((part) => model.requests[1]?.user.includes(part)), 'the second invoke was not the same conversation with the told-once turn');
 });

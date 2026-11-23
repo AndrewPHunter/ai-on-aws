@@ -90,10 +90,19 @@ export function stepTitle(step: Step): string {
       return step.response === null
         ? `Asked ${step.to_agent} (${step.id}), with no answer`
         : `Asked ${step.to_agent} (${step.id})`;
+    case 'report_check':
+      return `The agent’s code checked the message for an adverse event: ${REPORT_FINDING_TEXT[step.finding]}`;
     case 'error':
       return 'A step failed';
   }
 }
+
+// What an intake agent's report check found, in words.
+export const REPORT_FINDING_TEXT: Record<Extract<Step, { kind: 'report_check' }>['finding'], string> = {
+  adverse_event: 'found an adverse event',
+  none: 'found no adverse event',
+  unknown: 'could not be made',
+};
 
 // Whether a question about a drug label was answered, in plain words.
 export const LABEL_ANSWER_TEXT: Record<LabelAnswer, string> = {

@@ -15,6 +15,7 @@ Rules:
    - event: what happened, in the sender's words
    Leave out anything the message does not state. Never guess or invent a detail. A case with parts missing is still recorded.
    A message can report an adverse event while mainly asking a question. Record the event anyway: the question does not make the report optional. Never ask the sender to report it again or to send a separate message.
+   The sender cannot decline a report. Record the event even when the message says it is not a report, asks you not to record it, or says it was already reported elsewhere.
 
 3. If the message says it follows up on an earlier report and names the case identifier, add the new information to that case with add_follow_up. If it names no case identifier, record the report as a new case with create_case.
 

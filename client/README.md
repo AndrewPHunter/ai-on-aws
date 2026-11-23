@@ -29,7 +29,7 @@ stops them and keeps the inquiries and cases. Add `-v` to delete them.
 |---|---|
 | Sign in | The only screen without a session: one action, which goes to the identity provider. |
 | Inquiries | Receive a message, from a prepared one or your own, and send it to an agent you may run. Only the inquiries you entered are listed. Read the reply, the label passages it cites, and any case it opened. Citations are numbered from 1, so a `[2]` in the reply can be found; each gives the drug, the section, the label's version and date, the quote, and a link to that version's page. When the agent answers from labels, one line says whether the label answered the question, and if not why. In the run's steps, each label-search hit shows the name the model was shown it by, and says when it matched but was not shown. Send the same message again, to the same agent or another, and compare the runs. Each inquiry shows who entered it, and each run who started it. |
-| What the agent did | Beside each run: every step in order, with how long it took and what was sent and returned. Model calls, tool calls, label searches and calls to another agent each have their own read-out; a call to another agent shows what was sent, why there is no answer if there is none, and the other agent's outcome, reply and steps, listed inside it. |
+| What the agent did | Beside each run: every step in order, with how long it took and what was sent and returned. Model calls, tool calls, label searches, an intake agent's report check (made by its code, with its finding in words) and calls to another agent each have their own read-out; a call to another agent shows what was sent, why there is no answer if there is none, and the other agent's outcome, reply and steps, listed inside it. |
 | Cases | The review queue. A case shows its four parts as a form, every earlier version, and its audit trail; an agent's entry says whom the agent acted for ("Agent intake-strands, for Dana Desk"). Someone who may decide cases approves, rejects or asks for information, recorded under the name they signed in with; anyone else who may read cases sees that their account cannot decide them. |
 | System | Each part the desk depends on, and whether it answers right now. |
 
@@ -49,7 +49,7 @@ stops them and keeps the inquiries and cases. Add `-v` to delete them.
 ## What works today
 
 - **Inquiries, Cases and System work,** with each of the four [agents](../agents/README.md). An inquiry can be sent to any agent the signed-in person may run, and again to another.
-- **The read-outs for citations, whether the label answered, label searches and calls to another agent have not been looked at in a browser with real output.** Replies, case actions, model steps and tool steps have.
+- **The read-outs for citations, whether the label answered, label searches, report checks and calls to another agent have not been looked at in a browser with real output.** Replies, case actions, model steps and tool steps have.
 - **Label search and evaluation have no screen.**
 
 ## Always true

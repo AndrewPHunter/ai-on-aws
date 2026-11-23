@@ -4,11 +4,12 @@
 //
 //   before a tool call   refusalBeforeCall   may this call be made at all?
 //   after each attempt   afterCall           is it settled, repeated once by code, or unknown?
+//   at the model's reply afterReply          may the run end completed, or not yet, or not at all?
 //
 // What every agent records, how a turn is asked again, and how a run ends are in ../run/: steps.ts,
 // turns.ts and endings.ts. Nothing here calls a model or a tool.
 
-import type { CaseAction, Citation } from '../../../shared/agent-contract.ts';
+import type { CaseAction, Citation, ReportFinding } from '../../../shared/agent-contract.ts';
 import type { AgentIdentity } from '../contract/server.ts';
 import type { Limits } from '../run/limits.ts';
 import { startRunState } from '../run/state.ts';
@@ -25,6 +26,10 @@ export type IntakeRun = RunState & {
   openedCaseId: string | undefined;
   // Set when a write may or may not have happened and that could not be settled.
   unsettled: string | undefined;
+  // What the report check found (report-check.ts), once it has been made. It is made at most once in a run.
+  finding: ReportFinding | undefined;
+  // Whether the model has been told, by code, to record what the report check found.
+  told: boolean;
 };
 
 export function startRun(identity: AgentIdentity, now: () => Date, limits: Limits): IntakeRun {
@@ -34,6 +39,8 @@ export function startRun(identity: AgentIdentity, now: () => Date, limits: Limit
     caseActions: [],
     openedCaseId: undefined,
     unsettled: undefined,
+    finding: undefined,
+    told: false,
   };
 }
 
@@ -103,5 +110,40 @@ function noteCaseAction(run: IntakeRun, tool: string, outcome: ToolOutcome): voi
   }
   if (tool === 'create_case') {
     run.openedCaseId = action.case_id;
+  }
+}
+
+// --- At the model's reply ----------------------------------------------------------------------------
+
+// The turn the model is given, written by code, when the report check found an adverse event and no case was
+// recorded.
+export const TOLD_ONCE =
+  "This desk's own check of the message found that it describes an adverse event. A sender cannot decline a report. Record it now with create_case, passing only what the message states.";
+
+export const STOPPED_FOUND_NOT_RECORDED =
+  'A separate check of the message found an adverse event, and the run recorded no case. A person must read this message.';
+export const STOPPED_CHECK_NOT_MADE = 'The run recorded no case, and the separate check for an adverse event could not be made.';
+
+// What a loop does when the model has ended its turn with a reply.
+//   complete   the run ends completed with the reply.
+//   check      the report check is needed and has not been made: make it, keep the finding on the run, ask again.
+//   tell_once  the model is given TOLD_ONCE as one more turn. The loop sets `told`.
+//   stop       the run ends stopped with the reason.
+// A run that recorded a case is complete without a check.
+export type AfterReply = 'complete' | 'check' | 'tell_once' | { stop: string };
+
+export function afterReply(run: Pick<IntakeRun, 'caseActions' | 'finding' | 'told'>): AfterReply {
+  if (run.caseActions.length > 0) {
+    return 'complete';
+  }
+  switch (run.finding) {
+    case undefined:
+      return 'check';
+    case 'none':
+      return 'complete';
+    case 'unknown':
+      return { stop: STOPPED_CHECK_NOT_MADE };
+    case 'adverse_event':
+      return run.told ? { stop: STOPPED_FOUND_NOT_RECORDED } : 'tell_once';
   }
 }

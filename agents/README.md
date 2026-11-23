@@ -59,7 +59,8 @@ The flows, the rules of a tool call, and the controls neither has are in two doc
 | [`src/contract/server.ts`](src/contract/server.ts) | `/invocations` and `/ping`, written by hand | Hand-written |
 | [`src/contract/sdk-app.ts`](src/contract/sdk-app.ts), [`src/contract/edge.ts`](src/contract/edge.ts), [`src/contract/runtime.ts`](src/contract/runtime.ts), [`src/contract/runtime-contract.ts`](src/contract/runtime-contract.ts) | `/invocations` and `/ping` through AWS's `BedrockAgentCoreApp`, the local stand-in for AgentCore Runtime's front door, starting both, and `LOCAL_RUNTIME_EDGE` with the headers and sentences they share | Strands, and the label expert |
 | [`src/intake/prompt.ts`](src/intake/prompt.ts) | What the agent is told | Both |
-| [`src/intake/run.ts`](src/intake/run.ts) | The rules of a run and the state they keep | Both |
+| [`src/intake/run.ts`](src/intake/run.ts) | The rules of a run and the state they keep, the rule at the model's reply among them | Both |
+| [`src/intake/report-check.ts`](src/intake/report-check.ts) | The report check: its prompt, reading its answer as a finding, the check made with the chat client, and where both loops come at the model's reply | Both |
 | [`src/intake/settings.ts`](src/intake/settings.ts) | The limits | Both |
 | [`src/intake/serve.ts`](src/intake/serve.ts) | Startup particular to intake: `CASE_MCP_URL`, the limits, the name in the start-up line, which server | Both |
 | [`src/run/serve.ts`](src/run/serve.ts) | Startup: the environment, which model is served, the server | Both, the label expert and the orchestrator |
@@ -75,7 +76,7 @@ The flows, the rules of a tool call, and the controls neither has are in two doc
 | [`src/tools/mcp-answers.ts`](src/tools/mcp-answers.ts) | Reading why connecting to an MCP service failed, and the payload of a tool result, in the words of the service named | Both, through `case-system.ts`; the label expert, through `src/expert/retrieval.ts` |
 | [`src/tools/tool-set.ts`](src/tools/tool-set.ts) | What a call can come back as (`ToolOutcome`), and what a set of tools looks like to the hand-written loop | Both use `ToolOutcome` |
 | [`src/intake/handwritten.ts`](src/intake/handwritten.ts) | The hand-written loop | Hand-written |
-| [`src/model/chat.ts`](src/model/chat.ts) | The chat API client, with `fetch` | Hand-written |
+| [`src/model/chat.ts`](src/model/chat.ts) | The chat API client, with `fetch` | Hand-written; the report check in both |
 | [`src/intake/strands.ts`](src/intake/strands.ts) | The Strands `Agent`, its four hooks, and the tool wrapper that adds a time limit | Strands |
 
 The rules both apply, from [`src/intake/run.ts`](src/intake/run.ts) and, for the turn lost to thinking and the limits, [`src/run/turns.ts`](src/run/turns.ts) and [`src/run/endings.ts`](src/run/endings.ts):
@@ -85,6 +86,7 @@ The rules both apply, from [`src/intake/run.ts`](src/intake/run.ts) and, for the
 - **If it is still not known whether a write happened, the run fails.** It does not write a reply.
 - **A turn lost to thinking is asked again once, with thinking off.**
 - **A run has a turn limit (6) and a time limit (150 s),** below the 180 s the client waits, and says which one stopped it.
+- **A run that recorded no case ends `completed` only when a separate check found no adverse event.** The report check is one request of its own to the model, made by code, shown the message alone and given no tools; only its yes or no is kept. When it finds an adverse event the model is told once, by code, to record it; a run that still records nothing ends `stopped`, as does one whose check could not be made.
 - **The model never sets the message identifier, receipt time or sender.** The code sends them as headers on every call to the case system, which uses the sender to limit follow-ups to that sender's own cases. An intake agent cannot look a case up: a follow-up that names its case's id is added to that case, and one that names none is recorded as a new case. Which agent is calling the case system reads from the token the agent got for it.
 - **Once a request is valid, the answer is always inside the contract:** an outcome and the steps taken so far, never a bare error status. The exceptions: the hand-written server answers 500 if the agent's own response is outside the contract (the SDK server makes that a `failed` outcome), and the local edge answers 502 if the SDK app does not answer.
 
@@ -92,7 +94,7 @@ The rules both apply, from [`src/intake/run.ts`](src/intake/run.ts) and, for the
 
 The Strands agent uses Strands the way it comes: its own loop, its own MCP client, and its OpenAI model on that model's default API (the Responses API). The hand-written agent speaks chat completions with `fetch`.
 
-The rules are shared code, tested once on the hand-written agent in [`test/intake.test.ts`](test/intake.test.ts); five tests in [`test/intake-strands.test.ts`](test/intake-strands.test.ts) show the Strands agent is wired to them. These nine differences are read from the code and from Strands' source; no test asserts them:
+The rules are shared code, tested once on the hand-written agent in [`test/intake.test.ts`](test/intake.test.ts); six tests in [`test/intake-strands.test.ts`](test/intake-strands.test.ts) show the Strands agent is wired to them. These nine differences are read from the code and from Strands' source; no test asserts them:
 
 | Situation | Hand-written loop | Strands 1.25.0 |
 |---|---|---|

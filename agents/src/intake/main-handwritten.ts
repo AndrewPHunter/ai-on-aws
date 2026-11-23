@@ -6,10 +6,12 @@ import { createChatModel } from '../model/chat.ts';
 import { connectCaseTools } from '../tools/case-system.ts';
 import { CASE_SYSTEM, connectWithToolToken } from '../tools/tool-token.ts';
 import { handleInquiry } from './handwritten.ts';
+import { createReportCheck } from './report-check.ts';
 import { serveIntakeAgent } from './serve.ts';
 
 serveIntakeAgent('hand-written loop', ({ identity, now, limits, model, exchange, caseMcpUrl }) => {
   const chat = createChatModel(model);
+  const reportCheck = createReportCheck(chat);
   // The caller's token is exchanged for one meant for the case system, and only that one is connected with.
   const connectTools = connectWithToolToken(
     exchange,
@@ -26,6 +28,7 @@ serveIntakeAgent('hand-written loop', ({ identity, now, limits, model, exchange,
         now,
         sleep: (ms) => sleep(ms),
         random: Math.random,
+        reportCheck,
         limits,
       },
       message,
