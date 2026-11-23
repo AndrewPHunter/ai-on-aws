@@ -236,6 +236,7 @@ Two more programs get a token on the stack's network, as machines: each as its o
 |---|---|---|---|---|
 | `knowledge/gate.sh` | `knowledge-gate` | `labels:search` | `IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET` | Call the retrieval service's MCP endpoint |
 | `evaluation/run.sh` | `evaluation` | `agents:expert` | `IDENTITY_EVALUATION_CLIENT_SECRET` | Call the label expert's `POST /invocations`, which exchanges it for its own token for the retrieval service. It gets a new token before the current one has under 200 s left |
+| `evaluation/attacks.sh` | None of its own: it signs each of the four people in through the client (`desk`), as the stack gate does, with `src/desk.ts` | What each person's role grants at sign-in | `IDENTITY_DANA_PASSWORD`, `IDENTITY_MORGAN_PASSWORD`, `IDENTITY_RILEY_PASSWORD`, `IDENTITY_AVERY_PASSWORD`, and no client secret | Holds no token, only each person's client cookie: sends each case's inquiry as its person, and reads cases as `riley.reviewer`. A person whose session ends signs in again once |
 
 ## Development only
 

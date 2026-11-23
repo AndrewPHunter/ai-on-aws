@@ -31,6 +31,28 @@ A reworded comparison, in order: `evaluation/reword.sh` once; `evaluation/reword
 
 No command prints a question, an answer, a reply, a rewrite or a model's reason: output is counts, codes, identifiers and file names.
 
+## The attack run
+
+`evaluation/attacks.sh <compose-project> <run-name> [--fault case-system|knowledge]` tries what must not work, and what must still work, on a running stack, and decides each case in code. The cases are committed in `evaluation/attacks/cases.json`: synthetic messages with invented people and medicines, each with its class, target agent, person, sender, precondition and expectations, and whether code or a model decides it. The classes and how a case is judged are in [docs/architecture/evaluation.md](../docs/architecture/evaluation.md#attack-control-and-fault-cases).
+
+**It is for a trial stack.** It enters about 60 inquiries as `dana.desk` and `morgan.medinfo` and opens cases from them. Start a fresh stack (`docker compose up -d --build --wait`, with the index built by `knowledge/index.sh` and a model server set up by `model/setup.sh`), then run it there. It needs `platform/identity/.env`, from which Compose gives it the four people's passwords and nothing else.
+
+| Run | What it does |
+|---|---|
+| `evaluation/attacks.sh ai-on-aws attacks-1` | Signs the four people in through the client; enters the victim's report as `dana.desk` through `intake-strands` and finds its case as `riley.reviewer`; then plays every attack and control case and the sent-twice faults, one at a time, each through the client as its person, waiting up to 300 s for its run; reads the truth as `riley.reviewer` after each; judges it; signs out |
+| `evaluation/attacks.sh ai-on-aws attacks-1-cases --fault case-system` | Stops the case system with Compose, plays the two cases run without it, and starts it again whatever happened |
+| `evaluation/attacks.sh ai-on-aws attacks-1-knowledge --fault knowledge` | The same with the retrieval service |
+
+Each run has its own name: started again with a name that exists, it refuses, since an attack run changes the stack. A `--fault` run refuses when its service is not running to begin with.
+
+It writes `evaluation/data/attacks/<run-name>/results.jsonl`, one line per case (the case's id, class, target, person, verdict, the expectations that failed, why a case was inconclusive or not run, the claim findings, and what was observed, replies and steps included), and `victim.json`. It prints one line per case (its id and verdict), then a table: for each class and target, how many cases held, failed, were inconclusive or not run, with cases decided by code and by a model counted apart, and the reply and record scopes of work in the reply apart; then the ids of the cases decided by code, and of the controls, that did not hold; then the claim findings (each case id, the kind, and the case id it names). Counts, never rates.
+
+| Exit code | `attacks.sh` |
+|---|---|
+| 0 | Every case decided by code held, and every control held |
+| 1 | One did not; the table lists it |
+| 2 | Could not run: the identity secrets, the stack's network or the service to stop missing; the run name used already; the case list not readable as `riley.reviewer`, or (without `--fault`) not a fresh stack |
+
 ## The rubrics
 
 | Rubric | The judge returns | Scored as |
@@ -70,12 +92,17 @@ The judge and the rewriter are optional: without judgments `score.sh` prints "co
 evaluation/
 ├── sample.json                   committed: the seed, the strata, the hashes of the files the list was drawn from,
 │                                 and the list of qids (identifiers only)
+├── attacks/cases.json            committed: the synthetic attack, control and fault cases
 └── data/                         never committed (.gitignore), never in an image (.dockerignore): it holds text
     ├── sample.jsonl              the sampled questions, with their answers and references
     ├── sample-reworded.jsonl     the reworded variant: each question with its text, whether it was reworded, and why not
     ├── sample-reworded.json      the rewriter, its model and effort, the instructions' hashes, the sample's and the
     │                             file's SHA-256, the counts and the wording overlap before and after
     ├── reword-check.csv          original and reworded pairs for a person to read
+    ├── attacks/<run-name>/
+    │   ├── results.jsonl         one line per attack, control or fault case: the verdict, the failed expectations, the
+    │   │                         claim findings and what was observed, replies and steps included
+    │   └── victim.json           the victim's inquiry, its run and the case it opened
     └── runs/<run-name>/
         ├── responses.jsonl       one line per call: qid, time, duration, status, whether it kept to the contract,
         │                         the reason it failed, and the response whole
@@ -290,4 +317,4 @@ Stated as readings, each with the figures it rests on:
 
 ## Tests
 
-`evaluation/test/` holds one test per invariant of the architecture document's "Always true", `evaluation 1` to `evaluation 12`, run by `toolchain/check.sh` with everything else; the judge and rewriter half of 3 (a constant in `judge.sh` and `reword.sh`) and the git and image half of 9 (`.gitignore`, `.dockerignore`) have none. The runner is given an in-memory agent (a fetch function, `evaluation/test/support.ts`); the model calls go through `evaluation/judge/call-all.sh` to one labelled stand-in adapter (`evaluation/test/stand-in-adapter.sh`). All text in them is invented.
+`evaluation/test/` holds one test per invariant of the architecture document's "Always true", `evaluation 1` to `evaluation 14`, run by `toolchain/check.sh` with everything else; the judge and rewriter half of 3 (a constant in `judge.sh` and `reword.sh`) and the git and image half of 9 (`.gitignore`, `.dockerignore`) have none. The runner is given an in-memory agent (a fetch function, `evaluation/test/support.ts`); the model calls go through `evaluation/judge/call-all.sh` to one labelled stand-in adapter (`evaluation/test/stand-in-adapter.sh`). All text in them is invented. The attack judge is given plain values, and the set's reader the committed `evaluation/attacks/cases.json` (`attacks.test.ts`); the attack runner and `attacks.sh` have no test: they are shown by running them on a trial stack.
