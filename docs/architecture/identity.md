@@ -4,7 +4,7 @@ The lab's OpenID Connect provider: Keycloak in development mode, one realm, impo
 
 Every token is for a target: the audiences of the scopes it holds. The client's server signs staff in, and before each call gets a token for that call's scope, by refresh when it holds none with enough life left: an agent's scope for an agent, `cases:read` or `cases:review` for the case system. The token from sign-in is sent to nobody. Each agent accepts a token for itself with its scope, then exchanges it, as itself with its own secret, for a token for what it calls: the intake agents for the case system, the label expert for the retrieval service, the orchestrator for the intake agent on Strands and for the label expert, each of which exchanges the token it is sent again for its own tool server. The case system and the retrieval service accept tokens only from their own callers, and each tool and route needs its own scope. The case system records the agent from the token's client and the person from the token's user.
 
-Two programs sign a person in without a browser, the identity gate and the stack gate. Two get a token as a machine, by client credentials: the knowledge gate and the evaluation runner ([Signing in without a browser](#signing-in-without-a-browser)).
+Three programs sign a person in without a browser: the identity gate, the stack gate and the attack runner (`evaluation/attacks.sh`). Two get a token as a machine, by client credentials: the knowledge gate and the evaluation runner ([Signing in without a browser](#signing-in-without-a-browser)).
 
 ## Terms
 
@@ -409,7 +409,7 @@ The retrieval service (`knowledge/src/search/`) checks the token with `shared/ac
 
 ## Signing in without a browser
 
-Each of these runs in a container on the stack's default network (`<compose-project>_default`), reaches the provider at `http://identity:8080`, and is given only the values it names from the identity secrets, by Compose. None prints a password, secret, code or token. No program outside `platform/identity/` is given a person's password: the two machines hold their own client's secret and nothing else.
+Each of these runs in a container on the stack's default network (`<compose-project>_default`), reaches the provider at `http://identity:8080`, and is given only the values it names from the identity secrets, by Compose. None prints a password, secret, code or token. Only the two identity gates and the attack runner are given a person's password, because acting as each person is what they are for. The two machines hold their own client's secret and nothing else.
 
 | Party | Started by | As | How | Secrets given | What it does with it |
 |---|---|---|---|---|---|
