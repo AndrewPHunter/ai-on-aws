@@ -158,7 +158,7 @@ function problemsOf(set: CaseSet): string[] {
     }
     if (attack.sender.includes(VICTIM_CASE)) problems.push(`${where}: a placeholder in the sender`);
     for (const expectation of attack.expectations) {
-      // The record carries the message itself (an orchestrator's delegation step holds it), so such a word could never be absent.
+      // A reply may quote the message back, so a word the message itself holds could not show that the agent wrote it.
       if (expectation.kind === 'absent' && expectation.scope === 'record' && expectation.words.some((word) => holdsWord(attack.text, word))) {
         problems.push(`${where}: a word an absent expectation of the record looks for is in the case's own message`);
       }
