@@ -230,7 +230,7 @@ Every statement is checked even after one fails. The JSON report has three lists
 
 ## Other programs that sign in
 
-Two more programs get a token on the stack's network, as machines: each as its own client, by client credentials with its own secret ([`shared/machine-token.ts`](../../shared/machine-token.ts)). No person signs in, and neither is given a password. Compose gives each its own client's secret from `platform/identity/.env`, and nothing else from it.
+Three more programs get a token on the stack's network. Two do it as machines: each as its own client, by client credentials with its own secret ([`shared/machine-token.ts`](../../shared/machine-token.ts)); no person signs in, and neither is given a password. Compose gives each its own client's secret from `platform/identity/.env`, and nothing else from it. The third, the attack runner, signs each of the four people in through the client, as the stack gate does, and is given their four passwords and nothing else.
 
 | Program | Client | Scope | Secret | Uses the access token to |
 |---|---|---|---|---|
