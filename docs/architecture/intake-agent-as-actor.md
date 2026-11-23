@@ -152,7 +152,6 @@ flowchart TD
 | Caller to agent | The caller stops waiting at 180 s and records the run as failed | Once for a run. A person may start another run of the same message | The case system recognises the message identifier |
 | Agent to model | Hand-written loop: a failed connection or a status of 408, 429 or 5xx is sent again; a request that ran out of time is not. Strands: the OpenAI client sends it again, timed-out ones included, and Strands asks again on throttling | Hand-written loop: 3 times for a turn. Strands: 3 for each of up to 6 attempts, within the run's time | Asking the model changes nothing |
 | Agent to identity provider | The token cannot be checked: 503, and the request is not handled. The next request asks again | The discovery document and the keys once, then kept; the keys again for a key not yet seen, at most every 30 s | It is a read |
-| Agent to case system, a lookup | The model is told there was no answer | Once | Not applicable |
 | Agent to case system, a write | Repeated once by code. If that also gets no answer, the run fails as not known | Twice | The case system recognises identical content for the same message |
 
 ## Design choices in this actor
@@ -162,6 +161,6 @@ The actor model leaves each of these open. This is what the intake agent chose, 
 | Choice | What this agent does | Why | What follows |
 |---|---|---|---|
 | How a message is delivered | A request that is held open until the answer. No queue in front of the agent | The desk wants the outcome of this message: the reply and any case it opened. `/invocations` on AgentCore Runtime is a request and its answer | The caller waits up to 180 s. The client does that waiting in the background, so the person at the desk is not held |
-| How long the actor lives | One run for one message. Its state is discarded when it answers | Each message is handled the same whatever came before, and one sender's conversation cannot reach another's. What must last is in the case system | The agent knows nothing of earlier messages, except what the case system returns from a lookup |
+| How long the actor lives | One run for one message. Its state is discarded when it answers | Each message is handled the same whatever came before, and one sender's conversation cannot reach another's. What must last is in the case system | The agent knows nothing of earlier messages. A follow-up reaches an earlier case only by the case id its message names |
 | What happens when a run fails | The failure is reported to the caller as an outcome. Nothing restarts the run | Whether to try again is a decision for a person at the desk. Trying again is safe, because the case system opens one case for a message | Another run is started by a person |
-| Whether it hands work to other actors | It hands none on | Recording an adverse event is one job with three tools | One agent does the whole job |
+| Whether it hands work to other actors | It hands none on | Recording an adverse event is one job with two tools | One agent does the whole job |

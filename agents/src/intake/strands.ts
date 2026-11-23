@@ -63,7 +63,7 @@ import type { TokenExchange } from '../../../shared/token-exchange.ts';
 import type { AgentIdentity } from '../contract/server.ts';
 import { MODEL_UNREACHABLE, modelAnsweredWithStatus, modelDidNotAnswerWithin } from '../model/served.ts';
 import type { ModelSettings } from '../model/served.ts';
-import { caseSystemHeaders, connectionFailure, missingCaseTools, noAnswerWithin, payloadOf } from '../tools/case-system.ts';
+import { caseSystemHeaders, connectionFailure, isCaseTool, missingCaseTools, noAnswerWithin, payloadOf } from '../tools/case-system.ts';
 import type { ToolOutcome } from '../tools/tool-set.ts';
 import { CASE_SYSTEM, toolToken } from '../tools/tool-token.ts';
 import { completed, failed, stoppedAtTimeLimit, stoppedAtTurnLimit, stoppedCutOff, stoppedWithoutReply } from '../run/endings.ts';
@@ -233,7 +233,8 @@ async function converse(
 
   const agent = new Agent({
     model,
-    tools: listed.map((tool) => new CaseTool(tool, mcp, run, outcomes)),
+    // The run's two tools and nothing else the case system offers.
+    tools: listed.filter((tool) => isCaseTool(tool.name)).map((tool) => new CaseTool(tool, mcp, run, outcomes)),
     systemPrompt: SYSTEM_PROMPT,
     toolExecutor: 'sequential',
     conversationManager: new NullConversationManager(),

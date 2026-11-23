@@ -14,7 +14,7 @@ import type { Limits } from '../run/limits.ts';
 import { startRunState } from '../run/state.ts';
 import type { RunState } from '../run/state.ts';
 import type { Refusal } from '../run/steps.ts';
-import { WRITING_TOOLS, caseActionFrom } from '../tools/case-system.ts';
+import { caseActionFrom } from '../tools/case-system.ts';
 import type { ToolOutcome } from '../tools/tool-set.ts';
 
 export type IntakeRun = RunState & {
@@ -65,6 +65,8 @@ export function refusalBeforeCall(run: IntakeRun, tool: string, args: unknown): 
 }
 
 // What the loop does next after one attempt at a call.
+// Every tool the model is shown writes (CASE_TOOLS in ../tools/case-system.ts), so a call with no answer
+// is always a write whose outcome is unknown.
 //   done       the model is told what came back.
 //   repeat     a write did not answer, so it may or may not have happened. The agent's code repeats
 //              it once with exactly the same content: if the first attempt went through, the case
@@ -76,9 +78,6 @@ export type AfterCall = 'done' | 'repeat' | 'unsettled';
 export function afterCall(run: IntakeRun, tool: string, outcome: ToolOutcome, attempt: number): AfterCall {
   if (outcome.kind === 'answered') {
     noteCaseAction(run, tool, outcome);
-    return 'done';
-  }
-  if (!WRITING_TOOLS.includes(tool)) {
     return 'done';
   }
   if (attempt === 1) {

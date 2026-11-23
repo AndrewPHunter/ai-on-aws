@@ -172,7 +172,7 @@ test('runtime 5. an agent connects to its tool server only with a token it got f
   const callerToken = 'token-the-agent-was-called-with';
   const inbound = message('msg-runtime-5', 'Patient JD had a rash after Examplamab.');
   const rows: Array<{ name: string; answer: TokenExchangeResult; connected: string[] }> = [
-    { name: 'granted', answer: { kind: 'token', token: 'token-for-the-case-system', expiresAt: new Date('2026-03-01T10:05:00.000Z'), scopes: ['cases:write', 'cases:lookup'] }, connected: ['token-for-the-case-system'] },
+    { name: 'granted', answer: { kind: 'token', token: 'token-for-the-case-system', expiresAt: new Date('2026-03-01T10:05:00.000Z'), scopes: ['cases:write'] }, connected: ['token-for-the-case-system'] },
     { name: 'refused', answer: { kind: 'refused', reason: 'provider_refused', detail: 'Detail-of-the-refused-exchange.' }, connected: [] },
     { name: 'unavailable', answer: { kind: 'unavailable', detail: 'the token exchange could not reach the identity provider: fetch failed (getaddrinfo ENOTFOUND identity.example:8080).' }, connected: [] },
   ];
@@ -199,7 +199,7 @@ test('runtime 5. an agent connects to its tool server only with a token it got f
     const result = await connect(inbound, callerToken, 10_000);
     assert.deepEqual(
       asked.map(({ subjectToken, audience, scopes }) => ({ subjectToken, audience, scopes: [...scopes] })),
-      [{ subjectToken: callerToken, audience: 'case-system', scopes: ['cases:write', 'cases:lookup'] }],
+      [{ subjectToken: callerToken, audience: 'case-system', scopes: ['cases:write'] }],
       `${row.name}: the exchange was not asked once, for the case system`,
     );
     assert.deepEqual(connected, row.connected, `${row.name}: what was connected with`);
