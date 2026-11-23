@@ -64,13 +64,15 @@ Four synthetic people, each with one lab role and a permanent password, and two 
 | `desk` | `agents:intake`, `agents:expert:delegated`, `agents:orchestrator`, `cases:write`, `labels:search` | Enter inquiries and run the intake agents and the orchestrator |
 | `medical-information` | `agents:intake`, `agents:expert`, `agents:expert:delegated`, `agents:orchestrator`, `cases:write`, `labels:search` | Do what the desk does, and run the label expert |
 | `safety-reviewer` | `cases:read`, `cases:review` | Read cases and decide them |
-| `auditor` | `cases:read` | Read cases and their audit trails; change nothing |
+| `auditor` | `cases:read`, `traces:read` | Read cases and their audit trails, and every run's trace in the client; change nothing |
 | `evaluation` | `agents:expert`, `labels:search` | Call the label expert |
 | `knowledge-gate` | `labels:search` | Search the retrieval service |
 
 `cases:write` and `labels:search` go with the roles that run an agent (invariant 2), because the agent asks for them when it exchanges that person's token, and an exchange that leaves out a scope asked for ends the run. `agents:intake` and `agents:expert:delegated` go with the roles that run the orchestrator for the same reason: it asks for them when it exchanges the person's token for each sub-agent. `desk` grants `labels:search` because the label expert exchanges a desk user's token, sent to it by the orchestrator, for the retrieval service. `agents:expert:delegated` is no use to the `desk` client, which may not ask for it.
 
 `cases:lookup` is in the realm, names the audience `case-system`, and guards the case system's `find_case`. No client may ask for it, so no token carries it and an intake agent is offered no lookup (gate statement G9 shows an intake agent's client refused it). No role is mapped to it either; that alone is not the control.
+
+`traces:read` lets a session read every run's trace, steps included, in the client. Only `auditor` grants it and only `desk` may ask for it. It names no audience: in this phase the client checks the session's grant, and no service receives a token carrying it. The steps still travel in the agent's response and are still stored by the client; this scope decides only who may read them there.
 
 The administrator for the admin console at <http://localhost:8090/admin/> is `IDENTITY_ADMIN_USERNAME` with `IDENTITY_ADMIN_PASSWORD`, in the same file. Changes made in the console are lost at the next start.
 
@@ -85,7 +87,7 @@ The administrator for the admin console at <http://localhost:8090/admin/> is `ID
 | PKCE | Required, method `S256` |
 | Redirect URI | `http://localhost:3000/auth/callback`, exactly |
 | Post-logout redirect URI | `http://localhost:3000/` |
-| May ask for | `agents:intake`, `agents:expert`, `agents:orchestrator`, `cases:read`, `cases:review`. Asking for `labels:search` or `agents:expert:delegated`, which it may not, is refused with `invalid_scope` (gate statement G6) |
+| May ask for | `agents:intake`, `agents:expert`, `agents:orchestrator`, `cases:read`, `cases:review`, `traces:read`. It is the only client that may ask for `traces:read`. Asking for `labels:search` or `agents:expert:delegated`, which it may not, is refused with `invalid_scope` (gate statement G6) |
 
 | Client | For | How it gets a token | May ask for | Secret |
 |---|---|---|---|---|
@@ -105,7 +107,7 @@ An access token is a JWT signed with RS256 by a key published at the realm's `jw
 | Claim | Value |
 |---|---|
 | `iss` | `http://localhost:8090/realms/lab`, whichever address was used to reach the provider |
-| `aud` | The audiences of the scopes granted, and no other: `intake-handwritten` and `intake-strands` for `agents:intake`, `expert` for `agents:expert` and `agents:expert:delegated`, `orchestrator` for `agents:orchestrator`, `case-system` for the four case scopes, `knowledge` for `labels:search`. An exchanged token names the one audience the agent asked for |
+| `aud` | The audiences of the scopes granted, and no other: `intake-handwritten` and `intake-strands` for `agents:intake`, `expert` for `agents:expert` and `agents:expert:delegated`, `orchestrator` for `agents:orchestrator`, `case-system` for the four case scopes, `knowledge` for `labels:search`, none for `traces:read`. An exchanged token names the one audience the agent asked for |
 | `client_id` | The client it was issued to: `desk` for a person's token, the agent for an exchanged token, `evaluation` or `knowledge-gate` for a machine's |
 | `scope` | The scopes granted, separated by spaces. Keycloak adds others, such as `profile` and `email`, which no service reads |
 | `roles` | A top-level array of the account's realm role names: its one lab role, and Keycloak's default role `default-roles-lab` with the roles it includes (`offline_access`, `uma_authorization`), so it is never empty |
@@ -159,8 +161,8 @@ The gate runs in the pinned Node image on the project's default network (`<compo
 1. G14: the discovery document at `http://identity:8080` answers, names the issuer `http://localhost:8090/realms/lab`, and its key set answers with keys.
 2. G1: each of the four people signs in through the Authorization Code flow with PKCE, asking for `openid` and every scope `desk` may ask for: the gate requests the authorization endpoint, posts the sign-in form with a cookie jar, reads the redirect to the callback without requesting it, and exchanges the code at the token endpoint with the client secret and the code verifier. The token is granted exactly the scopes the person's role grants.
 3. G2: each access token is signed with RS256 by a published key and carries the issuer, exactly the granted scopes' audiences, `client_id` `desk`, the fixed `sub`, `preferred_username`, `name`, `roles` holding the person's one lab role and no other, no `realm_access` or `resource_access`, and `exp` − `iat` of 600. Each ID token's signature, issuer and audience are verified, and its `roles` checked the same way.
-4. G3 to G5: a refresh with `scope=openid <scope>`, for each scope the person is granted, gives a token for that scope's audiences alone (G3). The refresh token that refresh returned still obtains the whole grant, and a token for each other granted scope (G4). A refresh for a scope `desk` may ask for that the role does not grant is answered 200, without that scope or its audiences (G5).
-5. G11, G12: each machine gets a token by client credentials for its scope, with the scope's audiences, its own `client_id`, its fixed `sub`, `preferred_username` `service-account-<client>`, a name, and its one role and no staff role. `evaluation` asking for `labels:search` or `agents:expert:delegated`, and `knowledge-gate` asking for `agents:expert:delegated`, are refused `invalid_scope`.
+4. G3 to G5: a refresh with `scope=openid <scope>`, for each scope the person is granted, gives a token for that scope's audiences alone, and for `traces:read`, which names none, a token that names no audience (G3). The refresh token that refresh returned still obtains the whole grant, and a token for each other granted scope (G4). A refresh for a scope `desk` may ask for that the role does not grant is answered 200, without that scope or its audiences (G5).
+5. G11, G12: each machine gets a token by client credentials for its scope, with the scope's audiences, its own `client_id`, its fixed `sub`, `preferred_username` `service-account-<client>`, a name, and its one role and no staff role. `evaluation` asking for `labels:search`, `agents:expert:delegated` or `traces:read`, and `knowledge-gate` asking for `agents:expert:delegated` or `traces:read`, are refused `invalid_scope`.
 6. G7, G8, G11: each agent exchanges each token it is an audience of (the intake agents `dana.desk`'s `agents:intake` token; the label expert `morgan.medinfo`'s `agents:expert` token and `evaluation`'s) for its tool server's audience and scopes: the intake agents audience `case-system` with `cases:write` alone, the label expert audience `knowledge` with `labels:search`. The token issued names that audience alone, the agent as `client_id` and `azp`, the subject's `sub`, `preferred_username`, `name`, `roles` and `exp`, and every scope asked for and no other of the lab's scopes; no refresh token comes with it.
 7. G15, G16: the chain through the orchestrator, for `dana.desk`'s and `morgan.medinfo`'s `agents:orchestrator` tokens. The orchestrator exchanges each for each sub-agent: audience `intake-strands` with scope `agents:intake`, and audience `expert` with scope `agents:expert:delegated`. The token issued names that audience alone, `orchestrator` as `client_id` and `azp`, the person's `sub`, `preferred_username`, `name`, `roles` and `exp`, and the scope asked for and no other of the lab's scopes; no refresh token comes with it (G15). The sub-agent then exchanges that token for its own tool server's audience and scopes, and the token issued is checked as in step 6, against the token the orchestrator got (G16).
 8. G9: an agent, the orchestrator among them, exchanging a person's token it is not an audience of is refused 403 `Client is not within the token audience`.

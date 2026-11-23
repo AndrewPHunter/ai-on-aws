@@ -14,9 +14,10 @@
     "cases:lookup": ["case-system"],
     "cases:read": ["case-system"],
     "cases:review": ["case-system"],
-    "labels:search": ["knowledge"]
+    "labels:search": ["knowledge"],
+    "traces:read": []
   },
-  "deskScopes": ["agents:intake", "agents:expert", "agents:orchestrator", "cases:read", "cases:review"],
+  "deskScopes": ["agents:intake", "agents:expert", "agents:orchestrator", "cases:read", "cases:review", "traces:read"],
   "deskForbiddenScopes": ["labels:search", "agents:expert:delegated"],
   "staffRoles": ["desk", "medical-information", "safety-reviewer", "auditor"],
   "machineRoles": ["evaluation", "knowledge-gate"],
@@ -24,7 +25,7 @@
     { "username": "dana.desk", "passwordVariable": "IDENTITY_DANA_PASSWORD", "id": "6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f02", "staffRole": "desk", "granted": ["agents:intake", "agents:orchestrator"] },
     { "username": "morgan.medinfo", "passwordVariable": "IDENTITY_MORGAN_PASSWORD", "id": "6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f03", "staffRole": "medical-information", "granted": ["agents:intake", "agents:expert", "agents:orchestrator"] },
     { "username": "riley.reviewer", "passwordVariable": "IDENTITY_RILEY_PASSWORD", "id": "6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f01", "staffRole": "safety-reviewer", "granted": ["cases:read", "cases:review"] },
-    { "username": "avery.auditor", "passwordVariable": "IDENTITY_AVERY_PASSWORD", "id": "6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f04", "staffRole": "auditor", "granted": ["cases:read"] }
+    { "username": "avery.auditor", "passwordVariable": "IDENTITY_AVERY_PASSWORD", "id": "6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f04", "staffRole": "auditor", "granted": ["cases:read", "traces:read"] }
   ],
   "agents": [
     { "clientId": "intake-handwritten", "secretVariable": "IDENTITY_INTAKE_HANDWRITTEN_CLIENT_SECRET", "audience": "case-system", "scopes": ["cases:write"], "forbiddenScopes": ["cases:lookup"], "subject": { "username": "dana.desk", "scope": "agents:intake" } },
@@ -43,8 +44,8 @@
     "forbiddenScopes": ["labels:search", "agents:expert"]
   },
   "machines": [
-    { "clientId": "evaluation", "secretVariable": "IDENTITY_EVALUATION_CLIENT_SECRET", "id": "6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f05", "role": "evaluation", "scope": "agents:expert", "forbiddenScopes": ["labels:search", "agents:expert:delegated"] },
-    { "clientId": "knowledge-gate", "secretVariable": "IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET", "id": "6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f06", "role": "knowledge-gate", "scope": "labels:search", "forbiddenScopes": ["agents:expert:delegated"] }
+    { "clientId": "evaluation", "secretVariable": "IDENTITY_EVALUATION_CLIENT_SECRET", "id": "6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f05", "role": "evaluation", "scope": "agents:expert", "forbiddenScopes": ["labels:search", "agents:expert:delegated", "traces:read"] },
+    { "clientId": "knowledge-gate", "secretVariable": "IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET", "id": "6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f06", "role": "knowledge-gate", "scope": "labels:search", "forbiddenScopes": ["agents:expert:delegated", "traces:read"] }
   ],
   "audienceOnlyClients": ["case-system", "knowledge"],
   "exchangeOffDescription": "Standard token exchange is not enabled for the requested client"

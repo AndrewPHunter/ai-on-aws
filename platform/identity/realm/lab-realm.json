@@ -310,6 +310,16 @@
           }
         }
       ]
+    },
+    {
+      "name": "traces:read",
+      "description": "Reads every run's trace, steps included, in the client (GET /api/traces, GET /api/traces/<run_id>).",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": []
     }
   ],
   "scopeMappings": [
@@ -344,6 +354,10 @@
     {
       "clientScope": "labels:search",
       "roles": ["desk", "medical-information", "evaluation", "knowledge-gate"]
+    },
+    {
+      "clientScope": "traces:read",
+      "roles": ["auditor"]
     }
   ],
   "defaultDefaultClientScopes": ["basic", "profile", "email"],
@@ -375,7 +389,7 @@
         "standard.token.exchange.enabled": "false"
       },
       "defaultClientScopes": ["basic", "profile", "email"],
-      "optionalClientScopes": ["agents:intake", "agents:expert", "agents:orchestrator", "cases:read", "cases:review"],
+      "optionalClientScopes": ["agents:intake", "agents:expert", "agents:orchestrator", "cases:read", "cases:review", "traces:read"],
       "protocolMappers": [
         {
           "name": "client_id",
