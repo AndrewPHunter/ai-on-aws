@@ -227,12 +227,14 @@ export type ExchangeExpectations = {
   audience: string
   /** Every scope asked for. */
   scopes: readonly string[]
+  /** Every scope the realm defines for a capability; of these the token holds exactly `scopes`. */
+  customScopes: readonly string[]
 }
 
 /**
  * G7, G8, G11, G15, G16. The answer to an exchange (`body`, its other fields) and the token it issued (`claims`), against the
  * token that was exchanged (`subject`): one audience, the agent as client_id and azp, the subject's identity and
- * roles, every scope asked for, the subject's expiry, and no refresh token.
+ * roles, every scope asked for and no other custom scope, the subject's expiry, and no refresh token.
  */
 export function checkExchangedToken(body: Body, claims: Claims, subject: Claims, expected: ExchangeExpectations): Violation[] {
   const violations: Violation[] = []
@@ -260,6 +262,8 @@ export function checkExchangedToken(body: Body, claims: Claims, subject: Claims,
   const scopes = scopesOf(claims.scope)
   const missing = scopes === null ? [...expected.scopes] : expected.scopes.filter((name) => !scopes.includes(name))
   if (missing.length > 0) fail('scope holds every scope asked for', `missing ${missing.join(' ')}; scope ${describe(claims.scope)}`)
+  const others = (scopes ?? []).filter((name) => !expected.scopes.includes(name) && expected.customScopes.includes(name))
+  if (others.length > 0) fail('scope holds no other custom scope', `also ${others.join(' ')}`)
   if (typeof claims.exp !== 'number' || claims.exp !== subject.exp) fail("exp is the exchanged token's", `expected ${describe(subject.exp)}, got ${describe(claims.exp)}`)
   return violations
 }

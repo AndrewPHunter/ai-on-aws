@@ -334,10 +334,6 @@
       "roles": ["desk", "medical-information"]
     },
     {
-      "clientScope": "cases:lookup",
-      "roles": ["desk", "medical-information"]
-    },
-    {
       "clientScope": "cases:read",
       "roles": ["safety-reviewer", "auditor"]
     },
@@ -434,7 +430,7 @@
         "oidc.ciba.grant.enabled": "false",
         "standard.token.exchange.enabled": "true"
       },
-      "optionalClientScopes": ["cases:write", "cases:lookup"],
+      "optionalClientScopes": ["cases:write"],
       "protocolMappers": [
         {
           "name": "client_id",
@@ -489,7 +485,7 @@
         "oidc.ciba.grant.enabled": "false",
         "standard.token.exchange.enabled": "true"
       },
-      "optionalClientScopes": ["cases:write", "cases:lookup"],
+      "optionalClientScopes": ["cases:write"],
       "protocolMappers": [
         {
           "name": "client_id",

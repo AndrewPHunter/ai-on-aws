@@ -813,7 +813,7 @@ async function tokenStatements(people: Map<string, Person>, secrets: Secrets): P
 
   const exchanged: Grant = dana.ok
     ? await grantFrom('intake-handwritten exchanging it for case-system', () =>
-        exchange(HTTP, TOKEN_ENDPOINT, 'intake-handwritten', secrets.intakeHandwritten, dana.token, 'case-system', ['cases:write', 'cases:lookup']),
+        exchange(HTTP, TOKEN_ENDPOINT, 'intake-handwritten', secrets.intakeHandwritten, dana.token, 'case-system', ['cases:write']),
       )
     : { ok: false, detail: `no token to exchange: ${dana.detail}` };
   const exchangedName = `${danaName}, exchanged as intake-handwritten for case-system`;
