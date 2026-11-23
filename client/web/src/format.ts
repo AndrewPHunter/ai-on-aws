@@ -86,8 +86,10 @@ export function stepTitle(step: Step): string {
     }
     case 'retrieval':
       return 'Searched the label';
-    case 'handoff':
-      return `Passed to ${step.to_agent}`;
+    case 'delegation':
+      return step.response === null
+        ? `Asked ${step.to_agent} (${step.id}), with no answer`
+        : `Asked ${step.to_agent} (${step.id})`;
     case 'error':
       return 'A step failed';
   }

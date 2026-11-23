@@ -18,18 +18,25 @@
 //   G4   The refresh token that refresh returned still reaches the whole grant, and another granted scope.
 //   G5   A refresh for a scope the role does not grant is answered 200 with the scope and its audiences absent.
 //   G11, G12  Each machine obtains a token by client credentials for its scope, with its fixed sub, its name and
-//        its one role; evaluation is refused a scope its client may not ask for.
+//        its one role; each is refused the scopes its client may not ask for: a tool server's, and the one only
+//        the orchestrator may ask for.
 //   G7, G8, G11  Each agent exchanges the token it is called with for a token for the one service it calls.
-//   G9   An agent is refused a person's token it is not an audience of.
+//   G15  The orchestrator exchanges each caller's token for it for a token for each sub-agent it calls, with
+//        that sub-agent's scope: one audience, the orchestrator as client, the person, the same expiry.
+//   G16  Each sub-agent exchanges the orchestrator's token for it for a token for its own tool server, as it does
+//        a token it is called with directly: the second exchange of the chain.
+//   G9   An agent (the orchestrator among them) is refused a person's token it is not an audience of.
 //   G13, G14  The token endpoint refuses the password grant for desk and client credentials for desk and the two
 //        audience-only clients; the authorization endpoint refuses a request with no PKCE challenge, with the
 //        plain method, and for the implicit flow (response_type=token).
 // Last, the answers the throwaway Keycloak runs did not observe on this path, so that a wrong expectation there
 // leaves every statement above checked:
 //   G10  The desk client, both audience-only clients and both machines cannot exchange a token.
-//   G9   An agent is refused a scope its client may not ask for.
-//   G6   The desk client asking for a scope it may not ask for is refused invalid_scope, at a refresh and at the
-//        authorization endpoint.
+//   G9   An agent is refused a scope its client may not ask for: the other kind of agent's scopes, a scope only
+//        the orchestrator may ask for, and, for the orchestrator, a tool server's scope and the label expert's
+//        scope for a direct caller.
+//   G6   The desk client asking for a scope it may not ask for (a tool server's, or one only the orchestrator may
+//        ask for) is refused invalid_scope, at a refresh and at the authorization endpoint.
 //
 // Whether a token or an answer meets a statement is decided by the pure functions of ../src/judge.ts; this file
 // fetches, verifies signatures (jose) and reports. The requests themselves, and the cookie jar, are in
@@ -94,7 +101,20 @@ import {
 
 type UserConfig = { username: string; passwordVariable: string; id: string; staffRole: string; granted: string[] }
 type AgentConfig = { clientId: string; secretVariable: string; audience: string; scopes: string[]; subject: { username: string; scope: string } }
-type MachineConfig = { clientId: string; secretVariable: string; id: string; role: string; scope: string; forbiddenScope?: string }
+type MachineConfig = { clientId: string; secretVariable: string; id: string; role: string; scope: string; forbiddenScopes: string[] }
+/** A sub-agent the orchestrator calls (an entry of `agents`), the scope it asks for there, and whether only the orchestrator's client may ask for that scope. */
+type DelegationConfig = { audience: string; scope: string; onlyThisClient: boolean }
+type OrchestratorConfig = {
+  clientId: string
+  secretVariable: string
+  /** The scope of a caller's token for the orchestrator. */
+  scope: string
+  /** The people whose token for the orchestrator it exchanges. */
+  callers: string[]
+  delegations: DelegationConfig[]
+  /** Scopes its client may not ask for. */
+  forbiddenScopes: string[]
+}
 
 type GateConfig = {
   issuer: string
@@ -106,11 +126,12 @@ type GateConfig = {
   /** Each custom scope and the audiences it names. */
   scopes: Map<string, string[]>
   deskScopes: string[]
-  deskForbiddenScope: string
+  deskForbiddenScopes: string[]
   staffRoles: string[]
   machineRoles: string[]
   users: UserConfig[]
   agents: AgentConfig[]
+  orchestrator: OrchestratorConfig
   machines: MachineConfig[]
   audienceOnlyClients: string[]
   exchangeOffDescription: string
@@ -152,7 +173,7 @@ function loadConfig(path: string): GateConfig {
     requestTimeoutMs: field(raw, 'requestTimeoutMs', isNumber, 'a number'),
     scopes,
     deskScopes: field(raw, 'deskScopes', isStrings, 'a list of strings'),
-    deskForbiddenScope: field(raw, 'deskForbiddenScope', isString, 'a string'),
+    deskForbiddenScopes: field(raw, 'deskForbiddenScopes', isStrings, 'a list of strings'),
     staffRoles: field(raw, 'staffRoles', isStrings, 'a list of strings'),
     machineRoles: field(raw, 'machineRoles', isStrings, 'a list of strings'),
     users: field(raw, 'users', isRecords, 'a list of objects').map((user) => ({
@@ -172,23 +193,54 @@ function loadConfig(path: string): GateConfig {
         subject: { username: field(subject, 'username', isString, 'a string'), scope: field(subject, 'scope', isString, 'a string') },
       }
     }),
+    orchestrator: loadOrchestrator(field(raw, 'orchestrator', isRecord, 'an object')),
     machines: field(raw, 'machines', isRecords, 'a list of objects').map((machine) => ({
       clientId: field(machine, 'clientId', isString, 'a string'),
       secretVariable: field(machine, 'secretVariable', isString, 'a string'),
       id: field(machine, 'id', isString, 'a string'),
       role: field(machine, 'role', isString, 'a string'),
       scope: field(machine, 'scope', isString, 'a string'),
-      // A scope the machine's client may not ask for, whose refusal the gate states (G11). Optional.
-      ...(machine.forbiddenScope === undefined ? {} : { forbiddenScope: field(machine, 'forbiddenScope', isString, 'a string') }),
+      // Scopes the machine's client may not ask for, whose refusals the gate states (G11). Optional; none when absent.
+      forbiddenScopes: machine.forbiddenScopes === undefined ? [] : field(machine, 'forbiddenScopes', isStrings, 'a list of strings'),
     })),
     audienceOnlyClients: field(raw, 'audienceOnlyClients', isStrings, 'a list of strings'),
     exchangeOffDescription: field(raw, 'exchangeOffDescription', isString, 'a string'),
   }
-  for (const name of [...config.deskScopes, config.deskForbiddenScope, ...config.users.flatMap((user) => user.granted)]) {
+  const orchestrator = config.orchestrator
+  for (const name of [
+    ...config.deskScopes,
+    ...config.deskForbiddenScopes,
+    ...config.users.flatMap((user) => user.granted),
+    orchestrator.scope,
+    ...orchestrator.forbiddenScopes,
+    ...config.machines.flatMap((machine) => machine.forbiddenScopes),
+    ...orchestrator.delegations.map((delegation) => delegation.scope),
+  ]) {
     if (!config.scopes.has(name)) throw new UsageError(`config: ${name} is not in scopes`)
+  }
+  for (const delegation of orchestrator.delegations) {
+    if (!config.agents.some((agent) => agent.clientId === delegation.audience)) throw new UsageError(`config: orchestrator.delegations names ${delegation.audience}, which is not in agents`)
+  }
+  for (const caller of orchestrator.callers) {
+    if (!config.users.some((user) => user.username === caller)) throw new UsageError(`config: orchestrator.callers names ${caller}, who is not in users`)
   }
   if (config.users.length === 0) throw new UsageError('config: users is empty')
   return config
+}
+
+function loadOrchestrator(raw: Record<string, unknown>): OrchestratorConfig {
+  return {
+    clientId: field(raw, 'clientId', isString, 'a string'),
+    secretVariable: field(raw, 'secretVariable', isString, 'a string'),
+    scope: field(raw, 'scope', isString, 'a string'),
+    callers: field(raw, 'callers', isStrings, 'a list of strings'),
+    delegations: field(raw, 'delegations', isRecords, 'a list of objects').map((delegation) => ({
+      audience: field(delegation, 'audience', isString, 'a string'),
+      scope: field(delegation, 'scope', isString, 'a string'),
+      onlyThisClient: field(delegation, 'onlyThisClient', (value): value is boolean => typeof value === 'boolean', 'true or false'),
+    })),
+    forbiddenScopes: field(raw, 'forbiddenScopes', isStrings, 'a list of strings'),
+  }
 }
 
 // ---------- statements ----------
@@ -399,7 +451,7 @@ async function main(): Promise<number> {
   const secrets: Secrets = {
     deskSecret: requiredEnv(config.clientSecretVariable),
     passwords: new Map(config.users.map((user) => [user.username, requiredEnv(user.passwordVariable)])),
-    clientSecrets: new Map([...config.agents, ...config.machines].map((client) => [client.clientId, requiredEnv(client.secretVariable)])),
+    clientSecrets: new Map([...config.agents, config.orchestrator, ...config.machines].map((client) => [client.clientId, requiredEnv(client.secretVariable)])),
   }
   const http: Http = { timeoutMs: config.requestTimeoutMs }
   const report: Report = { passed: false, failed: null, transport, discovery: null, users: [], machines: [], exchanges: [], passwordGrant: null, refused: {}, held }
@@ -495,11 +547,11 @@ async function main(): Promise<number> {
       )
       machineTokens.set(machine.clientId, { token: tokenField(answer.body, 'access_token'), claims: verified.claims })
 
-      if (machine.forbiddenScope !== undefined) {
-        const refused = await clientCredentials(http, discovery, machine.clientId, secret, machine.forbiddenScope)
-        report.refused[`${machine.clientId}_${machine.forbiddenScope}`] = refusal(refused)
+      for (const forbiddenScope of machine.forbiddenScopes) {
+        const refused = await clientCredentials(http, discovery, machine.clientId, secret, forbiddenScope)
+        report.refused[`${machine.clientId}_${forbiddenScope}`] = refusal(refused)
         judged(
-          `G11 ${machine.clientId}: asking for ${machine.forbiddenScope}, which its client may not ask for, is refused invalid_scope`,
+          `G11 ${machine.clientId}: asking for ${forbiddenScope}, which its client may not ask for, is refused invalid_scope`,
           checkErrorAnswer(refused.status, refused.body, { status: 400, error: 'invalid_scope' }),
         )
       }
@@ -535,6 +587,41 @@ async function main(): Promise<number> {
       }
     }
 
+    // ---------- G15, G16: the chain, caller to orchestrator to sub-agent to tool server ----------
+    const orchestrator = config.orchestrator
+    const orchestratorSecret = clientSecret(secrets, orchestrator.clientId)
+    const agentNamed = (clientId: string): AgentConfig => {
+      const found = config.agents.find((agent) => agent.clientId === clientId)
+      if (found === undefined) throw new UsageError(`config: ${clientId} is not in agents`)
+      return found
+    }
+    for (const caller of orchestrator.callers) {
+      const subject: Subject = { name: `${caller}'s ${orchestrator.scope} token`, ...subjectOf(caller, orchestrator.scope), audiences: audiencesOfScope(orchestrator.scope) }
+      for (const delegation of orchestrator.delegations) {
+        // G15: the first exchange, by the orchestrator, for the sub-agent.
+        const statement = `G15 ${orchestrator.clientId} exchanges ${subject.name} for audience=${delegation.audience} scope=${delegation.scope}: aud ${delegation.audience} alone, client_id and azp ${orchestrator.clientId}, the subject's sub, preferred_username, name, roles and exp, the scope asked for, no refresh token`
+        const answer = await exchange(http, discovery, orchestrator.clientId, orchestratorSecret, subject.token, delegation.audience, [delegation.scope])
+        const verified = await verifiedAnswer(answer, keys, `${statement}: answered`)
+        report.exchanges.push({ clientId: orchestrator.clientId, subject: subject.name, ...verified })
+        judged(
+          statement,
+          checkExchangedToken(answer.body, verified.claims, subject.claims, { issuer: config.issuer, clientId: orchestrator.clientId, audience: delegation.audience, scopes: [delegation.scope] }),
+        )
+
+        // G16: the second exchange, by the sub-agent, of the token the orchestrator called it with.
+        const subAgent = agentNamed(delegation.audience)
+        const delegated = { name: `${orchestrator.clientId}'s ${delegation.scope} token for ${caller}`, claims: verified.claims }
+        const secondStatement = `G16 ${subAgent.clientId} exchanges ${delegated.name} for audience=${subAgent.audience} scope=${subAgent.scopes.join(' ')}: aud ${subAgent.audience} alone, client_id and azp ${subAgent.clientId}, the subject's sub, preferred_username, name, roles and exp, every scope asked for, no refresh token`
+        const second = await exchange(http, discovery, subAgent.clientId, clientSecret(secrets, subAgent.clientId), tokenField(answer.body, 'access_token'), subAgent.audience, subAgent.scopes)
+        const secondVerified = await verifiedAnswer(second, keys, `${secondStatement}: answered`)
+        report.exchanges.push({ clientId: subAgent.clientId, subject: delegated.name, ...secondVerified })
+        judged(
+          secondStatement,
+          checkExchangedToken(second.body, secondVerified.claims, delegated.claims, { issuer: config.issuer, clientId: subAgent.clientId, audience: subAgent.audience, scopes: subAgent.scopes }),
+        )
+      }
+    }
+
     // ---------- G9: a person's token an agent is not an audience of ----------
     for (const agent of config.agents) {
       const secret = clientSecret(secrets, agent.clientId)
@@ -546,6 +633,17 @@ async function main(): Promise<number> {
           checkErrorAnswer(answer.status, answer.body, { status: 403, error: 'access_denied', description: 'Client is not within the token audience' }),
         )
       }
+    }
+    // The orchestrator, given the tokens for the other agents, asking for its first sub-agent.
+    const firstDelegation = orchestrator.delegations[0]
+    if (firstDelegation === undefined) throw new UsageError('config: orchestrator.delegations is empty')
+    for (const subject of people.filter((entry) => !entry.audiences.includes(orchestrator.clientId))) {
+      const answer = await exchange(http, discovery, orchestrator.clientId, orchestratorSecret, subject.token, firstDelegation.audience, [firstDelegation.scope])
+      report.refused[`${orchestrator.clientId}_not_audience_of_${subject.name}`] = refusal(answer)
+      judged(
+        `G9 ${orchestrator.clientId}: exchanging ${subject.name}, which it is not an audience of, is refused 403 "Client is not within the token audience"`,
+        checkErrorAnswer(answer.status, answer.body, { status: 403, error: 'access_denied', description: 'Client is not within the token audience' }),
+      )
     }
 
     // ---------- G13, G14: refused grants and authorization requests ----------
@@ -629,21 +727,51 @@ async function main(): Promise<number> {
       )
     }
 
+    // G9: an agent other than the orchestrator asking for a scope only the orchestrator's client may ask for.
+    for (const delegation of orchestrator.delegations.filter((entry) => entry.onlyThisClient)) {
+      for (const agent of config.agents) {
+        const own = people.find((entry) => entry.audiences.includes(agent.clientId))
+        if (own === undefined) continue
+        const answer = await exchange(http, discovery, agent.clientId, clientSecret(secrets, agent.clientId), own.token, delegation.audience, [delegation.scope])
+        report.refused[`${agent.clientId}_scope_${delegation.scope}`] = refusal(answer)
+        judged(
+          `G9 ${agent.clientId}: asking for ${delegation.scope}, which only ${orchestrator.clientId} may ask for, is refused invalid_scope`,
+          checkErrorAnswer(answer.status, answer.body, { status: 400, error: 'invalid_scope' }),
+        )
+      }
+    }
+
+    // G9: the orchestrator asking for a scope its client may not ask for, with a token it is an audience of.
+    const orchestratorCaller = orchestrator.callers[0]
+    if (orchestratorCaller === undefined) throw new UsageError('config: orchestrator.callers is empty')
+    for (const forbiddenScope of orchestrator.forbiddenScopes) {
+      const own = subjectOf(orchestratorCaller, orchestrator.scope)
+      const audience = audiencesOfScope(forbiddenScope)[0]
+      if (audience === undefined) throw new UsageError(`config: ${forbiddenScope} names no audience`)
+      const answer = await exchange(http, discovery, orchestrator.clientId, orchestratorSecret, own.token, audience, [forbiddenScope])
+      report.refused[`${orchestrator.clientId}_scope_${forbiddenScope}`] = refusal(answer)
+      judged(
+        `G9 ${orchestrator.clientId}: asking for ${forbiddenScope}, which its client may not ask for, is refused invalid_scope`,
+        checkErrorAnswer(answer.status, answer.body, { status: 400, error: 'invalid_scope' }),
+      )
+    }
+
     // G6: the desk client asking for a scope it may not ask for, at a refresh and at the authorization endpoint.
-    const forbidden = config.deskForbiddenScope
     if (firstRefreshToken === null) throw new UsageError('config: users is empty')
-    const refreshed = await refresh(http, config, discovery, secrets, firstRefreshToken, `openid ${forbidden}`)
-    report.refused[`desk_refresh_${forbidden}`] = refusal(refreshed)
-    judged(`G6 a refresh by the desk client asking for ${forbidden} is refused invalid_scope`, checkErrorAnswer(refreshed.status, refreshed.body, { status: 400, error: 'invalid_scope' }))
-    report.refused[`desk_authorize_${forbidden}`] = await authorizationRefused(
-      http,
-      transport,
-      config,
-      discovery,
-      `G6 the authorization endpoint refuses the desk client asking for ${forbidden}, with invalid_scope`,
-      { response_type: 'code', scope: `openid ${forbidden}`, code_challenge: codeChallengeS256(codeVerifier(randomBytes(32))), code_challenge_method: 'S256' },
-      'invalid_scope',
-    )
+    for (const forbidden of config.deskForbiddenScopes) {
+      const refreshed = await refresh(http, config, discovery, secrets, firstRefreshToken, `openid ${forbidden}`)
+      report.refused[`desk_refresh_${forbidden}`] = refusal(refreshed)
+      judged(`G6 a refresh by the desk client asking for ${forbidden} is refused invalid_scope`, checkErrorAnswer(refreshed.status, refreshed.body, { status: 400, error: 'invalid_scope' }))
+      report.refused[`desk_authorize_${forbidden}`] = await authorizationRefused(
+        http,
+        transport,
+        config,
+        discovery,
+        `G6 the authorization endpoint refuses the desk client asking for ${forbidden}, with invalid_scope`,
+        { response_type: 'code', scope: `openid ${forbidden}`, code_challenge: codeChallengeS256(codeVerifier(randomBytes(32))), code_challenge_method: 'S256' },
+        'invalid_scope',
+      )
+    }
     report.passed = true
   } catch (error) {
     if (!(error instanceof StatementFailed)) throw error
@@ -656,7 +784,11 @@ async function main(): Promise<number> {
 }
 
 main().then(
-  (code) => process.exit(code),
+  // The exit code is set and the process left to end by itself, so the whole report reaches a pipe:
+  // process.exit would cut a report longer than the pipe's buffer.
+  (code) => {
+    process.exitCode = code
+  },
   (error: unknown) => {
     process.stderr.write(`gate: could not run: ${error instanceof Error ? error.message : String(error)}\n`)
     process.exit(2)

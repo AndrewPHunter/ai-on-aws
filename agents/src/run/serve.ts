@@ -137,6 +137,10 @@ export type AgentDefinition<Own> = {
   // The agent's name as the line logged at start gives it, such as "Label expert (Strands)".
   title: string;
   build: (wiring: BaseWiring, own: Own) => Handler;
+  // Optional: the handler for a message that arrives while the model's name cannot be learnt, given why. An
+  // agent that must do some work whatever the model does gives one. Without it, such a run fails before any of
+  // the agent's own code runs.
+  withoutModel?: (wiring: Omit<BaseWiring, 'model'>, own: Own, reason: string) => Handler;
 };
 
 export function serveAgent<Own>(definition: AgentDefinition<Own>): void {
@@ -181,6 +185,9 @@ export function serveAgent<Own>(definition: AgentDefinition<Own>): void {
 
   const respond: Handler = async (message, caller) => {
     const handle = await ready();
+    if (typeof handle === 'string' && definition.withoutModel !== undefined) {
+      return definition.withoutModel({ identity, now, limits, exchange }, own, handle)(message, caller);
+    }
     if (typeof handle === 'string') {
       const run = { ...startRunState(identity, now, limits), citations: [], caseActions: [] };
       recordError(run, handle);

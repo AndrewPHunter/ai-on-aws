@@ -41,6 +41,7 @@ services:
       IDENTITY_INTAKE_HANDWRITTEN_CLIENT_SECRET: ${IDENTITY_INTAKE_HANDWRITTEN_CLIENT_SECRET:?run platform/identity/setup.sh}
       IDENTITY_INTAKE_STRANDS_CLIENT_SECRET: ${IDENTITY_INTAKE_STRANDS_CLIENT_SECRET:?run platform/identity/setup.sh}
       IDENTITY_EXPERT_CLIENT_SECRET: ${IDENTITY_EXPERT_CLIENT_SECRET:?run platform/identity/setup.sh}
+      IDENTITY_ORCHESTRATOR_CLIENT_SECRET: ${IDENTITY_ORCHESTRATOR_CLIENT_SECRET:?run platform/identity/setup.sh}
       IDENTITY_EVALUATION_CLIENT_SECRET: ${IDENTITY_EVALUATION_CLIENT_SECRET:?run platform/identity/setup.sh}
       IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET: ${IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET:?run platform/identity/setup.sh}
       IDENTITY_RILEY_PASSWORD: ${IDENTITY_RILEY_PASSWORD:?run platform/identity/setup.sh}
@@ -61,6 +62,7 @@ services:
       IDENTITY_DESK_CLIENT_SECRET: ${IDENTITY_DESK_CLIENT_SECRET:?run platform/identity/setup.sh}
       IDENTITY_INTAKE_HANDWRITTEN_CLIENT_SECRET: ${IDENTITY_INTAKE_HANDWRITTEN_CLIENT_SECRET:?run platform/identity/setup.sh}
       IDENTITY_EXPERT_CLIENT_SECRET: ${IDENTITY_EXPERT_CLIENT_SECRET:?run platform/identity/setup.sh}
+      IDENTITY_ORCHESTRATOR_CLIENT_SECRET: ${IDENTITY_ORCHESTRATOR_CLIENT_SECRET:?run platform/identity/setup.sh}
       IDENTITY_EVALUATION_CLIENT_SECRET: ${IDENTITY_EVALUATION_CLIENT_SECRET:?run platform/identity/setup.sh}
       IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET: ${IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET:?run platform/identity/setup.sh}
       # Set by stack-gate.sh for the merge step only: what it found in the client's output.

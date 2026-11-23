@@ -3,21 +3,24 @@
 // Answers one question: on a running stack, do the realm, the agents, the tool servers and the client agree?
 // No test runs one piece against another, so a mismatch between two of them is caught here or nowhere. It runs
 // on the stack's network and is the browser, a stranger and a token holder at once. In order:
-//   1. knocks on each agent, both case-system servers and the retrieval service without a token;
+//   1. knocks on each of the four agents, both case-system servers and the retrieval service without a token;
 //   2. signs each of the four people in through the client and Keycloak's own sign-in page, and checks the
 //      cookies, the refused callbacks, what /api/session says each may do, and a cross-site POST;
 //   3. asks the client, as each person, for something they may not do (403 not_allowed) and for something they may;
 //   4. sends an inquiry to each intake agent as dana.desk and a question to the label expert as morgan.medinfo,
 //      and follows each run to its end: through the agent's exchange to its tool server, and, where the run
-//      reached it, to the audit entry of the case it opened or the retrieval service's answer;
+//      reached it, to the audit entry of the case it opened or the retrieval service's answer; then sends
+//      dana.desk's inquiry holding both a report and a label question to the orchestrator, and follows that run
+//      through its delegations to the intake agent on Strands and the label expert, and on to their tool servers;
 //   5. asks the client, as morgan.medinfo, for the inquiry dana.desk entered;
 //   6. gets tokens of its own from the provider, as the identity gate does (../src/provider.ts), and presents
 //      each to a service, which must accept it or refuse it for the stated reason;
 //   7. signs each person out.
 //
-// It changes the stack it is run against: it enters three inquiries, all from the sender "Dr Gate,
-// gate@example.org", and each intake agent may open one case from its inquiry (an adverse event about the
-// invented medicine "examplamab"). Run it on a stack whose data may hold them.
+// It changes the stack it is run against: it enters four inquiries, all from the sender "Dr Gate,
+// gate@example.org", and up to three cases may be opened from them: one by each intake agent from its inquiry,
+// and one by the intake agent on Strands from the orchestrator's (each an adverse event about the invented
+// medicine "examplamab"). Run it on a stack whose data may hold them.
 //
 // A run may end at the model on a stack with no model server, or the model may open no case. The statements
 // that need what such a run did not reach are then neither held nor failed: they go in the report's
@@ -56,7 +59,10 @@ const IDENTITY = 'http://identity:8080';
 const TOKEN_ENDPOINT = { token_endpoint: `${IDENTITY}/realms/lab/protocol/openid-connect/token` };
 const INTAKE_AGENTS = ['intake-handwritten', 'intake-strands'] as const;
 const EXPERT = 'expert';
-const AGENTS = [...INTAKE_AGENTS, EXPERT] as const;
+const ORCHESTRATOR = 'orchestrator';
+// The intake agent the orchestrator screens every message with.
+const SCREENER = 'intake-strands';
+const AGENTS = [...INTAKE_AGENTS, EXPERT, ORCHESTRATOR] as const;
 const agentUrl = (agent: string): string => `http://${agent}:8080`;
 const CASE_MCP = 'http://case-system:8000';
 const CASE_REVIEW = 'http://case-system:8001';
@@ -66,10 +72,12 @@ const BROWSER_IDENTITY = 'http://localhost:8090';
 const END_SESSION = `${BROWSER_IDENTITY}/realms/lab/protocol/openid-connect/logout`;
 const AUTHORIZE = `${BROWSER_IDENTITY}/realms/lab/protocol/openid-connect/auth`;
 const DESK = { clientId: 'desk', redirectUri: `${BROWSER_APP}/auth/callback` };
-const DESK_SCOPES = 'openid agents:intake agents:expert cases:read cases:review';
+const DESK_SCOPES = 'openid agents:intake agents:expert agents:orchestrator cases:read cases:review';
 const NO_SUCH_CASE = 'AE-999999';
 const HTTP: Http = { timeoutMs: 20_000 };
 const RUN_WAIT_MS = 90_000;
+// The client waits up to 295 s for the orchestrator, so the gate waits a little longer for its run.
+const ORCHESTRATOR_RUN_WAIT_MS = 300_000;
 // The reasons an agent gives for a run that stopped at a token: its tool server refused the token or could not
 // check it, the tool server could not be reached, or the exchange for the tool server's token failed. A run that
 // stopped for one of these did not show its token was accepted where it was sent. These must match the agents'
@@ -87,6 +95,11 @@ const TOKEN_STOP_REASONS = [
 const EXCHANGE_FAILED_PREFIXES = ['The agent could not get a token for the case system: ', 'The agent could not get a token for the retrieval service: '];
 const stoppedAtToken = (reason: string | null): boolean =>
   reason !== null && (TOKEN_STOP_REASONS.includes(reason) || EXCHANGE_FAILED_PREFIXES.some((prefix) => reason.startsWith(prefix)));
+// How the orchestrator's delegation failure starts when its exchange for a sub-agent's token failed: the fixed
+// start of toolToken's reason in agents/src/tools/tool-token.ts, followed there by the sub-agent's name, which
+// is matched by this start only.
+const DELEGATION_EXCHANGE_FAILED_PREFIX = 'The agent could not get a token for ';
+const exchangeFailed = (failure: string | null | undefined): boolean => typeof failure === 'string' && failure.startsWith(DELEGATION_EXCHANGE_FAILED_PREFIX);
 // What a JWT looks like: a base64url header that starts {"
 const JWT_PATTERN = /eyJ[A-Za-z0-9_-]{10,}\./;
 
@@ -167,6 +180,9 @@ function mcpRequest(base: string, token?: string): Promise<Response> {
 }
 
 const MESSAGE = JSON.stringify({ message: { id: 'stack-gate-1', received_at: '2026-01-01T00:00:00.000Z', sender: 'gate@example.org', text: 'hello' } });
+// JSON outside the contract: an agent that accepts the token answers it 400 and runs nothing
+// (docs/architecture/agent-runtime.md, "Where the two servers differ").
+const OUTSIDE_CONTRACT = JSON.stringify({ nonsense: true });
 
 // One cookie per name, with the attributes it was last set with.
 class Jar {
@@ -402,6 +418,7 @@ async function permissionStatements(sessions: Sessions): Promise<void> {
   await refusedStatement(sessions, 'dana.desk', `sending an inquiry to ${EXPERT}`, inquiry(EXPERT));
   await refusedStatement(sessions, 'dana.desk', 'reading the case list', caseList);
   await refusedStatement(sessions, 'riley.reviewer', `sending an inquiry to ${INTAKE_AGENTS[0]}`, inquiry(INTAKE_AGENTS[0]));
+  await refusedStatement(sessions, 'riley.reviewer', `sending an inquiry to ${ORCHESTRATOR}`, inquiry(ORCHESTRATOR));
   await refusedStatement(sessions, 'avery.auditor', 'deciding a case', decide);
   await refusedStatement(sessions, 'morgan.medinfo', 'reading the case list', caseList);
 
@@ -439,26 +456,47 @@ const INTAKE_REPORTS: Record<(typeof INTAKE_AGENTS)[number], string> = {
     'had severe dizziness with a fall three days later. I can be reached at gate@example.org.',
 };
 const EXPERT_QUESTION = 'What does the examplamab label say about the usual starting dose for adults?';
+// Both halves in one message, for the orchestrator: a report with the four things a case needs, about a third
+// patient, and a label question about the same medicine that holds no number at all.
+const ORCHESTRATOR_INQUIRY =
+  'I am reporting an adverse event and have a question. My patient, S.T., a 38-year-old woman, started examplamab ' +
+  '10 mg once daily and developed swelling of the lips and tongue two days later. I can be reached at gate@example.org. ' +
+  'Separately, what does the examplamab label say about the usual starting dose for adults?';
 // The retrieval service's tools. A tool step of one of these that is not an error is recorded only after the
 // service answered the call with a result of the expected shape (agents/src/expert/strands.ts, recordCall); a
 // call the agent refused or could not make is always recorded as an error.
 const RETRIEVAL_TOOLS = ['find_labels', 'search_label'];
 
+// A response as the gate reads it; a delegation step carries the sub-agent's whole response.
+type ResponseView = {
+  outcome?: string;
+  stop_reason?: string | null;
+  case_actions?: { kind?: string; case_id?: string }[];
+  steps?: StepView[];
+};
+type StepView = {
+  kind?: string;
+  tool?: string;
+  is_error?: boolean;
+  id?: string;
+  to_agent?: string;
+  failure?: string | null;
+  response?: ResponseView | null;
+};
 type RunView = {
   state?: string;
   started_by?: { name?: string } | null;
-  response?: {
-    outcome?: string;
-    stop_reason?: string | null;
-    case_actions?: { kind?: string; case_id?: string }[];
-    steps?: { kind?: string; tool?: string; is_error?: boolean }[];
-  } | null;
+  error?: string | null;
+  response?: ResponseView | null;
 };
 
 type Sent = { inquiryId: string; run: RunView | undefined };
 
-/** Sends an inquiry as the person and waits for its run to end. States that it was accepted and how the run ended. */
-async function runStatements(person: Person, session: string, agent: string, text: string): Promise<Sent | undefined> {
+/**
+ * Sends an inquiry as the person, states that it was accepted and records who entered it, and waits up to
+ * `waitMs` for its run to end. Undefined when the inquiry was not accepted.
+ */
+async function sendAndWait(person: Person, session: string, agent: string, text: string, waitMs: number): Promise<Sent | undefined> {
   const who = person.username;
   const sent = await postAs(session, '/api/inquiries', { sender: SENDER, text, agent_id: agent });
   const created = (await jsonOf(sent)).inquiry as { id?: string; entered_by?: { name?: string } | null } | undefined;
@@ -467,38 +505,49 @@ async function runStatements(person: Person, session: string, agent: string, tex
     `${who}, ${agent}: an inquiry is accepted and records who entered it`,
     `status ${sent.status}, entered_by ${JSON.stringify(created?.entered_by ?? null)}`,
   );
-  const what = `${who}, ${agent}: the run ends with the agent's answer inside the contract, records who started it, and did not stop at a token, its tool server or its exchange`;
-  if (created?.id === undefined) {
-    statement(false, what, 'the inquiry was not accepted, so no run was started');
-    return undefined;
-  }
+  if (created?.id === undefined) return undefined;
   let run: RunView | undefined;
-  const deadline = Date.now() + RUN_WAIT_MS;
+  const deadline = Date.now() + waitMs;
   while (Date.now() < deadline) {
     const read = (await jsonOf(await get(`${CLIENT}/api/inquiries/${encodeURIComponent(created.id)}`, session))).inquiry as { runs?: RunView[] } | undefined;
     run = read?.runs?.[0];
     if (run !== undefined && run.state !== 'running') break;
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
+  return { inquiryId: created.id, run };
+}
+
+/** Sends an inquiry as the person and waits for its run to end. States that it was accepted and how the run ended. */
+async function runStatements(person: Person, session: string, agent: string, text: string): Promise<Sent | undefined> {
+  const who = person.username;
+  const sent = await sendAndWait(person, session, agent, text, RUN_WAIT_MS);
+  const what = `${who}, ${agent}: the run ends with the agent's answer inside the contract, records who started it, and did not stop at a token, its tool server or its exchange`;
+  if (sent === undefined) {
+    statement(false, what, 'the inquiry was not accepted, so no run was started');
+    return undefined;
+  }
+  const run = sent.run;
   const stop = run?.response?.stop_reason ?? null;
   statement(
     run?.state === 'completed' && run.started_by?.name === person.name && !stoppedAtToken(stop),
     what,
     JSON.stringify({ state: run?.state, outcome: run?.response?.outcome, stop_reason: stop, started_by: run?.started_by ?? null }),
   );
-  return { inquiryId: created.id, run };
+  return sent;
 }
 
 /** Why a run gives nothing further to check: how it ended. */
 const howItEnded = (run: RunView | undefined): string =>
   run?.state !== 'completed' ? `the run did not complete (state ${String(run?.state)})` : `the run ended ${String(run.response?.outcome)} with stop reason ${JSON.stringify(run.response?.stop_reason ?? null)}`;
 
-/** If the intake run opened a case, riley reads it through the client and the audit entry for its creation names the agent. */
-async function caseAuditStatement(sessions: Sessions, agent: string, sent: Sent | undefined): Promise<void> {
-  const what = `${agent}: the case its run opened, read by riley.reviewer through the client, has a case_created audit entry whose actor is ${agent}`;
-  const opened = sent?.run?.response?.case_actions?.find((action) => action.kind === 'case_opened');
+/**
+ * If an intake response holds an opened case, riley reads it through the client and the audit entry for its
+ * creation names `actor`. Otherwise `what` is not checked, for the reason `whyNone`.
+ */
+async function caseAuditStatement(sessions: Sessions, what: string, actor: string, response: ResponseView | null | undefined, whyNone: string): Promise<void> {
+  const opened = response?.case_actions?.find((action) => action.kind === 'case_opened');
   if (opened?.case_id === undefined) {
-    notCheckable(what, sent === undefined ? 'no run was started' : `the run opened no case; ${howItEnded(sent.run)}`);
+    notCheckable(what, whyNone);
     return;
   }
   const session = sessionFor(sessions, 'riley.reviewer', what);
@@ -506,24 +555,132 @@ async function caseAuditStatement(sessions: Sessions, agent: string, sent: Sent 
   const answer = await get(`${CLIENT}/api/cases/${encodeURIComponent(opened.case_id)}`, session);
   const record = (await jsonOf(answer)) as Partial<CaseRecord>;
   const created = Array.isArray(record.audit) ? record.audit.find((entry) => entry.action === 'case_created') : undefined;
-  statement(answer.status === 200 && created?.actor === agent, what, `status ${answer.status}, actor ${JSON.stringify(created?.actor ?? null)}`);
+  statement(answer.status === 200 && created?.actor === actor, what, `status ${answer.status}, actor ${JSON.stringify(created?.actor ?? null)}`);
+}
+
+/** The intake run's case audit statement for an intake agent's own run. */
+function intakeCaseAudit(sessions: Sessions, agent: string, sent: Sent | undefined): Promise<void> {
+  const what = `${agent}: the case its run opened, read by riley.reviewer through the client, has a case_created audit entry whose actor is ${agent}`;
+  return caseAuditStatement(sessions, what, agent, sent?.run?.response, sent === undefined ? 'no run was started' : `the run opened no case; ${howItEnded(sent.run)}`);
 }
 
 /**
- * If the expert's run has a step that exists only after the retrieval service accepted its token and answered (a
- * retrieval step, or a find_labels or search_label step that is not an error, an empty find included), the
- * service accepted the expert's token.
+ * Whether an expert response has a step that exists only after the retrieval service accepted its token and
+ * answered: a retrieval step, or a find_labels or search_label step that is not an error, an empty find included.
  */
+const answeredByRetrieval = (response: ResponseView | null | undefined): boolean =>
+  response?.steps?.some((step) => step.kind === 'retrieval' || (step.kind === 'tool' && RETRIEVAL_TOOLS.includes(step.tool ?? '') && step.is_error === false)) === true;
+
+/** If the expert's run has a step the retrieval service answered, the service accepted the expert's token. */
 function retrievalStatement(sent: Sent | undefined): void {
   const what = `${EXPERT}: the retrieval service accepted the token the expert sent it (the run has a step the service answered)`;
-  const answered = sent?.run?.response?.steps?.some(
-    (step) => step.kind === 'retrieval' || (step.kind === 'tool' && RETRIEVAL_TOOLS.includes(step.tool ?? '') && step.is_error === false),
-  );
-  if (answered === true) {
+  if (answeredByRetrieval(sent?.run?.response)) {
     statement(true, what);
     return;
   }
   notCheckable(what, sent === undefined ? 'no run was started' : `the run has no step the retrieval service answered; ${howItEnded(sent.run)}`);
+}
+
+// ---------- one run through the orchestrator ----------
+
+const delegationsOf = (response: ResponseView | null | undefined): StepView[] => (response?.steps ?? []).filter((step) => step.kind === 'delegation');
+
+/** Why a delegated response gives nothing further to check: how it ended. */
+const howDelegationEnded = (step: StepView): string =>
+  step.response === null || step.response === undefined
+    ? `it has no response (failure ${JSON.stringify(step.failure ?? null)})`
+    : `it ended ${String(step.response.outcome)} with stop reason ${JSON.stringify(step.response.stop_reason ?? null)}`;
+
+/**
+ * dana.desk sends one message holding a report and a label question to the orchestrator, and the run is followed
+ * through its delegations: screening by the intake agent on Strands, always, and the label expert for each
+ * question the model put, each with the sub-agent's whole response.
+ */
+async function orchestratorStatements(sessions: Sessions, person: Person): Promise<void> {
+  const who = person.username;
+  const prefix = `${who}, ${ORCHESTRATOR}`;
+  const session = sessionFor(sessions, who, `${prefix}: an inquiry holding a report and a label question is accepted and its run followed`);
+  const sent = session === undefined ? undefined : await sendAndWait(person, session, ORCHESTRATOR, ORCHESTRATOR_INQUIRY, ORCHESTRATOR_RUN_WAIT_MS);
+  const noRun = session === undefined ? `${who} did not sign in, so no run was started` : 'the inquiry was not accepted, so no run was started';
+  const run = sent?.run;
+  const response = run?.response;
+  const delegations = delegationsOf(response);
+  const screening = delegations.find((step) => step.id === 'screening' && step.to_agent === SCREENER);
+  const screened = screening?.response ?? null;
+
+  const ended = `${prefix}: the run ends inside the contract with outcome completed or stopped, records who started it, and holds a delegation step to ${SCREENER} that has a response`;
+  if (sent === undefined) {
+    statement(false, ended, noRun);
+  } else {
+    statement(
+      run?.state === 'completed' &&
+        (response?.outcome === 'completed' || response?.outcome === 'stopped') &&
+        run.started_by?.name === person.name &&
+        screened !== null,
+      ended,
+      JSON.stringify({
+        state: run?.state,
+        error: run?.error ?? null,
+        outcome: response?.outcome,
+        stop_reason: response?.stop_reason ?? null,
+        started_by: run?.started_by ?? null,
+        screening: screening === undefined ? 'no screening step' : { failure: screening.failure ?? null, response: screened === null ? null : 'present' },
+      }),
+    );
+  }
+
+  const notAtToken = `${prefix}: screening did not stop at a token: the delegated ${SCREENER} response's stop reason is none of the gate's token stop reasons, and the delegation has no exchange failure`;
+  if (sent === undefined) {
+    statement(false, notAtToken, noRun);
+  } else if (screening === undefined) {
+    statement(false, notAtToken, `the run has no screening step; ${howItEnded(run)}`);
+  } else {
+    statement(
+      screened !== null && !stoppedAtToken(screened.stop_reason ?? null) && !exchangeFailed(screening.failure),
+      notAtToken,
+      howDelegationEnded(screening),
+    );
+  }
+
+  await caseAuditStatement(
+    sessions,
+    `${ORCHESTRATOR}: the case the delegated ${SCREENER} run opened, read by riley.reviewer through the client, has a case_created audit entry whose actor is ${SCREENER}`,
+    SCREENER,
+    screened,
+    sent === undefined
+      ? noRun
+      : screening === undefined
+        ? `the run has no screening step; ${howItEnded(run)}`
+        : `the delegated ${SCREENER} run opened no case; ${howDelegationEnded(screening)}`,
+  );
+
+  // Every label-question delegation is judged: none may have stopped at a token or failed its exchange, and at
+  // least one must have a response.
+  const asked = delegations.filter((step) => step.to_agent === EXPERT);
+  const answeredWhat = `${prefix}: the run holds a delegation step to ${EXPERT} with a response, and no delegation to ${EXPERT} stopped at a token or failed its exchange`;
+  if (asked.length === 0) {
+    notCheckable(answeredWhat, sent === undefined ? noRun : `the run put no label question to ${EXPERT}; ${howItEnded(run)}`);
+  } else {
+    statement(
+      asked.some((step) => step.response !== null && step.response !== undefined) &&
+        asked.every((step) => !exchangeFailed(step.failure) && !stoppedAtToken(step.response?.stop_reason ?? null)),
+      answeredWhat,
+      asked.map((step) => `${String(step.id)}: ${howDelegationEnded(step)}`).join('; '),
+    );
+  }
+
+  const retrievedWhat = `${ORCHESTRATOR}: the retrieval service accepted the token the expert sent it for the orchestrator's question (a delegated ${EXPERT} response has a step the service answered)`;
+  const expertResponses = asked.filter((step) => step.response !== null && step.response !== undefined);
+  if (expertResponses.some((step) => answeredByRetrieval(step.response))) {
+    statement(true, retrievedWhat);
+  } else if (expertResponses.length === 0) {
+    notCheckable(retrievedWhat, sent === undefined ? noRun : `the run has no delegated ${EXPERT} response; ${howItEnded(run)}`);
+  } else {
+    notCheckable(
+      retrievedWhat,
+      `no delegated ${EXPERT} response has a step the retrieval service answered; ${expertResponses.map((step) => `${String(step.id)}: ${howDelegationEnded(step)}`).join('; ')}`,
+    );
+  }
 }
 
 // ---------- an inquiry belongs to who entered it ----------
@@ -582,7 +739,7 @@ async function grantFrom(what: string, ask: () => Promise<Answer>, fields?: read
   }
 }
 
-type Secrets = { deskSecret: string; intakeHandwritten: string; expert: string; evaluation: string; knowledgeGate: string };
+type Secrets = { deskSecret: string; intakeHandwritten: string; expert: string; orchestrator: string; evaluation: string; knowledgeGate: string };
 
 /** The person signs in through the desk client directly (Authorization Code with PKCE), and the refresh token is kept. */
 async function directSignIn(person: Person, secrets: Secrets): Promise<Grant & { refreshToken?: string }> {
@@ -617,16 +774,18 @@ async function personToken(person: Person, secrets: Secrets, scope: string): Pro
 /** What a service answered a token with: the fields a refusal carries (shared/access-token.ts, refusalAnswer). Never the body. */
 type Presented = { status: number; error: unknown; reason: unknown; wwwAuthenticate: string | null };
 
-type Expected = { kind: 'ok' } | { kind: 'admitted' } | { kind: 'refused'; reason: string; scope?: string };
+type Expected = { kind: 'ok' } | { kind: 'admitted' } | { kind: 'outside_contract' } | { kind: 'refused'; reason: string; scope?: string };
 
 /**
  * Whether a service's answer to a presented token is the one expected. ok: 200. admitted: neither 401 nor 403,
- * so the token was accepted at the door, whatever the request then got. refused: the answer refusalAnswer gives
+ * so the token was accepted at the door, whatever the request then got. outside_contract: 400, an agent's answer
+ * to a body outside the contract once the token was accepted, with nothing run. refused: the answer refusalAnswer gives
  * for the reason, 403 with the scope named for insufficient_scope and 401 otherwise. Returns the departures.
  */
 function judgePresented(answer: Presented, expected: Expected): string[] {
   if (expected.kind === 'ok') return answer.status === 200 ? [] : ['answered 200'];
   if (expected.kind === 'admitted') return answer.status !== 401 && answer.status !== 403 ? [] : ['answered neither 401 nor 403'];
+  if (expected.kind === 'outside_contract') return answer.status === 400 ? [] : ['answered 400'];
   const scoped = expected.reason === 'insufficient_scope';
   const departures: string[] = [];
   if (answer.status !== (scoped ? 403 : 401)) departures.push(`answered ${scoped ? 403 : 401}`);
@@ -642,7 +801,9 @@ const describeExpected = (expected: Expected): string =>
     ? '200'
     : expected.kind === 'admitted'
       ? 'neither 401 nor 403'
-      : `${expected.reason === 'insufficient_scope' ? 403 : 401} with reason ${expected.reason}${expected.scope === undefined ? '' : `, naming ${expected.scope}`}`;
+      : expected.kind === 'outside_contract'
+        ? '400 to a body outside the contract: the token was accepted and nothing was run'
+        : `${expected.reason === 'insufficient_scope' ? 403 : 401} with reason ${expected.reason}${expected.scope === undefined ? '' : `, naming ${expected.scope}`}`;
 
 async function presentedStatement(grant: Grant, token: string, service: string, send: (token: string) => Promise<Response>, expected: Expected): Promise<void> {
   const what = `${token}, presented to ${service}, is ${describeExpected(expected)}`;
@@ -714,6 +875,39 @@ async function tokenStatements(people: Map<string, Person>, secrets: Secrets): P
     ? await grantFrom('expert exchanging it for knowledge', () => exchange(HTTP, TOKEN_ENDPOINT, EXPERT, secrets.expert, evaluation.token, 'knowledge', ['labels:search']))
     : { ok: false, detail: `no token to exchange: ${evaluation.detail}` };
   await presentedStatement(expert, "evaluation's token, exchanged as expert for knowledge", 'the retrieval service, /mcp', (token) => mcpRequest(KNOWLEDGE, token), { kind: 'admitted' });
+
+  // The orchestrator's path: only a token it exchanged for a sub-agent is accepted there.
+  const invoke = (agent: string, body: string) => (token: string) =>
+    post(`${agentUrl(agent)}/invocations`, body, { 'content-type': 'application/json', authorization: `Bearer ${token}` });
+  const wrongAudience: Expected = { kind: 'refused', reason: 'wrong_audience' };
+  const danaOrchestrator = await personToken(person('dana.desk'), secrets, 'agents:orchestrator');
+  const danaOrchestratorName = "dana.desk's token for agents:orchestrator";
+  await presentedStatement(danaOrchestrator, danaOrchestratorName, `${SCREENER}, POST /invocations`, invoke(SCREENER, MESSAGE), wrongAudience);
+  await presentedStatement(danaOrchestrator, danaOrchestratorName, `${EXPERT}, POST /invocations`, invoke(EXPERT, MESSAGE), wrongAudience);
+
+  const forScreener: Grant = danaOrchestrator.ok
+    ? await grantFrom(`${ORCHESTRATOR} exchanging it for ${SCREENER}`, () =>
+        exchange(HTTP, TOKEN_ENDPOINT, ORCHESTRATOR, secrets.orchestrator, danaOrchestrator.token, SCREENER, ['agents:intake']),
+      )
+    : { ok: false, detail: `no token to exchange: ${danaOrchestrator.detail}` };
+  await presentedStatement(
+    forScreener,
+    `${danaOrchestratorName}, exchanged as ${ORCHESTRATOR} for ${SCREENER} with agents:intake`,
+    `${SCREENER}, POST /invocations`,
+    invoke(SCREENER, OUTSIDE_CONTRACT),
+    { kind: 'outside_contract' },
+  );
+
+  const forExpert: Grant = danaOrchestrator.ok
+    ? await grantFrom(`${ORCHESTRATOR} exchanging it for ${EXPERT}`, () =>
+        exchange(HTTP, TOKEN_ENDPOINT, ORCHESTRATOR, secrets.orchestrator, danaOrchestrator.token, EXPERT, ['agents:expert:delegated']),
+      )
+    : { ok: false, detail: `no token to exchange: ${danaOrchestrator.detail}` };
+  const forExpertName = `${danaOrchestratorName}, exchanged as ${ORCHESTRATOR} for ${EXPERT} with agents:expert:delegated`;
+  await presentedStatement(forExpert, forExpertName, `${EXPERT}, POST /invocations`, invoke(EXPERT, OUTSIDE_CONTRACT), { kind: 'outside_contract' });
+  await presentedStatement(forExpert, forExpertName, `${SCREENER}, POST /invocations`, invoke(SCREENER, MESSAGE), wrongAudience);
+
+  await presentedStatement(dana, danaName, `${ORCHESTRATOR}, POST /invocations`, invoke(ORCHESTRATOR, MESSAGE), wrongAudience);
 }
 
 // ---------- doors, with no token ----------
@@ -774,13 +968,13 @@ async function main(): Promise<number> {
       username: 'dana.desk',
       name: 'Dana Desk',
       password: requiredEnv('IDENTITY_DANA_PASSWORD'),
-      may: { agents: [...INTAKE_AGENTS], read_cases: false, decide_cases: false },
+      may: { agents: [...INTAKE_AGENTS, ORCHESTRATOR], read_cases: false, decide_cases: false },
     },
     {
       username: 'morgan.medinfo',
       name: 'Morgan Medinfo',
       password: requiredEnv('IDENTITY_MORGAN_PASSWORD'),
-      may: { agents: [...INTAKE_AGENTS, EXPERT], read_cases: false, decide_cases: false },
+      may: { agents: [...INTAKE_AGENTS, EXPERT, ORCHESTRATOR], read_cases: false, decide_cases: false },
     },
     { username: 'riley.reviewer', name: 'Riley Reviewer', password: requiredEnv('IDENTITY_RILEY_PASSWORD'), may: { agents: [], read_cases: true, decide_cases: true } },
     { username: 'avery.auditor', name: 'Avery Auditor', password: requiredEnv('IDENTITY_AVERY_PASSWORD'), may: { agents: [], read_cases: true, decide_cases: false } },
@@ -789,6 +983,7 @@ async function main(): Promise<number> {
     deskSecret: requiredEnv('IDENTITY_DESK_CLIENT_SECRET'),
     intakeHandwritten: requiredEnv('IDENTITY_INTAKE_HANDWRITTEN_CLIENT_SECRET'),
     expert: requiredEnv('IDENTITY_EXPERT_CLIENT_SECRET'),
+    orchestrator: requiredEnv('IDENTITY_ORCHESTRATOR_CLIENT_SECRET'),
     evaluation: requiredEnv('IDENTITY_EVALUATION_CLIENT_SECRET'),
     knowledgeGate: requiredEnv('IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET'),
   };
@@ -815,7 +1010,7 @@ async function main(): Promise<number> {
     const session = sessionFor(sessions, 'dana.desk', what);
     const sent = session === undefined ? undefined : await runStatements(named('dana.desk'), session, agent, INTAKE_REPORTS[agent]);
     danaInquiry ??= sent?.inquiryId;
-    await caseAuditStatement(sessions, agent, sent);
+    await intakeCaseAudit(sessions, agent, sent);
   }
   {
     const what = `morgan.medinfo, ${EXPERT}: a question is accepted and the run ends inside the contract`;
@@ -823,6 +1018,7 @@ async function main(): Promise<number> {
     const sent = session === undefined ? undefined : await runStatements(named('morgan.medinfo'), session, EXPERT, EXPERT_QUESTION);
     retrievalStatement(sent);
   }
+  await orchestratorStatements(sessions, named('dana.desk'));
 
   await ownershipStatements(sessions, danaInquiry);
 
@@ -841,7 +1037,11 @@ async function main(): Promise<number> {
 }
 
 main().then(
-  (code) => process.exit(code),
+  // The exit code is set and the process left to end by itself, so the whole report reaches a pipe:
+  // process.exit would cut a report longer than the pipe's buffer.
+  (code) => {
+    process.exitCode = code;
+  },
   (error: unknown) => {
     process.stderr.write(`stack-gate: could not run: ${error instanceof Error ? error.message : String(error)}\n`);
     process.exit(2);

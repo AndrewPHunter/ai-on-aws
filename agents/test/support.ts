@@ -76,8 +76,11 @@ export function clock(): Clock {
 export type ModelAnswer =
   | { kind: 'text'; content: string }
   | { kind: 'tools'; calls: Array<{ name: string; arguments: string }> }
-  | { kind: 'status'; status: number };
+  | { kind: 'status'; status: number }
+  // A turn that used up its output allowance before writing anything.
+  | { kind: 'cutOff' };
 
+export const cutOff: ModelAnswer = { kind: 'cutOff' };
 export const say = (content: string): ModelAnswer => ({ kind: 'text', content });
 export const ask = (...calls: Array<[name: string, args: unknown]>): ModelAnswer => ({
   kind: 'tools',
@@ -117,7 +120,7 @@ export async function startModel(t: TestContext, script: (request: ModelRequest,
     const tool_calls =
       answer.kind === 'tools' ? answer.calls.map((c) => ({ id: `call-${++callIds}`, type: 'function', function: c })) : undefined;
     sendJson(response, 200, {
-      choices: [{ finish_reason: tool_calls ? 'tool_calls' : 'stop', message: { role: 'assistant', content: answer.kind === 'text' ? answer.content : null, tool_calls } }],
+      choices: [{ finish_reason: answer.kind === 'cutOff' ? 'length' : tool_calls ? 'tool_calls' : 'stop', message: { role: 'assistant', content: answer.kind === 'text' ? answer.content : null, tool_calls } }],
       usage: { prompt_tokens: 10, completion_tokens: 5 },
     });
   }
@@ -139,7 +142,7 @@ export async function startModel(t: TestContext, script: (request: ModelRequest,
         { type: 'response.output_item.done', output_index: 0, item: done },
       );
       output.push(done);
-    } else {
+    } else if (answer.kind === 'tools') {
       answer.calls.forEach((c, index) => {
         const callId = `call-${++callIds}`;
         const id = `fc-${callId}`;
@@ -153,7 +156,12 @@ export async function startModel(t: TestContext, script: (request: ModelRequest,
         output.push(done);
       });
     }
-    events.push({ type: 'response.completed', response: { ...about, status: 'completed', output, usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } } });
+    const usage = { input_tokens: 10, output_tokens: 5, total_tokens: 15 };
+    events.push(
+      answer.kind === 'cutOff'
+        ? { type: 'response.incomplete', response: { ...about, status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' }, output, usage } }
+        : { type: 'response.completed', response: { ...about, status: 'completed', output, usage } },
+    );
     response.writeHead(200, { 'content-type': 'text/event-stream' });
     events.forEach((event, n) => response.write(`event: ${String(event.type)}\ndata: ${JSON.stringify({ ...event, sequence_number: n })}\n\n`));
     response.end();

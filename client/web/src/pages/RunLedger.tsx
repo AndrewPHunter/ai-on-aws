@@ -8,7 +8,7 @@ const ICON: Record<Step['kind'], ReactNode> = {
   model: <Brain size={16} aria-hidden="true" />,
   tool: <Wrench size={16} aria-hidden="true" />,
   retrieval: <Search size={16} aria-hidden="true" />,
-  handoff: <ArrowRightLeft size={16} aria-hidden="true" />,
+  delegation: <ArrowRightLeft size={16} aria-hidden="true" />,
   error: <CircleAlert size={16} aria-hidden="true" />,
 };
 
@@ -93,11 +93,84 @@ function StepDetail({ step }: { step: Step }) {
           )}
         </>
       );
-    case 'handoff':
-      return <Payload label="Why" value={step.reason} />;
+    case 'delegation':
+      return (
+        <>
+          <dl className="stepfacts">
+            <div>
+              <dt>Called</dt>
+              <dd>{step.to_agent}</dd>
+            </div>
+            <div>
+              <dt>Asked by</dt>
+              <dd>{step.requested_by === 'agent' ? 'The agent’s own code' : 'The model'}</dd>
+            </div>
+            {step.replaces === null ? null : (
+              <div>
+                <dt>Replaces</dt>
+                <dd>{step.replaces}</dd>
+              </div>
+            )}
+          </dl>
+          <Payload label={`Sent as message ${step.message.id}`} value={step.message.text} />
+          {step.failure === null ? null : <Payload label="Why there is no answer" value={step.failure} />}
+          {step.response === null ? null : (
+            <>
+              <dl className="stepfacts">
+                <div>
+                  <dt>Outcome</dt>
+                  <dd>{step.response.outcome}</dd>
+                </div>
+                <div>
+                  <dt>Stopped because</dt>
+                  <dd>{step.response.stop_reason ?? '—'}</dd>
+                </div>
+              </dl>
+              <Payload label="Its reply" value={step.response.reply} />
+              <div className="payload">
+                <p className="payload__label">Its steps</p>
+                {step.response.steps.length === 0 ? (
+                  <p className="absent">It recorded no steps.</p>
+                ) : (
+                  <StepList steps={step.response.steps} nested />
+                )}
+              </div>
+            </>
+          )}
+        </>
+      );
     case 'error':
       return <Payload label="What went wrong" value={step.message} />;
   }
+}
+
+// A run's steps in order, each opening onto its detail. A delegation's steps are listed inside it the same way.
+function StepList({ steps, nested = false }: { steps: readonly Step[]; nested?: boolean }) {
+  const total = steps.reduce((sum, step) => sum + step.duration_ms, 0);
+  return (
+    <ol className={nested ? 'steps steps--nested' : 'steps'}>
+      {steps.map((step, index) => (
+        <li
+          key={index}
+          className={`step step--${step.kind}${(step.kind === 'tool' && step.is_error) || (step.kind === 'delegation' && step.response === null) ? ' step--failed' : ''}`}
+        >
+          <details>
+            <summary>
+              <span className="step__icon">{ICON[step.kind]}</span>
+              <span className="step__title">{stepTitle(step)}</span>
+              <span className="step__time">{formatDuration(step.duration_ms)}</span>
+              <span className="step__bar" aria-hidden="true">
+                <span style={{ width: `${total === 0 ? 0 : Math.max(2, (step.duration_ms / total) * 100)}%` }} />
+              </span>
+            </summary>
+            <div className="step__detail">
+              <StepDetail step={step} />
+            </div>
+          </details>
+        </li>
+      ))}
+    </ol>
+  );
 }
 
 export function RunLedger({ run }: { run: Run }) {
@@ -119,7 +192,6 @@ export function RunLedger({ run }: { run: Run }) {
   }
 
   const { steps } = run.response;
-  const total = steps.reduce((sum, step) => sum + step.duration_ms, 0);
 
   return (
     <div className="ledger">
@@ -130,25 +202,7 @@ export function RunLedger({ run }: { run: Run }) {
         {run.response.agent.implementation}.
       </p>
       {steps.length === 0 ? <p className="ledger__none">The agent recorded no steps.</p> : null}
-      <ol className="steps">
-        {steps.map((step, index) => (
-          <li key={index} className={`step step--${step.kind}${step.kind === 'tool' && step.is_error ? ' step--failed' : ''}`}>
-            <details>
-              <summary>
-                <span className="step__icon">{ICON[step.kind]}</span>
-                <span className="step__title">{stepTitle(step)}</span>
-                <span className="step__time">{formatDuration(step.duration_ms)}</span>
-                <span className="step__bar" aria-hidden="true">
-                  <span style={{ width: `${total === 0 ? 0 : Math.max(2, (step.duration_ms / total) * 100)}%` }} />
-                </span>
-              </summary>
-              <div className="step__detail">
-                <StepDetail step={step} />
-              </div>
-            </details>
-          </li>
-        ))}
-      </ol>
+      <StepList steps={steps} />
     </div>
   );
 }

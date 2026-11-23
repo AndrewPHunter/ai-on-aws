@@ -15,8 +15,10 @@ services:
       WEB_ROOT: /repo/client/web/dist
       # The case system's review server, by its service name on the shared network.
       CASE_REVIEW_URL: http://case-system:8001
-      # The agents inquiries can be sent to: a JSON list of { id, name, description, scope, url }. scope is
-      # what a token sent to the agent must hold, and what a person must be granted to run it.
+      # The agents inquiries can be sent to: a JSON list of { id, name, description, scope, url, wait_seconds? }.
+      # scope is what a token sent to the agent must hold, and what a person must be granted to run it.
+      # wait_seconds (30 to 295, 180 when absent) is how long the client waits for the agent's answer, and so
+      # how long the token sent to it must still live.
       # An agent listed here that is not running shows as not reachable.
       AGENTS: >-
         [{"id": "intake-handwritten",
@@ -33,7 +35,13 @@ services:
           "name": "Label expert, on Strands",
           "description": "Answers a question about a medicine from its approved label, with the passages it relied on. It records nothing, and does not take adverse event reports.",
           "scope": "agents:expert",
-          "url": "http://expert:8080"}]
+          "url": "http://expert:8080"},
+         {"id": "orchestrator",
+          "name": "Orchestrator, on Strands",
+          "description": "Screens every message for an adverse event through the intake agent, and puts the questions in it about a medicine's label to the label expert. It answers nothing itself.",
+          "scope": "agents:orchestrator",
+          "url": "http://orchestrator:8080",
+          "wait_seconds": 295}]
       # Signing desk staff in. The server fetches the provider's discovery document by its service name
       # on the shared network; the document, and every token, names the issuer the browser uses.
       OIDC_DISCOVERY_URL: http://identity:8080/realms/lab/.well-known/openid-configuration

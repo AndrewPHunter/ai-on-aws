@@ -29,6 +29,10 @@ const { sender: _sender, ...withoutSender } = REQUEST.message;
 const { source: _source, ...withoutSource } = CITATION;
 const { handle: _handle, ...withoutHandle } = HIT;
 const citing = (citation: object): object => ({ ...RESPONSE, citations: [citation] });
+const delegating = (response: object): object => ({
+  ...RESPONSE,
+  steps: [{ kind: 'delegation', ...AT, id: 'q1', to_agent: 'expert', requested_by: 'model', message: { id: 'msg-1-q1', text: 'Invented question.' }, replaces: null, failure: null, response }],
+});
 
 const ROWS: { name: string; schema: typeof invocationRequestSchema | typeof invocationResponseSchema; value: object; inside: boolean }[] = [
   { name: 'a request', schema: invocationRequestSchema, value: REQUEST, inside: true },
@@ -40,6 +44,8 @@ const ROWS: { name: string; schema: typeof invocationRequestSchema | typeof invo
   { name: 'version 0', schema: invocationResponseSchema, value: citing({ ...CITATION, version: 0 }), inside: false },
   { name: 'an effective date of 7 digits', schema: invocationResponseSchema, value: citing({ ...CITATION, effective_date: '2026013' }), inside: false },
   { name: 'an unknown label_answer', schema: invocationResponseSchema, value: { ...RESPONSE, label_answer: 'maybe' }, inside: false },
+  { name: 'a delegation holding a response', schema: invocationResponseSchema, value: delegating(RESPONSE), inside: true },
+  { name: 'a delegation whose response holds a delegation', schema: invocationResponseSchema, value: delegating(delegating(RESPONSE)), inside: false },
   { name: 'a retrieval hit with no handle', schema: invocationResponseSchema, value: { ...RESPONSE, steps: [{ ...RESPONSE.steps[2], hits: [withoutHandle] }] }, inside: false },
 ];
 
