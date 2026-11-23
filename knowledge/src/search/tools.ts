@@ -419,12 +419,8 @@ async function queryVector(retriever: Retriever, budget: SearchBudget, query: st
   const answer = await embedding.client.embed(embedding.modelId, [queryText(query)], given.signal);
   if (answer.kind === 'timeout' && given.bySearch) return outOfTime(budget, step);
   if (answer.kind !== 'ok') return { ok: false, error: modelFailure('embedding', answer) };
-  let values: Float32Array;
-  try {
-    values = decodeVector(answer.value.vectors[0] ?? '');
-  } catch {
-    return fail('embedding_error', 'The embedding server answered with a vector this service cannot read.');
-  }
+  const values = decodeVector(answer.value.vectors[0] ?? '');
+  if (values === null) return fail('embedding_error', 'The embedding server answered with a vector this service cannot read.');
   if (values.length !== embedding.identity.dimensions) {
     return fail('embedding_error', `The embedding server answered with a vector of other than ${embedding.identity.dimensions} numbers.`);
   }

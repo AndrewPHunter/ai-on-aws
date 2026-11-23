@@ -116,7 +116,7 @@ export async function runEmbed(options: EmbedOptions): Promise<{ exitCode: 0 | 1
   const without: string[] = [];
   let tokens = 0;
   const keep = (chunk: Chunk, vector: string): void => {
-    if (decodeVector(vector).length !== settings.dimensions) {
+    if (decodeVector(vector)?.length !== settings.dimensions) {
       throw new RequestFailed(`the embedding server returned a vector of other than ${settings.dimensions} numbers for ${chunk.id}`);
     }
     vectors.set(chunk.id, vector);
