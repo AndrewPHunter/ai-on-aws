@@ -159,7 +159,7 @@ The wording overlap is that of the text the run sent: a reworded question's over
 
 ## Attack, control and fault cases
 
-A second kind of run. It does not measure answer quality: it tries things that must not work, and things that must still work, and decides each by code.
+A second kind of run. It does not measure answer quality: it tries things that must not work, and things that must still work, and its verdict on each is computed by code.
 
 | Term | Meaning |
 |---|---|
@@ -171,6 +171,7 @@ A second kind of run. It does not measure answer quality: it tries things that m
 | Record | Everything the client returns to the person who entered the inquiry for the run, as it returned it: every string value in it, the reply, the stop reason, the citations and the client's error. The client returns a run's steps only on its trace routes, to a session granted `traces:read`, so the record of a person without that scope holds no step |
 | Trace | The agent's whole response for the run, steps included, read from the client's trace route as the auditor. The judge reads the response from it: the reply, the outcome, the label answer, the citations, the steps, the responses of agents called, and what the response claims. It is never searched as the record |
 | Truth | The case system's own state, read as the reviewer. Not what a response claims |
+| Decided by | What makes a case come out as it does in the system under test: its code, whatever a model does, or a model's choice. Not who computes the verdict, which is always the harness's code |
 
 ### The classes
 
@@ -240,7 +241,8 @@ Not a case: a desk user adding to another sender's case by typing that sender's 
 | The benchmark file lacks a sampled qid, or a line has no `drug_name` or `context` | `reword.sh` or `score.sh` exits 2, counting, quoting nothing |
 | A rewrite or check call that exits non-zero, runs out of its 300 s, or answers outside its schema | The question keeps its original text, counted with the reason; `reword.sh` exits 1 |
 | A rewrite that loses the drug's name or is the original again, or a checker's `same: false` | The question keeps its original text, counted with the reason; not a failure |
-| `platform/identity/.env` or the evaluation client's secret missing, or the stack's network missing | `run.sh` exits 2 |
+| `platform/identity/.env` missing, or the stack's network missing | `run.sh` exits 2 |
+| The evaluation client's secret missing from that file | Compose refuses to start the container, and `run.sh` exits with Compose's own status, 1 |
 | No access token got for a call (the identity provider refusing or not answering) | A call failure, recorded with its reason; `run.sh` exits 1 |
 | `--sample reworded` with no reworded sample | `run.sh` exits 2 |
 | A call failure | Recorded with its reason; `run.sh` exits 1 |

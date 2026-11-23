@@ -21,7 +21,7 @@ Every command on this page is run from the root of the repository.
 docker compose -f tools/case-system/compose.yaml up -d --build --wait
 ```
 
-That starts the case system on its own; without the identity provider on the same network it answers `/ping`, answers 401 to a request with no token or a malformed one, and answers every other request with 503. `docker compose up -d --build --wait` at the root starts it together with the [client](../../client/README.md), which is how the review screens reach it.
+That starts the case system on its own; without the identity provider on the same network it answers `/ping`, answers 401 to a request with no token, a malformed one or one not signed with RS256, and answers every other request with 503. `docker compose up -d --build --wait` at the root starts it together with the [client](../../client/README.md), which is how the review screens reach it.
 
 | Port | For | What it serves |
 |---|---|---|

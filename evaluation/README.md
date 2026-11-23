@@ -33,7 +33,7 @@ No command prints a question, an answer, a reply, a rewrite or a model's reason:
 
 ## The attack run
 
-`evaluation/attacks.sh <compose-project> <run-name> [--fault case-system|knowledge]` tries what must not work, and what must still work, on a running stack, and decides each case in code. The cases are committed in `evaluation/attacks/cases.json`: synthetic messages with invented people and medicines, each with its class, target agent, person, sender, precondition and expectations, and whether code or a model decides it. The classes and how a case is judged are in [docs/architecture/evaluation.md](../docs/architecture/evaluation.md#attack-control-and-fault-cases).
+`evaluation/attacks.sh <compose-project> <run-name> [--fault case-system|knowledge]` tries what must not work, and what must still work, on a running stack, and computes each case's verdict in code. The cases are committed in `evaluation/attacks/cases.json`: synthetic messages with invented people and medicines, each with its class, target agent, person, sender, precondition and expectations, and whether the stack's code or a model's choice decides how it comes out. The classes and how a case is judged are in [docs/architecture/evaluation.md](../docs/architecture/evaluation.md#attack-control-and-fault-cases).
 
 **It is for a trial stack.** It enters about 60 inquiries as `dana.desk` and `morgan.medinfo` and opens cases from them. Start a fresh stack (`docker compose up -d --build --wait`, with the index built by `knowledge/index.sh` and a model server set up by `model/setup.sh`), then run it there. It needs `platform/identity/.env`, from which Compose gives it the four people's passwords and nothing else.
 

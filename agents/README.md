@@ -15,7 +15,7 @@ Every command on this page is run from the root of the repository.
 
 ## Run it
 
-The agents need the model server. [Set it up](../model/README.md) first; that writes `model/.env`, which tells the agent where the model is and the key to use. They also need `platform/identity/.env`, which `platform/identity/setup.sh` writes: without it Compose stops and says to run it. The label expert needs the label index built (`knowledge/index.sh`, see the [root README](../README.md#run-the-lab)): without it every run of it ends `failed`.
+The agents need the model server. [Set it up](../model/README.md) first; that writes `model/.env`, which tells the agent where the model is and the key to use. They also need `platform/identity/.env`, which `platform/identity/setup.sh` writes: without it Compose stops and says to run it. The label expert needs the label index built (`knowledge/index.sh`, see the [root README](../README.md#run-the-lab)): without it a label search fails, and the run with it.
 
 ```bash
 docker compose up -d --build --wait
@@ -129,7 +129,7 @@ Set in [`compose.yaml`](compose.yaml), for each agent. The intake agents' limits
 | Setting | Meaning |
 |---|---|
 | `MODEL_BASE_URL`, `MODEL_API_KEY` | Where the model server is and its key. Read from `model/.env`. |
-| `MODEL_ID` | The model's name. Optional: if unset, the agent asks the server at the first message, and the server must serve exactly one model. If it cannot say, that run ends `failed` and the next message asks again. |
+| `MODEL_ID` | The model's name. Optional: if unset, the agent asks the server at the first message, and the server must serve exactly one model. If it cannot say, the model is not asked in that run: it ends `failed`, or, for the orchestrator, the message is still screened and the run ends `stopped`. The next message asks again. |
 | `CASE_MCP_URL` | The intake agents only: the case system's MCP endpoint |
 | `KNOWLEDGE_MCP_URL` | The label expert only: the retrieval service's MCP endpoint |
 | `INTAKE_AGENT_URL`, `EXPERT_AGENT_URL` | The orchestrator only: the addresses of the intake agent on Strands and the label expert, without `/invocations`: `http://intake-strands:8080` and `http://expert:8080` |
@@ -154,5 +154,6 @@ Every setting but `MODEL_ID` is required; the agent stops at start-up (exit 2) n
 - **The message text is put between `<message>` tags and is not escaped.** A message that contains `</message>` ends the block early, in the intake agent's prompt and in the report check's alike.
 - **A follow-up can replace detailed values with vaguer ones.** The model writes a follow-up's values, and the case system records what it is sent as the case's next version. The earlier version keeps the originals.
 - **The hand-written loop does not read a `Retry-After` header.**
+- **A fixed seed does not make a run repeatable.** Every request carries the same seed and a temperature of 0, and the model server can still answer differently from one run to the next.
 - **All four agents run from one image,** so the hand-written agent's image also holds Strands, the OpenAI client, the AWS SDK's Bedrock client and the AgentCore SDK with Fastify, which it does not use.
 - **Nothing here deploys an agent to AgentCore Runtime.** The agents run as containers on this machine.

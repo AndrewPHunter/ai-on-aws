@@ -18,7 +18,7 @@ Two steps of the behaviour are not written in code. What to do next, given the c
 
 ```mermaid
 flowchart LR
-    Caller["Caller<br/>the client's server; for the agent<br/>on Strands, the orchestrator too"]
+    Caller["Caller<br/>the client's server, and for the agent<br/>on Strands the orchestrator too"]
     Agent["Intake agent<br/>one run per message"]
     Model["Model server<br/>inference"]
     Cases["Case system"]
@@ -63,7 +63,7 @@ flowchart TD
     Reached -- no --> FailedStart(["failed"])
     Reached -- yes --> Limits{"Any turns and<br/>time left?"}
 
-    Limits -- no --> StoppedLimit(["stopped: the limit is named;<br/>or, once the report check found<br/>an adverse event, that a person<br/>must read this message"])
+    Limits -- no --> StoppedLimit(["stopped: the limit is named,<br/>or, once the report check found<br/>an adverse event, that a person<br/>must read this message"])
     Limits -- yes --> Ask[/"Ask the model:<br/>the conversation and the tools"/]
     Ask --> Answered{"Did it answer?"}
     Answered -- "no, and resending<br/>could help" --> Ask

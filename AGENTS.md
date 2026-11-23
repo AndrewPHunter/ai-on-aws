@@ -79,9 +79,10 @@ anything under a `secrets/` directory.
   system got here.
 - A limit is written as what the code does or does not do, under "Known
   limits" or "Not present". "Not yet tried" is not a limit.
-- `docs/write-ups/` holds what was learned by building and measuring: the
-  question, what was run, the result, and the sources. A write-up names the
-  hardware and the revision it was measured on.
+- `docs/write-ups/` holds what was learned, by research and by building and
+  measuring: the question, what was read or run, the result, and the
+  sources. A write-up that reports a measurement names the hardware and the
+  revision it was measured on.
 
 ## Testing
 

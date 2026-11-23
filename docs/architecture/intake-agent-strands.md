@@ -119,7 +119,7 @@ sequenceDiagram
     opt Strands ended its turn with a reply
         opt the run has recorded no case
             O->>V: report check, POST /chat/completions through model/chat.ts, outside Strands: the message alone, no tools
-            V-->>O: yes, no, or anything else; only the finding is kept
+            V-->>O: yes, no, or anything else, and only the finding is kept
         end
         O->>R: afterReply: complete, tell once, or stop
         opt told once, with turns left

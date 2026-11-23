@@ -32,7 +32,7 @@ One inquiry can hold an adverse event report, a question a label answers, both, 
 | The case system opens one case per message id | The intake agent receives the original message under its own id. No model-written text reaches it |
 | The expert answers from one label, and its checks live in its handler | The expert is called through its contract. A question about two medicines is two calls |
 | Text from the message is untrusted | The model cannot stop screening, change what the intake agent receives, or put text in the reply |
-| The client waits for an answer with Node's `fetch`, which stops waiting at 300 s | The whole run is limited to 280 s |
+| The client waits at most 295 s for the orchestrator, because Node's `fetch` stops waiting at 300 s | The whole run is limited to 280 s |
 
 ## One message
 

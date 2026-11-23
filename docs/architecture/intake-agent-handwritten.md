@@ -233,7 +233,7 @@ What follows the reply is `afterReply` in `intake/run.ts`, a function of the run
 
 | Case actions | Finding | Told | Next |
 |---|---|---|---|
-| One or more | Not made | Either | `completed` with the reply |
+| One or more | Whatever it is, made or not | Either | `completed` with the reply |
 | None | Not yet made | No | Make the check, then ask again |
 | None | `none` | Either | `completed` with the reply |
 | None | `unknown` | Either | `stopped`: "The run recorded no case, and the separate check for an adverse event could not be made." |

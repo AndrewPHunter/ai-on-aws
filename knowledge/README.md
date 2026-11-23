@@ -350,7 +350,7 @@ A manifest entry holds: set id, version, document id, effective time, published 
 
 ## Requests
 
-- At most 2 requests to DailyMed at once, and 1 to GitHub, from 2 workers. The tool refuses a DailyMed setting above 4; `lib.sh` sets 2: DailyMed's history service answers 429 to more.
+- At most 2 requests to DailyMed at once, and 1 to GitHub, from 2 workers. The tool refuses a DailyMed setting above 4; `lib.sh` sets 2.
 - A request with no response, a body cut short or not read in time, or a status of 408, 429 or 5xx, is tried 3 times in all, waiting 10 and then 60 seconds. A 404, or any other status, is not tried again. Redirects are followed. One attempt may take 120 seconds.
 - A benchmark file may be at most 256 MiB (268,435,456 bytes).
 - Every request carries the User-Agent `label-corpus-fetch/1.0` and nothing that identifies a person, a machine or this repository.

@@ -160,7 +160,7 @@ The gate is a script that decides whether the running servers are fit for the la
 - Embedding: no key and a wrong key are rejected and the right key accepted; the model is listed; every vector has the configured number of dimensions and unit length within a tolerance; for a fixed set of queries, each with one passage that answers it and several that do not, the answering passage is the most similar in at least the configured share; an input over the limit is refused; several batches sent at once are all answered.
 - Reranker: the same key checks; the model is listed; for the same set, the answering passage is ranked first in at least the configured share; a document over the limit is refused, and accepted with `max_tokens_per_doc`; several requests sent at once are all answered.
 
-Thresholds are in `model/gate/gate.config.json`, and they are the same for every tier: 20 rounds of 4 tool-calling conversations with at least 95% correct and no server fault; 4 prompts of at least 14,000 tokens at once; vectors of unit length within 0.001; the answering passage first in at least 90% of the fixed set, for the embedding server and for the reranker; 4 batches of 32 inputs, and 4 reranker requests, at once. Each request may take 180 seconds. The report has the sections `auth`, `toolCalling` and `context` for the chat server, `embedding` and `reranker`, and its `failures` names each check that failed.
+Thresholds are in `model/gate/gate.config.json`. They and the fixed set of queries are chosen, not measured, and they are the same for every tier: 20 rounds of 4 tool-calling conversations with at least 95% correct and no server fault; 4 prompts of at least 14,000 tokens at once; vectors of unit length within 0.001; the answering passage first in at least 90% of the fixed set, for the embedding server and for the reranker; 4 batches of 32 inputs, and 4 reranker requests, at once. Each request may take 180 seconds. The report has the sections `auth`, `toolCalling` and `context` for the chat server, `embedding` and `reranker`, and its `failures` names each check that failed.
 
 Setup runs it for you. To run it yourself, from `model/gate/`, on any machine that can reach the servers:
 
@@ -174,7 +174,7 @@ When the servers are published on a loopback address of the machine the gate run
 docker compose -f compose.yaml -f compose.host-network.yaml --env-file ../.env --env-file ../profiles/qwen3.5-9b-w4a16.env --env-file ../retrieval.env run --rm gate
 ```
 
-It prints a JSON report and exits 0 on a pass, 1 if a check failed, and 2 if it could not run: a server that does not answer, a model list not answered with 200 to the right key, or a chat server that reports no token usage.
+It prints a JSON report and exits 0 on a pass, 1 if a check failed, and 2 if it could not run: a setting missing, a server that does not answer, a model list not answered with 200 to the right key, a chat server that reports no token usage, or any other error of its own.
 
 ## Tests
 

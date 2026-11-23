@@ -75,7 +75,7 @@ The tests in `toolchain/test/` are named T1 to T5: T1 shows 6, T2 shows 5, T3 sh
 
 | Owner | Owns |
 |---|---|
-| Root `package.json` | Dependency versions, and the definition of the check. Its `overrides` hold five `@aws-sdk` packages that `bedrock-agentcore` brings in at 3.1174.0, the release of `@aws-sdk/client-bedrock-runtime` that Strands' entry in the lockfile holds |
+| Root `package.json` | Dependency versions, and the definition of the check. Its `overrides` pin five `@aws-sdk` packages that `bedrock-agentcore` brings in to the versions that go with `@aws-sdk/client-bedrock-runtime` 3.1174.0, the release Strands' entry in the lockfile holds |
 | `package-lock.json` | The resolved dependency tree. Written only by `toolchain/lock.sh` |
 | `tsconfig.json` | What the compiler accepts |
 | `eslint.config.js` | The lint rules |
