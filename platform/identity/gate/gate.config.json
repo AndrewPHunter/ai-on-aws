@@ -40,11 +40,11 @@
       { "audience": "intake-strands", "scope": "agents:intake", "onlyThisClient": false },
       { "audience": "expert", "scope": "agents:expert:delegated", "onlyThisClient": true }
     ],
-    "forbiddenScope": "labels:search"
+    "forbiddenScopes": ["labels:search", "agents:expert"]
   },
   "machines": [
-    { "clientId": "evaluation", "secretVariable": "IDENTITY_EVALUATION_CLIENT_SECRET", "id": "6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f05", "role": "evaluation", "scope": "agents:expert", "forbiddenScope": "labels:search" },
-    { "clientId": "knowledge-gate", "secretVariable": "IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET", "id": "6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f06", "role": "knowledge-gate", "scope": "labels:search" }
+    { "clientId": "evaluation", "secretVariable": "IDENTITY_EVALUATION_CLIENT_SECRET", "id": "6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f05", "role": "evaluation", "scope": "agents:expert", "forbiddenScopes": ["labels:search", "agents:expert:delegated"] },
+    { "clientId": "knowledge-gate", "secretVariable": "IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET", "id": "6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f06", "role": "knowledge-gate", "scope": "labels:search", "forbiddenScopes": ["agents:expert:delegated"] }
   ],
   "audienceOnlyClients": ["case-system", "knowledge"],
   "exchangeOffDescription": "Standard token exchange is not enabled for the requested client"

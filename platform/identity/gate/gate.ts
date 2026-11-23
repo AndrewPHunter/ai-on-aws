@@ -18,7 +18,8 @@
 //   G4   The refresh token that refresh returned still reaches the whole grant, and another granted scope.
 //   G5   A refresh for a scope the role does not grant is answered 200 with the scope and its audiences absent.
 //   G11, G12  Each machine obtains a token by client credentials for its scope, with its fixed sub, its name and
-//        its one role; evaluation is refused a scope its client may not ask for.
+//        its one role; each is refused the scopes its client may not ask for: a tool server's, and the one only
+//        the orchestrator may ask for.
 //   G7, G8, G11  Each agent exchanges the token it is called with for a token for the one service it calls.
 //   G15  The orchestrator exchanges each caller's token for it for a token for each sub-agent it calls, with
 //        that sub-agent's scope: one audience, the orchestrator as client, the person, the same expiry.
@@ -32,7 +33,8 @@
 // leaves every statement above checked:
 //   G10  The desk client, both audience-only clients and both machines cannot exchange a token.
 //   G9   An agent is refused a scope its client may not ask for: the other kind of agent's scopes, a scope only
-//        the orchestrator may ask for, and, for the orchestrator, a tool server's scope.
+//        the orchestrator may ask for, and, for the orchestrator, a tool server's scope and the label expert's
+//        scope for a direct caller.
 //   G6   The desk client asking for a scope it may not ask for (a tool server's, or one only the orchestrator may
 //        ask for) is refused invalid_scope, at a refresh and at the authorization endpoint.
 //
@@ -99,7 +101,7 @@ import {
 
 type UserConfig = { username: string; passwordVariable: string; id: string; staffRole: string; granted: string[] }
 type AgentConfig = { clientId: string; secretVariable: string; audience: string; scopes: string[]; subject: { username: string; scope: string } }
-type MachineConfig = { clientId: string; secretVariable: string; id: string; role: string; scope: string; forbiddenScope?: string }
+type MachineConfig = { clientId: string; secretVariable: string; id: string; role: string; scope: string; forbiddenScopes: string[] }
 /** A sub-agent the orchestrator calls (an entry of `agents`), the scope it asks for there, and whether only the orchestrator's client may ask for that scope. */
 type DelegationConfig = { audience: string; scope: string; onlyThisClient: boolean }
 type OrchestratorConfig = {
@@ -110,8 +112,8 @@ type OrchestratorConfig = {
   /** The people whose token for the orchestrator it exchanges. */
   callers: string[]
   delegations: DelegationConfig[]
-  /** A scope its client may not ask for. */
-  forbiddenScope: string
+  /** Scopes its client may not ask for. */
+  forbiddenScopes: string[]
 }
 
 type GateConfig = {
@@ -198,8 +200,8 @@ function loadConfig(path: string): GateConfig {
       id: field(machine, 'id', isString, 'a string'),
       role: field(machine, 'role', isString, 'a string'),
       scope: field(machine, 'scope', isString, 'a string'),
-      // A scope the machine's client may not ask for, whose refusal the gate states (G11). Optional.
-      ...(machine.forbiddenScope === undefined ? {} : { forbiddenScope: field(machine, 'forbiddenScope', isString, 'a string') }),
+      // Scopes the machine's client may not ask for, whose refusals the gate states (G11). Optional; none when absent.
+      forbiddenScopes: machine.forbiddenScopes === undefined ? [] : field(machine, 'forbiddenScopes', isStrings, 'a list of strings'),
     })),
     audienceOnlyClients: field(raw, 'audienceOnlyClients', isStrings, 'a list of strings'),
     exchangeOffDescription: field(raw, 'exchangeOffDescription', isString, 'a string'),
@@ -210,7 +212,8 @@ function loadConfig(path: string): GateConfig {
     ...config.deskForbiddenScopes,
     ...config.users.flatMap((user) => user.granted),
     orchestrator.scope,
-    orchestrator.forbiddenScope,
+    ...orchestrator.forbiddenScopes,
+    ...config.machines.flatMap((machine) => machine.forbiddenScopes),
     ...orchestrator.delegations.map((delegation) => delegation.scope),
   ]) {
     if (!config.scopes.has(name)) throw new UsageError(`config: ${name} is not in scopes`)
@@ -236,7 +239,7 @@ function loadOrchestrator(raw: Record<string, unknown>): OrchestratorConfig {
       scope: field(delegation, 'scope', isString, 'a string'),
       onlyThisClient: field(delegation, 'onlyThisClient', (value): value is boolean => typeof value === 'boolean', 'true or false'),
     })),
-    forbiddenScope: field(raw, 'forbiddenScope', isString, 'a string'),
+    forbiddenScopes: field(raw, 'forbiddenScopes', isStrings, 'a list of strings'),
   }
 }
 
@@ -544,11 +547,11 @@ async function main(): Promise<number> {
       )
       machineTokens.set(machine.clientId, { token: tokenField(answer.body, 'access_token'), claims: verified.claims })
 
-      if (machine.forbiddenScope !== undefined) {
-        const refused = await clientCredentials(http, discovery, machine.clientId, secret, machine.forbiddenScope)
-        report.refused[`${machine.clientId}_${machine.forbiddenScope}`] = refusal(refused)
+      for (const forbiddenScope of machine.forbiddenScopes) {
+        const refused = await clientCredentials(http, discovery, machine.clientId, secret, forbiddenScope)
+        report.refused[`${machine.clientId}_${forbiddenScope}`] = refusal(refused)
         judged(
-          `G11 ${machine.clientId}: asking for ${machine.forbiddenScope}, which its client may not ask for, is refused invalid_scope`,
+          `G11 ${machine.clientId}: asking for ${forbiddenScope}, which its client may not ask for, is refused invalid_scope`,
           checkErrorAnswer(refused.status, refused.body, { status: 400, error: 'invalid_scope' }),
         )
       }
@@ -739,16 +742,16 @@ async function main(): Promise<number> {
     }
 
     // G9: the orchestrator asking for a scope its client may not ask for, with a token it is an audience of.
-    {
-      const caller = orchestrator.callers[0]
-      if (caller === undefined) throw new UsageError('config: orchestrator.callers is empty')
-      const own = subjectOf(caller, orchestrator.scope)
-      const audience = audiencesOfScope(orchestrator.forbiddenScope)[0]
-      if (audience === undefined) throw new UsageError(`config: ${orchestrator.forbiddenScope} names no audience`)
-      const answer = await exchange(http, discovery, orchestrator.clientId, orchestratorSecret, own.token, audience, [orchestrator.forbiddenScope])
-      report.refused[`${orchestrator.clientId}_scope_${orchestrator.forbiddenScope}`] = refusal(answer)
+    const orchestratorCaller = orchestrator.callers[0]
+    if (orchestratorCaller === undefined) throw new UsageError('config: orchestrator.callers is empty')
+    for (const forbiddenScope of orchestrator.forbiddenScopes) {
+      const own = subjectOf(orchestratorCaller, orchestrator.scope)
+      const audience = audiencesOfScope(forbiddenScope)[0]
+      if (audience === undefined) throw new UsageError(`config: ${forbiddenScope} names no audience`)
+      const answer = await exchange(http, discovery, orchestrator.clientId, orchestratorSecret, own.token, audience, [forbiddenScope])
+      report.refused[`${orchestrator.clientId}_scope_${forbiddenScope}`] = refusal(answer)
       judged(
-        `G9 ${orchestrator.clientId}: asking for ${orchestrator.forbiddenScope}, which its client may not ask for, is refused invalid_scope`,
+        `G9 ${orchestrator.clientId}: asking for ${forbiddenScope}, which its client may not ask for, is refused invalid_scope`,
         checkErrorAnswer(answer.status, answer.body, { status: 400, error: 'invalid_scope' }),
       )
     }
