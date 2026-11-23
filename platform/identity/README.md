@@ -230,12 +230,13 @@ Every statement is checked even after one fails. The JSON report has three lists
 
 ## Other programs that sign in
 
-Two more programs get a token on the stack's network, as machines: each as its own client, by client credentials with its own secret ([`shared/machine-token.ts`](../../shared/machine-token.ts)). No person signs in, and neither is given a password. Compose gives each its own client's secret from `platform/identity/.env`, and nothing else from it.
+Three more programs get a token on the stack's network. Two do it as machines: each as its own client, by client credentials with its own secret ([`shared/machine-token.ts`](../../shared/machine-token.ts)); no person signs in, and neither is given a password. Compose gives each its own client's secret from `platform/identity/.env`, and nothing else from it. The third, the attack runner, signs each of the four people in through the client, as the stack gate does, and is given their four passwords and nothing else.
 
 | Program | Client | Scope | Secret | Uses the access token to |
 |---|---|---|---|---|
 | `knowledge/gate.sh` | `knowledge-gate` | `labels:search` | `IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET` | Call the retrieval service's MCP endpoint |
 | `evaluation/run.sh` | `evaluation` | `agents:expert` | `IDENTITY_EVALUATION_CLIENT_SECRET` | Call the label expert's `POST /invocations`, which exchanges it for its own token for the retrieval service. It gets a new token before the current one has under 200 s left |
+| `evaluation/attacks.sh` | None of its own: it signs each of the four people in through the client (`desk`), as the stack gate does, with `src/desk.ts` | What each person's role grants at sign-in | `IDENTITY_DANA_PASSWORD`, `IDENTITY_MORGAN_PASSWORD`, `IDENTITY_RILEY_PASSWORD`, `IDENTITY_AVERY_PASSWORD`, and no client secret | Holds no token, only each person's client cookie: sends each case's inquiry as its person, and reads cases as `riley.reviewer`. A person whose session ends signs in again once |
 
 ## Development only
 

@@ -4,7 +4,7 @@ The lab's OpenID Connect provider: Keycloak in development mode, one realm, impo
 
 Every token is for a target: the audiences of the scopes it holds. The client's server signs staff in, and before each call gets a token for that call's scope, by refresh when it holds none with enough life left: an agent's scope for an agent, `cases:read` or `cases:review` for the case system. The token from sign-in is sent to nobody. Each agent accepts a token for itself with its scope, then exchanges it, as itself with its own secret, for a token for what it calls: the intake agents for the case system, the label expert for the retrieval service, the orchestrator for the intake agent on Strands and for the label expert, each of which exchanges the token it is sent again for its own tool server. The case system and the retrieval service accept tokens only from their own callers, and each tool and route needs its own scope. The case system records the agent from the token's client and the person from the token's user.
 
-Two programs sign a person in without a browser, the identity gate and the stack gate. Two get a token as a machine, by client credentials: the knowledge gate and the evaluation runner ([Signing in without a browser](#signing-in-without-a-browser)).
+Three programs sign a person in without a browser: the identity gate, the stack gate and the attack runner (`evaluation/attacks.sh`). Two get a token as a machine, by client credentials: the knowledge gate and the evaluation runner ([Signing in without a browser](#signing-in-without-a-browser)).
 
 ## Terms
 
@@ -409,7 +409,7 @@ The retrieval service (`knowledge/src/search/`) checks the token with `shared/ac
 
 ## Signing in without a browser
 
-Each of these runs in a container on the stack's default network (`<compose-project>_default`), reaches the provider at `http://identity:8080`, and is given only the values it names from the identity secrets, by Compose. None prints a password, secret, code or token. No program outside `platform/identity/` is given a person's password: the two machines hold their own client's secret and nothing else.
+Each of these runs in a container on the stack's default network (`<compose-project>_default`), reaches the provider at `http://identity:8080`, and is given only the values it names from the identity secrets, by Compose. None prints a password, secret, code or token. Only the two identity gates and the attack runner are given a person's password, because acting as each person is what they are for. The two machines hold their own client's secret and nothing else.
 
 | Party | Started by | As | How | Secrets given | What it does with it |
 |---|---|---|---|---|---|
@@ -417,6 +417,7 @@ Each of these runs in a container on the stack's default network (`<compose-proj
 | Stack gate | `platform/identity/stack-gate.sh` | The four people; for tokens it presents itself, also `intake-handwritten`, `expert`, `orchestrator` and both machines | Through the client: `/auth/login`, Keycloak's form, the client's callback; the client exchanges the code and the gate holds cookies. For its own tokens: through `desk` directly, four exchanges (one as `intake-handwritten`, one as `expert`, two as `orchestrator`), and client credentials | The four passwords; the `desk`, `intake-handwritten`, `expert`, `orchestrator`, `evaluation` and `knowledge-gate` secrets | Uses the desk as a browser would, knocks on every agent and tool server with no token, and presents its own tokens to each service and to the agents |
 | Knowledge gate | `knowledge/gate.sh` | Client `knowledge-gate` | Client credentials with its own secret, scope `labels:search` (`shared/machine-token.ts`) | `IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET` | Calls the retrieval service's MCP endpoint with the token. A token that cannot be got is exit 2 |
 | Evaluation runner | `evaluation/run.sh` | Client `evaluation` | Client credentials with its own secret, scope `agents:expert` (`shared/machine-token.ts`). Gets a new token before the current one has under 200 s left | `IDENTITY_EVALUATION_CLIENT_SECRET` | Sends it to the label expert on `POST /invocations`; the expert exchanges it for its own token for the retrieval service. A question for which no token could be got is recorded with the reason `no access token could be got` |
+| Attack runner | `evaluation/attacks.sh` | The four people | Through the client, as the stack gate does (`platform/identity/src/desk.ts`): `/auth/login`, Keycloak's form, the client's callback; the client exchanges the code and the runner holds only cookies. A person whose session ends (401) signs in again once | The four passwords, and no client secret | Sends each attack, control and fault case's inquiry as its person, and reads cases as `riley.reviewer` |
 
 ## From sign-in to an audit entry
 

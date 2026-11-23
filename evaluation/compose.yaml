@@ -1,5 +1,6 @@
-# Runs the evaluation runner on the network of a running stack, as one of the stack's containers would. Run it with
-# evaluation/run.sh, which builds the image, names the network and passes platform/identity/.env.
+# Runs the evaluation runner, and the attack runner, on the network of a running stack, as one of the stack's
+# containers would. Run them with evaluation/run.sh and evaluation/attacks.sh, which build the image, name the network
+# and pass platform/identity/.env.
 name: ai-on-aws-evaluation
 
 services:
@@ -17,6 +18,37 @@ services:
       - ./sample.json:/repo/evaluation/sample.json:ro
       # The code the command line imports beside its own (the manifest's schema and the shared reference rule, the
       # expert's number rule).
+      - ../knowledge/src:/repo/knowledge/src:ro
+      - ../agents/src:/repo/agents/src:ro
+    networks:
+      - stack
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+
+  attacks:
+    # The same image, run by evaluation/attacks.sh: it plays the attack, control and fault cases through the client.
+    image: ${EVALUATION_IMAGE:?run evaluation/attacks.sh}
+    environment:
+      # The attack runner signs each of the four people in through the client. Only these values are taken from
+      # platform/identity/.env.
+      IDENTITY_DANA_PASSWORD: ${IDENTITY_DANA_PASSWORD:?run platform/identity/setup.sh}
+      IDENTITY_MORGAN_PASSWORD: ${IDENTITY_MORGAN_PASSWORD:?run platform/identity/setup.sh}
+      IDENTITY_RILEY_PASSWORD: ${IDENTITY_RILEY_PASSWORD:?run platform/identity/setup.sh}
+      IDENTITY_AVERY_PASSWORD: ${IDENTITY_AVERY_PASSWORD:?run platform/identity/setup.sh}
+    working_dir: /repo
+    volumes:
+      # The run folder it writes, and the committed cases it reads.
+      - ./data:/repo/evaluation/data
+      - ./attacks:/repo/evaluation/attacks:ro
+      # How a program acts as a person through the client (desk.ts), and what it imports; and the code the command
+      # line imports beside its own, as for the runner.
+      - ../platform/identity/src:/repo/platform/identity/src:ro
       - ../knowledge/src:/repo/knowledge/src:ro
       - ../agents/src:/repo/agents/src:ro
     networks:

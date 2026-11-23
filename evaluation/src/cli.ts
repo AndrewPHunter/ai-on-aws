@@ -14,6 +14,13 @@
 //   node evaluation/src/main.ts reword-check-prepare --sample <file> --qa <file> --pending <dir>
 //   node evaluation/src/main.ts reword-collect       --sample <file> --qa <file> --pending <dir>
 //   node evaluation/src/main.ts reword-check         --sample <file> --count <n>
+//   node evaluation/src/main.ts attacks --cases <file> --run-dir <dir> --part <main|case-system|knowledge>
+//                                       --client-url <url> --identity-url <url> --browser-client-url <url> --browser-identity-url <url>
+//
+// attacks plays the committed attack, control and fault cases through the web client (attacks/runner.ts); the four
+// people's passwords come from the environment it is given (IDENTITY_DANA_PASSWORD, IDENTITY_MORGAN_PASSWORD,
+// IDENTITY_RILEY_PASSWORD, IDENTITY_AVERY_PASSWORD, passed by Compose from platform/identity/.env). Its exit codes:
+// 0 every case part decided by code held and every control held; 1 one did not; 2 could not run.
 //
 // --sample is always the original sample's file (evaluation/data/sample.jsonl); the reworded variant's file sits
 // beside it (variant.ts). A command that reads a run reads the file of the run's own variant, and refuses a run whose
@@ -44,6 +51,8 @@ import { isRefusal, scoreRun } from './score.ts';
 import type { Scores } from './score.ts';
 import { readSections } from './sections.ts';
 import { SignInFailed, TokenSource, evaluationToken } from './sign-in.ts';
+import { readCaseSet } from './attacks/set.ts';
+import type { Person } from './attacks/set.ts';
 import { formatScores } from './table.ts';
 import { REWORDED_FILE, isVariant, readVariant, variantPath } from './variant.ts';
 import type { Variant, VariantSample } from './variant.ts';
@@ -60,6 +69,14 @@ export type CommandIo = {
 
 class UsageError extends Error {}
 
+// The environment variable holding each person's password, for the attack run.
+const PASSWORDS: [Person, string][] = [
+  ['dana.desk', 'IDENTITY_DANA_PASSWORD'],
+  ['morgan.medinfo', 'IDENTITY_MORGAN_PASSWORD'],
+  ['riley.reviewer', 'IDENTITY_RILEY_PASSWORD'],
+  ['avery.auditor', 'IDENTITY_AVERY_PASSWORD'],
+];
+
 const FLAGS: Record<string, { required: string[]; switches: string[] }> = {
   sample: { required: ['qa', 'manifest', 'settings', 'out'], switches: ['record'] },
   run: { required: ['sample', 'variant', 'run-dir', 'agent-url'], switches: ['retry-failed'] },
@@ -72,6 +89,7 @@ const FLAGS: Record<string, { required: string[]; switches: string[] }> = {
   'reword-check-prepare': { required: ['sample', 'qa', 'pending'], switches: [] },
   'reword-collect': { required: ['sample', 'qa', 'pending'], switches: [] },
   'reword-check': { required: ['sample', 'count'], switches: [] },
+  attacks: { required: ['cases', 'run-dir', 'part', 'client-url', 'identity-url', 'browser-client-url', 'browser-identity-url'], switches: [] },
 };
 
 function parseFlags(command: string, args: readonly string[]): { values: Map<string, string>; switches: Set<string> } {
@@ -208,6 +226,31 @@ async function run(argv: readonly string[], io: CommandIo): Promise<number> {
     const counts = Object.entries(settings.data.strata).map(([type, count]) => `${type} ${count}`).join(', ');
     io.log(`sample: ${qids.length} questions (${counts})`);
     return 0;
+  }
+
+  if (command === 'attacks') {
+    const set = readCaseSet((await readText(flag(values, 'cases'), 'evaluation/attacks/cases.json')).toString('utf8'));
+    const passwords = {} as Record<Person, string>;
+    for (const [person, name] of PASSWORDS) {
+      const value = io.env[name];
+      if (!value) throw new UsageError(`${name} must be set (evaluation/attacks.sh passes it)`);
+      passwords[person] = value;
+    }
+    // Imported here, not at the top: the runner imports platform/identity/src/desk.ts, which only the attack run's
+    // container mounts.
+    const { isPart, runAttacks } = await import('./attacks/runner.ts');
+    const part = flag(values, 'part');
+    if (!isPart(part)) throw new UsageError('--part must be main, case-system or knowledge');
+    const url = (name: string): string => flag(values, name).replace(/\/+$/, '');
+    return runAttacks({
+      set,
+      part,
+      addresses: { client: url('client-url'), identity: url('identity-url'), browserClient: url('browser-client-url'), browserIdentity: url('browser-identity-url') },
+      passwords,
+      runDir: flag(values, 'run-dir'),
+      log: io.log,
+      warn: io.warn,
+    });
   }
 
   if (command === 'run') {
