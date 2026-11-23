@@ -134,3 +134,7 @@ It typechecks, lints and tests all the TypeScript in the repository and builds t
 - To run the model server: [model/README.md](model/README.md).
 - To understand how a piece is put together: [docs/architecture/](docs/architecture/).
 - To change anything here: [AGENTS.md](AGENTS.md).
+
+## Licence
+
+MIT: see [LICENSE](LICENSE). The drug labels and the benchmark the lab fetches are not part of this repository and carry their own terms.
