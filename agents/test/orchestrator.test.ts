@@ -185,6 +185,11 @@ test('orchestrator', async (t) => {
       ['not screened, the only label answer replaced', result([put('q1', expertSaid('A.')), put('q2', null, 'q1')], unscreened), 'failed', unscreened.failure],
     ];
     for (const [name, run, outcome, stopReason] of rows) assert.deepEqual(howItEnds(run), { outcome, stop_reason: stopReason }, name);
+    const stoppedIntake: CallResult = { failure: null, response: response('intake-strands', { outcome: 'stopped', stop_reason: 'A person must read this message.' }) };
+    for (const [screening, again] of [[unscreened, true], [stoppedIntake, false]] as const) {
+      const { reply } = replyWithCitations(result([put('q1', expertSaid('A.'))], screening));
+      assert.deepEqual([reply.startsWith('The screening of this message for an adverse event did not complete.'), reply.includes('Send it again.')], [true, again]);
+    }
   });
 
   await t.test('orchestrator 7. each sub-agent is sent a token exchanged for it, never the caller\'s; a refused exchange is that call\'s failure', async () => {

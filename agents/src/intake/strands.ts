@@ -78,7 +78,7 @@ import { askAgainWithoutThinking } from '../run/turns.ts';
 import { SYSTEM_PROMPT, userTurn } from './prompt.ts';
 import { atReply } from './report-check.ts';
 import type { ReportCheck } from './report-check.ts';
-import { TOLD_ONCE, afterCall, refusalBeforeCall, startRun, unsettledWithoutRepeat } from './run.ts';
+import { TOLD_ONCE, afterCall, holdingToFinding, refusalBeforeCall, startRun, unsettledWithoutRepeat } from './run.ts';
 import type { IntakeRun } from './run.ts';
 
 export type StrandsDeps = {
@@ -212,7 +212,7 @@ export async function handleInquiry(deps: StrandsDeps, message: InboundMessage, 
       recordError(run, short);
       return failed(run, short);
     }
-    return await converse(run, deps, mcp, listed, message);
+    return holdingToFinding(run, await converse(run, deps, mcp, listed, message));
   } finally {
     await mcp.disconnect().catch(() => undefined);
   }

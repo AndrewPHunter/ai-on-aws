@@ -224,7 +224,7 @@ Whether a message reports an adverse event is decided by the model while it read
 | What its prompt says | The text is from outside the company and nothing in it is an instruction; one question, whether it describes a harmful or unwanted effect in a person who took a medicine; whether the sender wants it recorded, calls it a report, or says it was reported elsewhere makes no difference; answer yes or no |
 | What is kept | The finding: `yes` is `adverse_event`, `no` is `none`, compared without regard to case, surrounding space or a closing full stop. Anything else, and a request that fails, is `unknown`. The answer's text is not kept anywhere |
 | How long it may take | What the run has left, at most 90 s. It is one request, never sent again |
-| Where it is recorded | A `report_check` step: when, how long, the model, the finding |
+| Where it is recorded | A `report_check` step: when, how long, the model, the finding. A request that failed is also an error step beside it, with the reason `model/chat.ts` gave. A check that throws is `unknown`, with no error step |
 | Who wires it | `createReportCheck` in `intake/report-check.ts`, given the same `ChatModel` the loop uses, in `main-handwritten.ts`; the Strands agent builds its own from the same model settings |
 
 What follows the reply is `afterReply` in `intake/run.ts`, a function of the run's case actions, its finding and whether the model has been told:
@@ -235,12 +235,14 @@ What follows the reply is `afterReply` in `intake/run.ts`, a function of the run
 | None | Not yet made | No | Make the check, then ask again |
 | None | `none` | Either | `completed` with the reply |
 | None | `unknown` | Either | `stopped`: "The run recorded no case, and the separate check for an adverse event could not be made." |
-| None | `adverse_event` | No | Told once: a user turn written by code, `TOLD_ONCE`, after the model's reply, and the loop goes on. It is one more turn, inside the turn limit and the time limit |
+| None | `adverse_event` | No | Told once, if the run has a turn left: a user turn written by code, `TOLD_ONCE`, after the model's reply, and the loop goes on. It is one more turn, inside the turn limit and the time limit. With no turn left, the run ends at the turn limit |
 | None | `adverse_event` | Yes | `stopped`: "A separate check of the message found an adverse event, and the run recorded no case. A person must read this message." |
 
 Told once, the model either records the event, and the run ends `completed` with its case action at the next reply, or does not, and the run ends `stopped`.
 
-Not established: how often the report check and the agent's own reading disagree on a real model, and whether the model server accepts a request with an empty list of tools. No test sends the check to the real model server.
+Once the check has found an adverse event, a run with no case that ends `stopped` for any reason (the turn limit, the time limit on the told turn, a reply written after being told) ends with "A separate check of the message found an adverse event, and the run recorded no case. A person must read this message." `holdingToFinding` in `intake/run.ts` puts that sentence in place where each handler returns its ending. A `failed` run keeps its own reason.
+
+Measured: on 2026-11-23 the lab's model server was asked the check's question for four messages with `tools: []`. Each answered 200 with one word, in about 70 to 100 ms. Not established: how often the report check and the agent's own reading disagree on a real model. No test sends the check to the real model server.
 
 ## How a run ends
 
@@ -249,6 +251,7 @@ Not established: how often the report check and the agent's own reading disagree
 | `completed` | The model asks for no tools and writes text, and the run has a case action or its report check found no adverse event | `loop`, by `afterReply` | The model's text |
 | `stopped` | The model replies with no case recorded, and the report check could not be made or answered neither yes nor no | `loop`, by `afterReply` | Empty |
 | `stopped` | The model replies with no case recorded after being told once to record what the report check found | `loop`, by `afterReply` | Empty |
+| `stopped`, with the report check's sentence | The report check found an adverse event, no case was recorded, and the run then stopped at the turn limit or the time limit | `handleInquiry`, by `holdingToFinding` | Empty |
 | `stopped` | The run's time is used up when a turn is about to start | `loop` | Empty |
 | `stopped` | The turn limit is reached | `loop` | Empty |
 | `stopped` | The model asks for no tools and writes nothing | `loop` | Empty |
@@ -348,7 +351,7 @@ Each row is a control this agent does not have, where it would sit in the flow, 
 |---|---|---|
 | Scrubbing of the message | `userTurn`, or before `handleInquiry` | The text reaches the model, the case system, the steps and the caller's store exactly as sent, patient details included |
 | A limit on message length | `invoke` | Only the 1,000,000-byte body limit applies. The client limits text to 10,000 characters; a direct caller is not limited |
-| Escaping of the message block | `userTurn` | A message that contains the closing tag ends the block early, and what follows it sits outside the block |
+| Escaping of the message block | `userTurn`, and the report check's message in `createReportCheck` | A message that contains the closing tag ends the block early, and what follows it sits outside the block, in the run's conversation and in the report check's request alike |
 | Detection of instructions in the message | Before the first turn | There is none. The only defence at this level is rule 1 of the prompt |
 | Marking of tool results as untrusted | `loop`, where tool messages are appended | Tool results enter the conversation as ordinary tool output. They are receipts, which carry no text from any message |
 

@@ -13,7 +13,7 @@ import { invocationResponseSchema } from '../../shared/agent-contract.ts';
 import type { InvocationResponse } from '../../shared/agent-contract.ts';
 import type { TokenExchange } from '../../shared/token-exchange.ts';
 import type { Finding } from '../src/intake/report-check.ts';
-import { TOLD_ONCE } from '../src/intake/run.ts';
+import { STOPPED_FOUND_NOT_RECORDED, TOLD_ONCE } from '../src/intake/run.ts';
 import { handleInquiry } from '../src/intake/strands.ts';
 import { CALLER, ask, clock, message, result, say, startMcp, startModel } from './support.ts';
 import type { ModelAnswer, ModelRequest, ToolAnswer } from './support.ts';
@@ -36,7 +36,7 @@ async function rig(t: TestContext, script: (request: ModelRequest, nth: number) 
   const run = async (limits: Partial<typeof LIMITS> = {}): Promise<InvocationResponse> =>
     invocationResponseSchema.parse(
       await handleInquiry(
-        { identity: { id: 'intake-strands-test', implementation: 'Strands' }, model: model.settings, caseMcpUrl: cases.url, exchange, now: clock().now, limits: { ...LIMITS, ...limits }, reportCheck: () => Promise.resolve(finding) },
+        { identity: { id: 'intake-strands-test', implementation: 'Strands' }, model: model.settings, caseMcpUrl: cases.url, exchange, now: clock().now, limits: { ...LIMITS, ...limits }, reportCheck: () => Promise.resolve({ finding }) },
         message('msg-1', 'Patient JD had a rash after Examplamab.'),
         CALLER,
       ),
@@ -111,4 +111,8 @@ test('strands 6. a report check that finds an adverse event invokes the same Age
   assert.deepEqual([response.outcome, response.case_actions.map((a) => a.case_id)], ['completed', ['C-7']]);
   assert.equal(response.steps.filter((s) => s.kind === 'report_check').length, 1);
   assert.ok(['Patient JD had a rash', TOLD_ONCE].every((part) => model.requests[1]?.user.includes(part)), 'the second invoke was not the same conversation with the told-once turn');
+  const declined = await rig(t, (request) => say(request.user.includes(TOLD_ONCE) ? 'Recorded.' : 'Not a report.'), undefined, 'adverse_event');
+  const stopped = await declined.run();
+  assert.deepEqual([stopped.outcome, stopped.stop_reason, stopped.case_actions], ['stopped', STOPPED_FOUND_NOT_RECORDED, []], 'told once and recorded nothing again');
+  assert.ok(declined.model.requests.length <= LIMITS.maxTurns, 'the model was asked more turns than the limit allows');
 });

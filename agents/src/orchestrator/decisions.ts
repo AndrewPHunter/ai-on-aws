@@ -153,7 +153,11 @@ export function replyWithCitations(run: RunResult): { reply: string; citations: 
   if (ending.outcome === 'failed') {
     parts.push(screeningReason(run.screening));
   } else if (ending.stop_reason === SCREENING_INCOMPLETE) {
-    parts.push(`This message has not been screened for an adverse event. ${screeningReason(run.screening)} Send it again.`);
+    // Sending it again can help only when the intake agent did not run to an end of its own. A stopped intake run
+    // ended where its own rules stopped it, and says why: for one, that a person must read the message.
+    const intake = run.screening.response;
+    const again = intake === null || intake.outcome === 'failed' ? ' Send it again.' : '';
+    parts.push(`The screening of this message for an adverse event did not complete. ${screeningReason(run.screening)}${again}`);
   } else if (ending.stop_reason === LABEL_QUESTION_UNANSWERED) {
     const loop = run.loop.finished ? '' : ` Not every question in it could be asked: ${run.loop.reason}`;
     parts.push(`A question in this message was not answered.${loop}`);
