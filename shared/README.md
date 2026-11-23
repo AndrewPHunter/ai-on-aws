@@ -23,7 +23,7 @@ What an answer from drug labels carries:
 
 [`machine-token.ts`](machine-token.ts) is how a machine gets a token as its own client, by client credentials with its own secret: one request, never retried, the scopes left to the service to check. The evaluation harness and the knowledge gate use it, and their runs against the stack show it.
 
-Three agents in [`agents/`](../agents/README.md) implement the agent contract: the intake agent, built once with a hand-written loop and once on Strands, and the label expert, on Strands. The label expert produces citations, `label_answer` and retrieval steps. A `delegation` step is one call from an agent to another: `id`, `to_agent`, `requested_by`, `message` (`{ id, text }`), `replaces`, `failure` and `response`, the other agent's whole response or null. That response's steps are of the kinds an agent that calls no other produces (`model`, `tool`, `retrieval`, `error`), so a delegation never holds a delegation. No agent in `agents/` produces one.
+Four agents in [`agents/`](../agents/README.md) implement the agent contract: the intake agent, built once with a hand-written loop and once on Strands, the label expert and the orchestrator, both on Strands. The label expert produces citations, `label_answer` and retrieval steps. A `delegation` step is one call from an agent to another: `id`, `to_agent`, `requested_by`, `message` (`{ id, text }`), `replaces`, `failure` and `response`, the other agent's whole response or null. That response's steps are of the kinds an agent that calls no other produces (`model`, `tool`, `retrieval`, `error`), so a delegation never holds a delegation. The orchestrator produces them.
 
 ## Always true
 

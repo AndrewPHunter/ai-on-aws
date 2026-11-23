@@ -48,8 +48,8 @@ stops them and keeps the inquiries and cases. Add `-v` to delete them.
 
 ## What works today
 
-- **Inquiries, Cases and System work,** with both builds of the [intake agent](../agents/README.md). An inquiry can be sent to either, and again to the other.
-- **The read-outs for citations, whether the label answered, label searches and calls to another agent have not been seen with real output,** because the intake agent produces none. Replies, case actions, model steps and tool steps have.
+- **Inquiries, Cases and System work,** with each of the four [agents](../agents/README.md). An inquiry can be sent to any agent the signed-in person may run, and again to another.
+- **The read-outs for citations, whether the label answered, label searches and calls to another agent have not been looked at in a browser with real output.** Replies, case actions, model steps and tool steps have.
 - **Label search and evaluation have no screen.** They are listed on System as not built.
 
 ## Always true
