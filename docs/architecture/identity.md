@@ -98,7 +98,7 @@ Scopes. A role grants a scope through the realm's scope mappings; the scope's au
 | `agents:expert:delegated` | `desk`, `medical-information` | `expert` | `POST /invocations` on the label expert, with a token the orchestrator got by exchange. Only the `orchestrator` client may ask for it |
 | `agents:orchestrator` | `desk`, `medical-information` | `orchestrator` | `POST /invocations` on the orchestrator |
 | `cases:write` | `desk`, `medical-information` | `case-system` | `create_case`, `add_follow_up` |
-| `cases:lookup` | `desk`, `medical-information` | `case-system` | `find_case` |
+| `cases:lookup` | No role is mapped to it | `case-system` | `find_case`. No client may ask for it, so no token carries it and an intake agent is offered no lookup |
 | `cases:read` | `safety-reviewer`, `auditor` | `case-system` | `GET /cases`, `GET /cases/<id>` |
 | `cases:review` | `safety-reviewer` | `case-system` | `POST /cases/<id>/review` |
 | `labels:search` | `desk`, `medical-information`, `evaluation`, `knowledge-gate` | `knowledge` | `find_labels`, `search_label` |
@@ -108,8 +108,8 @@ Clients. Every client is confidential, with no password grant, implicit flow, de
 | Client | What it is | How it gets a token | May ask for | May exchange | Secret |
 |---|---|---|---|---|---|
 | `desk` | The client's server | Authorization Code with PKCE, and refresh | `agents:intake`, `agents:expert`, `agents:orchestrator`, `cases:read`, `cases:review` | No | `IDENTITY_DESK_CLIENT_SECRET` |
-| `intake-handwritten` | The hand-written intake agent | Token exchange only | `cases:write`, `cases:lookup` | Yes | `IDENTITY_INTAKE_HANDWRITTEN_CLIENT_SECRET` |
-| `intake-strands` | The intake agent on Strands | Token exchange only | `cases:write`, `cases:lookup` | Yes | `IDENTITY_INTAKE_STRANDS_CLIENT_SECRET` |
+| `intake-handwritten` | The hand-written intake agent | Token exchange only | `cases:write` | Yes | `IDENTITY_INTAKE_HANDWRITTEN_CLIENT_SECRET` |
+| `intake-strands` | The intake agent on Strands | Token exchange only | `cases:write` | Yes | `IDENTITY_INTAKE_STRANDS_CLIENT_SECRET` |
 | `expert` | The label expert | Token exchange only | `labels:search` | Yes | `IDENTITY_EXPERT_CLIENT_SECRET` |
 | `orchestrator` | The orchestrator | Token exchange only | `agents:intake`, `agents:expert:delegated` | Yes | `IDENTITY_ORCHESTRATOR_CLIENT_SECRET` |
 | `evaluation` | The evaluation runner | Client credentials, as its service account | `agents:expert` | No | `IDENTITY_EVALUATION_CLIENT_SECRET` |
@@ -166,9 +166,9 @@ How a token is got decides what it holds. Each row is a statement of the gate:
 | The same, with the refresh token that refresh returned | The whole grant again, or any other granted scope | As asked | G4 |
 | Refresh for a scope `desk` may ask for that the role does not grant | Not that scope; answered 200 | None of that scope's | G5 |
 | `desk` asking for a scope it may not ask for (`labels:search`, `agents:expert:delegated`) | Refused 400 `invalid_scope`, at a refresh and at the authorization endpoint | — | G6 |
-| An agent's exchange | Every scope asked for | The one audience asked for | G7, G8 |
-| The orchestrator's exchange of a person's token for it, for a sub-agent | The sub-agent's scope | That sub-agent alone | G15 |
-| A sub-agent's exchange of the token the orchestrator got for it | Every scope asked for | Its tool server alone | G16 |
+| An agent's exchange | Every scope asked for, and no other of the lab's scopes | The one audience asked for | G7, G8 |
+| The orchestrator's exchange of a person's token for it, for a sub-agent | The sub-agent's scope alone of the lab's scopes | That sub-agent alone | G15 |
+| A sub-agent's exchange of the token the orchestrator got for it | Every scope asked for, and no other of the lab's scopes | Its tool server alone | G16 |
 | A machine's client credentials | The scope asked for; a scope its client may not ask for is refused 400 `invalid_scope` | That scope's audiences | G11, G12 |
 
 Keycloak leaves out of a token a scope the person's role does not grant, and still answers 200 (G5). So a token request that succeeds says nothing about what the person may do: the service's check is the control. A token without the service's audience is refused there as `wrong_audience` (401); a token with the audience but none of the service's scopes, as `insufficient_scope` (403). A client asking for a scope it may not ask for at all is a different case: the provider refuses it with `invalid_scope`.
@@ -352,11 +352,11 @@ The orchestrator makes the same exchange, through the same file, once for each c
 
 | Agent | Asks for | Sends the exchanged token to | How |
 |---|---|---|---|
-| Both intake agents | Audience `case-system`, scopes `cases:write cases:lookup` | The case system's MCP endpoint | `Authorization: Bearer` on every request (connect, tool list, every tool call), beside the three context headers |
+| Both intake agents | Audience `case-system`, scope `cases:write` alone | The case system's MCP endpoint | `Authorization: Bearer` on every request (connect, tool list, every tool call), beside the three context headers |
 | The label expert | Audience `knowledge`, scope `labels:search` | The retrieval service's MCP endpoint | `Authorization: Bearer` on every request (connect, tool list, every tool call), and no other header of the caller's |
 | The orchestrator | Audience `intake-strands`, scope `agents:intake`, to screen the message; audience `expert`, scope `agents:expert:delegated`, for each label question | The intake agent on Strands, or the label expert: `POST /invocations` | `Authorization: Bearer`, with the agent contract's request |
 
-What the provider issues, as the gate states it (G7, G8; G15 for the orchestrator's exchange, G16 for a sub-agent's exchange of the token the orchestrator got): `aud` is the one audience asked for; `client_id` and `azp` are the agent; `sub`, `preferred_username`, `name` and `roles` are those of the token exchanged; `scope` holds every scope asked for; `exp` is that of the token exchanged. No refresh token comes with it. Only the four agents' clients have token exchange on. The provider refuses to exchange a token the agent, the orchestrator among them, is not an audience of (403 `Client is not within the token audience`, G9), and refuses an agent a scope its client may not ask for (400 `invalid_scope`, G9): an intake agent or the label expert asking for the other kind of agent's scopes or for `agents:expert:delegated`, and the orchestrator asking for `labels:search`. `desk`, the two audience-only clients and both machines cannot exchange (G10).
+What the provider issues, as the gate states it (G7, G8; G15 for the orchestrator's exchange, G16 for a sub-agent's exchange of the token the orchestrator got): `aud` is the one audience asked for; `client_id` and `azp` are the agent; `sub`, `preferred_username`, `name` and `roles` are those of the token exchanged; `scope` holds every scope asked for and no other of the lab's scopes; `exp` is that of the token exchanged. No refresh token comes with it. Only the four agents' clients have token exchange on. The provider refuses to exchange a token the agent, the orchestrator among them, is not an audience of (403 `Client is not within the token audience`, G9), and refuses an agent a scope its client may not ask for (400 `invalid_scope`, G9): an intake agent or the label expert asking for the other kind of agent's scopes or for `agents:expert:delegated`, an intake agent asking for `cases:lookup`, and the orchestrator asking for `labels:search`. `desk`, the two audience-only clients and both machines cannot exchange (G10).
 
 | Result | The run | Reason given |
 |---|---|---|
@@ -386,7 +386,7 @@ The case system runs two servers, each with its own token check from `shared/acc
 
 | Server | Allowed clients | The token must hold one of | Then |
 |---|---|---|---|
-| Agents' server, port 8000, `POST /mcp` | `intake-handwritten`, `intake-strands` | `cases:write`, `cases:lookup` | Each tool is offered only to a token holding its scope: `create_case` and `add_follow_up` need `cases:write`, `find_case` needs `cases:lookup`. A call to a tool not offered gets the MCP library's unknown-tool error and changes nothing |
+| Agents' server, port 8000, `POST /mcp` | `intake-handwritten`, `intake-strands` | `cases:write`, `cases:lookup` | Each tool is offered only to a token holding its scope: `create_case` and `add_follow_up` need `cases:write`, `find_case` needs `cases:lookup`, which no role grants and no client may ask for, so no token is offered `find_case`. A call to a tool not offered gets the MCP library's unknown-tool error and changes nothing |
 | Review server, port 8001 | `desk` | `cases:read`, `cases:review` | `GET /cases` and `GET /cases/<id>` need `cases:read`; `POST /cases/<id>/review` needs `cases:review`, checked before the case is looked up or the body read (403 `insufficient_scope` naming it) |
 
 | Server | Route | Takes from the token |

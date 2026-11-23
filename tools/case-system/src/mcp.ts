@@ -6,7 +6,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 
 import { offersTool } from './scopes.ts';
-import type { CallContext, CaseFilter, CaseStore, Elements } from './store.ts';
+import type { CallContext, CaseFilter, CaseStore, CaseView, Elements } from './store.ts';
 
 export const TOOL_NAMES = ['create_case', 'find_case', 'add_follow_up'] as const;
 
@@ -22,6 +22,14 @@ const elementFields = {
   suspect_drug: z.string().optional().describe('The drug suspected of causing the event. Omit if not given.'),
   event: z.string().optional().describe('The adverse event, in the reporter\'s words. Omit if not given.'),
 };
+
+// What a tool that changes a case answers with: which case, where it stands, and what it still lacks.
+// Never what the case holds, so a caller who may only write reads nothing back through the write.
+export type Receipt = Pick<CaseView, 'case_id' | 'status' | 'version' | 'missing'>;
+
+export function receiptOf(view: CaseView): Receipt {
+  return { case_id: view.case_id, status: view.status, version: view.version, missing: view.missing };
+}
 
 function reply(payload: unknown, isError: boolean): CallToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(payload) }], isError };
@@ -68,7 +76,8 @@ export function buildMcpServer(store: CaseStore, context: CallContext | undefine
       description:
         'Open an adverse event case from the message being handled. Pass whichever of the four elements ' +
         'the message gives; a case missing any of them is recorded as incomplete. One case is opened per ' +
-        'message: calling again for the same message returns the case already opened and creates nothing.',
+        'message: calling again for the same message answers for the case already opened and creates nothing. ' +
+        'The answer is a receipt: the case\'s id, its status, its version and the elements it still lacks.',
       inputSchema: elementFields,
     },
     (args) => {
@@ -82,13 +91,13 @@ export function buildMcpServer(store: CaseStore, context: CallContext | undefine
             error: 'case_already_opened_for_this_message',
             detail:
               'A case was already opened for this message with different content. Nothing was changed. ' +
-              'The case as it stands is returned.',
-            case: result.case,
+              'The case\'s id, status, version and the elements it still lacks are returned.',
+            case: receiptOf(result.case),
           },
           true,
         );
       }
-      return reply(result, false);
+      return reply({ outcome: result.outcome, case: receiptOf(result.case) }, false);
     },
   );
 
@@ -145,7 +154,8 @@ export function buildMcpServer(store: CaseStore, context: CallContext | undefine
         'Add information to an existing case, for example when a later message supplies something that was ' +
         'missing. The earlier content stays on record as a previous version. The case then goes back to a ' +
         'reviewer. Only a case the sender of this message has already reported on can be added to. This ' +
-        'cannot approve, reject or close a case.',
+        'cannot approve, reject or close a case. The answer is a receipt: the case\'s id, its status, its ' +
+        'version and the elements it still lacks.',
       inputSchema: {
         case_id: z.string().describe('The case to add to, such as AE-000012.'),
         ...elementFields,
@@ -160,13 +170,15 @@ export function buildMcpServer(store: CaseStore, context: CallContext | undefine
       switch (result.outcome) {
         case 'recorded':
         case 'replayed':
-          return reply(result, false);
+          return reply({ outcome: result.outcome, case: receiptOf(result.case) }, false);
         case 'conflict':
           return reply(
             {
               error: 'follow_up_already_recorded_for_this_message',
-              detail: 'A different follow-up was already recorded on this case for this message. Nothing was changed.',
-              case: result.case,
+              detail:
+                'A different follow-up was already recorded on this case for this message. Nothing was changed. ' +
+                'The case\'s id, status, version and the elements it still lacks are returned.',
+              case: receiptOf(result.case),
             },
             true,
           );

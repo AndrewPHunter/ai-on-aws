@@ -20,9 +20,11 @@
 //   G11, G12  Each machine obtains a token by client credentials for its scope, with its fixed sub, its name and
 //        its one role; each is refused the scopes its client may not ask for: a tool server's, and the one only
 //        the orchestrator may ask for.
-//   G7, G8, G11  Each agent exchanges the token it is called with for a token for the one service it calls.
+//   G7, G8, G11  Each agent exchanges the token it is called with for a token for the one service it calls, holding
+//        every scope it asked for and no other custom scope.
 //   G15  The orchestrator exchanges each caller's token for it for a token for each sub-agent it calls, with
-//        that sub-agent's scope: one audience, the orchestrator as client, the person, the same expiry.
+//        that sub-agent's scope and no other custom scope: one audience, the orchestrator as client, the person, the
+//        same expiry.
 //   G16  Each sub-agent exchanges the orchestrator's token for it for a token for its own tool server, as it does
 //        a token it is called with directly: the second exchange of the chain.
 //   G9   An agent (the orchestrator among them) is refused a person's token it is not an audience of.
@@ -32,7 +34,8 @@
 // Last, the answers the throwaway Keycloak runs did not observe on this path, so that a wrong expectation there
 // leaves every statement above checked:
 //   G10  The desk client, both audience-only clients and both machines cannot exchange a token.
-//   G9   An agent is refused a scope its client may not ask for: the other kind of agent's scopes, a scope only
+//   G9   An agent is refused a scope its client may not ask for: the other kind of agent's scopes, a scope of its
+//        own tool server that its client may not ask for (an intake agent asking for cases:lookup), a scope only
 //        the orchestrator may ask for, and, for the orchestrator, a tool server's scope and the label expert's
 //        scope for a direct caller.
 //   G6   The desk client asking for a scope it may not ask for (a tool server's, or one only the orchestrator may
@@ -100,7 +103,8 @@ import {
 // ---------- configuration ----------
 
 type UserConfig = { username: string; passwordVariable: string; id: string; staffRole: string; granted: string[] }
-type AgentConfig = { clientId: string; secretVariable: string; audience: string; scopes: string[]; subject: { username: string; scope: string } }
+/** `forbiddenScopes`: scopes its own audience names that its client may not ask for. */
+type AgentConfig = { clientId: string; secretVariable: string; audience: string; scopes: string[]; forbiddenScopes: string[]; subject: { username: string; scope: string } }
 type MachineConfig = { clientId: string; secretVariable: string; id: string; role: string; scope: string; forbiddenScopes: string[] }
 /** A sub-agent the orchestrator calls (an entry of `agents`), the scope it asks for there, and whether only the orchestrator's client may ask for that scope. */
 type DelegationConfig = { audience: string; scope: string; onlyThisClient: boolean }
@@ -190,6 +194,8 @@ function loadConfig(path: string): GateConfig {
         secretVariable: field(agent, 'secretVariable', isString, 'a string'),
         audience: field(agent, 'audience', isString, 'a string'),
         scopes: field(agent, 'scopes', isStrings, 'a list of strings'),
+        // Scopes of its own audience that the agent's client may not ask for, whose refusals the gate states (G9). Optional; none when absent.
+        forbiddenScopes: agent.forbiddenScopes === undefined ? [] : field(agent, 'forbiddenScopes', isStrings, 'a list of strings'),
         subject: { username: field(subject, 'username', isString, 'a string'), scope: field(subject, 'scope', isString, 'a string') },
       }
     }),
@@ -214,6 +220,7 @@ function loadConfig(path: string): GateConfig {
     orchestrator.scope,
     ...orchestrator.forbiddenScopes,
     ...config.machines.flatMap((machine) => machine.forbiddenScopes),
+    ...config.agents.flatMap((agent) => agent.forbiddenScopes),
     ...orchestrator.delegations.map((delegation) => delegation.scope),
   ]) {
     if (!config.scopes.has(name)) throw new UsageError(`config: ${name} is not in scopes`)
@@ -579,11 +586,11 @@ async function main(): Promise<number> {
     for (const agent of config.agents) {
       const secret = clientSecret(secrets, agent.clientId)
       for (const subject of [...people, ...machines].filter((entry) => entry.audiences.includes(agent.clientId))) {
-        const statement = `G7/G8/G11 ${agent.clientId} exchanges ${subject.name} for audience=${agent.audience} scope=${agent.scopes.join(' ')}: aud ${agent.audience} alone, client_id and azp ${agent.clientId}, the subject's sub, preferred_username, name, roles and exp, every scope asked for, no refresh token`
+        const statement = `G7/G8/G11 ${agent.clientId} exchanges ${subject.name} for audience=${agent.audience} scope=${agent.scopes.join(' ')}: aud ${agent.audience} alone, client_id and azp ${agent.clientId}, the subject's sub, preferred_username, name, roles and exp, every scope asked for and no other custom scope, no refresh token`
         const answer = await exchange(http, discovery, agent.clientId, secret, subject.token, agent.audience, agent.scopes)
         const verified = await verifiedAnswer(answer, keys, `${statement}: answered`)
         report.exchanges.push({ clientId: agent.clientId, subject: subject.name, ...verified })
-        judged(statement, checkExchangedToken(answer.body, verified.claims, subject.claims, { issuer: config.issuer, clientId: agent.clientId, audience: agent.audience, scopes: agent.scopes }))
+        judged(statement, checkExchangedToken(answer.body, verified.claims, subject.claims, { issuer: config.issuer, clientId: agent.clientId, audience: agent.audience, scopes: agent.scopes, customScopes: custom }))
       }
     }
 
@@ -599,25 +606,25 @@ async function main(): Promise<number> {
       const subject: Subject = { name: `${caller}'s ${orchestrator.scope} token`, ...subjectOf(caller, orchestrator.scope), audiences: audiencesOfScope(orchestrator.scope) }
       for (const delegation of orchestrator.delegations) {
         // G15: the first exchange, by the orchestrator, for the sub-agent.
-        const statement = `G15 ${orchestrator.clientId} exchanges ${subject.name} for audience=${delegation.audience} scope=${delegation.scope}: aud ${delegation.audience} alone, client_id and azp ${orchestrator.clientId}, the subject's sub, preferred_username, name, roles and exp, the scope asked for, no refresh token`
+        const statement = `G15 ${orchestrator.clientId} exchanges ${subject.name} for audience=${delegation.audience} scope=${delegation.scope}: aud ${delegation.audience} alone, client_id and azp ${orchestrator.clientId}, the subject's sub, preferred_username, name, roles and exp, the scope asked for and no other custom scope, no refresh token`
         const answer = await exchange(http, discovery, orchestrator.clientId, orchestratorSecret, subject.token, delegation.audience, [delegation.scope])
         const verified = await verifiedAnswer(answer, keys, `${statement}: answered`)
         report.exchanges.push({ clientId: orchestrator.clientId, subject: subject.name, ...verified })
         judged(
           statement,
-          checkExchangedToken(answer.body, verified.claims, subject.claims, { issuer: config.issuer, clientId: orchestrator.clientId, audience: delegation.audience, scopes: [delegation.scope] }),
+          checkExchangedToken(answer.body, verified.claims, subject.claims, { issuer: config.issuer, clientId: orchestrator.clientId, audience: delegation.audience, scopes: [delegation.scope], customScopes: custom }),
         )
 
         // G16: the second exchange, by the sub-agent, of the token the orchestrator called it with.
         const subAgent = agentNamed(delegation.audience)
         const delegated = { name: `${orchestrator.clientId}'s ${delegation.scope} token for ${caller}`, claims: verified.claims }
-        const secondStatement = `G16 ${subAgent.clientId} exchanges ${delegated.name} for audience=${subAgent.audience} scope=${subAgent.scopes.join(' ')}: aud ${subAgent.audience} alone, client_id and azp ${subAgent.clientId}, the subject's sub, preferred_username, name, roles and exp, every scope asked for, no refresh token`
+        const secondStatement = `G16 ${subAgent.clientId} exchanges ${delegated.name} for audience=${subAgent.audience} scope=${subAgent.scopes.join(' ')}: aud ${subAgent.audience} alone, client_id and azp ${subAgent.clientId}, the subject's sub, preferred_username, name, roles and exp, every scope asked for and no other custom scope, no refresh token`
         const second = await exchange(http, discovery, subAgent.clientId, clientSecret(secrets, subAgent.clientId), tokenField(answer.body, 'access_token'), subAgent.audience, subAgent.scopes)
         const secondVerified = await verifiedAnswer(second, keys, `${secondStatement}: answered`)
         report.exchanges.push({ clientId: subAgent.clientId, subject: delegated.name, ...secondVerified })
         judged(
           secondStatement,
-          checkExchangedToken(second.body, secondVerified.claims, delegated.claims, { issuer: config.issuer, clientId: subAgent.clientId, audience: subAgent.audience, scopes: subAgent.scopes }),
+          checkExchangedToken(second.body, secondVerified.claims, delegated.claims, { issuer: config.issuer, clientId: subAgent.clientId, audience: subAgent.audience, scopes: subAgent.scopes, customScopes: custom }),
         )
       }
     }
@@ -725,6 +732,20 @@ async function main(): Promise<number> {
         `G9 ${agent.clientId}: asking for ${otherAgent.scopes.join(' ')}, which its client may not ask for, is refused invalid_scope`,
         checkErrorAnswer(answer.status, answer.body, { status: 400, error: 'invalid_scope' }),
       )
+    }
+
+    // G9: an agent asking for a scope of its own audience that its client may not ask for.
+    for (const agent of config.agents.filter((entry) => entry.forbiddenScopes.length > 0)) {
+      const own = people.find((entry) => entry.audiences.includes(agent.clientId))
+      if (own === undefined) throw new UsageError(`config: no person's token names ${agent.clientId}, so its forbiddenScopes cannot be asked for`)
+      for (const forbiddenScope of agent.forbiddenScopes) {
+        const answer = await exchange(http, discovery, agent.clientId, clientSecret(secrets, agent.clientId), own.token, agent.audience, [forbiddenScope])
+        report.refused[`${agent.clientId}_scope_${forbiddenScope}`] = refusal(answer)
+        judged(
+          `G9 ${agent.clientId}: asking for ${forbiddenScope}, which its client may not ask for, is refused invalid_scope`,
+          checkErrorAnswer(answer.status, answer.body, { status: 400, error: 'invalid_scope' }),
+        )
+      }
     }
 
     // G9: an agent other than the orchestrator asking for a scope only the orchestrator's client may ask for.

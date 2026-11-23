@@ -14,8 +14,8 @@ import type { Connected } from './tool-set.ts';
 // name in a run's reason.
 export type TokenTarget = { name: string; audience: string; scopes: readonly string[] };
 
-// What each intake agent asks for: it creates, finds and adds to cases.
-export const CASE_SYSTEM: TokenTarget = { name: 'the case system', audience: 'case-system', scopes: ['cases:write', 'cases:lookup'] };
+// What each intake agent asks for: it creates cases and adds to them, and looks nothing up.
+export const CASE_SYSTEM: TokenTarget = { name: 'the case system', audience: 'case-system', scopes: ['cases:write'] };
 
 // What the label expert asks for: it searches labels.
 export const KNOWLEDGE: TokenTarget = { name: 'the retrieval service', audience: 'knowledge', scopes: ['labels:search'] };

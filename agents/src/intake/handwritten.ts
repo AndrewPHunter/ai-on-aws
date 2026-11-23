@@ -34,7 +34,7 @@ import { timed } from '../run/record.ts';
 import type { Timed } from '../run/record.ts';
 import { recordError, recordRefusal, recordToolCall, toldAbout } from '../run/steps.ts';
 import { askAgainWithoutThinking } from '../run/turns.ts';
-import { missingCaseTools } from '../tools/case-system.ts';
+import { isCaseTool, missingCaseTools } from '../tools/case-system.ts';
 import type { Connected, ToolOutcome, ToolSet } from '../tools/tool-set.ts';
 import { SYSTEM_PROMPT, userTurn } from './prompt.ts';
 import { afterCall, refusalBeforeCall, startRun } from './run.ts';
@@ -172,8 +172,17 @@ export async function handleInquiry(deps: IntakeDeps, message: InboundMessage, c
     return failed(run, short);
   }
 
+  // The model is shown the run's two tools and nothing else the case system offers. A call to any other
+  // tool is then refused as unknown, and never reaches the case system.
+  const offered = connected.tools;
+  const tools: ToolSet = {
+    definitions: offered.definitions.filter((definition) => isCaseTool(definition.function.name)),
+    call: (name, args, timeoutMs) => offered.call(name, args, timeoutMs),
+    close: () => offered.close(),
+  };
+
   try {
-    return await loop(run, deps, connected.tools, message);
+    return await loop(run, deps, tools, message);
   } finally {
     await connected.tools.close();
   }
