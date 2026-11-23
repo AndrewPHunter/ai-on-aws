@@ -53,11 +53,11 @@ The four elements are an identifiable patient, an identifiable reporter, a suspe
 1. Whether a case is complete is decided by code: all four elements present, or it lists what is missing.
 2. One case per inbound message: the same content returns the same case; different content is refused and changes nothing.
 3. A follow-up adds a version and never overwrites; one from the same message is recorded once.
-4. A follow-up sends the case back to review, whatever its status was.
+4. A follow-up sends the case back to review, whatever its status was, unless the case still lacks an element: then it stays incomplete.
 5. Only a person decides a case, through the review server, from the statuses allowed; the reviewer is the token's holder.
 6. An agent sees and adds to only the sender's own cases; another sender's case is answered exactly as one that does not exist.
 7. Every change is in the audit trail with who, when and which message, including replays and refused conflicts. The person and the agent are the ones the token names: the agent is the client the token was issued to, never a name the request carries.
-8. No call is accepted without knowing who is calling, and the token is judged before anything else is read.
+8. No call but `GET /ping` is accepted without knowing who is calling, and the token is judged before anything else is read.
 9. A tool or a route is reached only with a token that carries its scope: `create_case` and `add_follow_up` need `cases:write`, `find_case` needs `cases:lookup`, reading cases needs `cases:read`, deciding one needs `cases:review`. A tool whose scope the token lacks is not offered, and calling it changes nothing.
 
 ## The rules it enforces

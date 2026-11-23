@@ -175,7 +175,7 @@ The wording overlap is that of the text the run sent: a reworded question's over
 7. The rewriter is given the question and the drug's name; the checker the original and the rewrite; nothing else. A rewrite is used only when it keeps the drug's name and the checker answers that it asks the same thing; any failure keeps the original text, counted with its reason.
 8. A run records its variant and the SHA-256 of that variant's file; scoring and judging refuse a run whose file has changed since.
 9. No question, answer, reply, rewrite or model's reason is written to a tracked file or printed. The data folder holding them is ignored by git and kept out of every image.
-10. Every figure is reported with its count and its interval.
+10. Every share is reported with its count and its interval; a median or a percentile with its count.
 11. The same benchmark file, manifest and settings give the same sample.
 12. Judgments are stored per rubric. A run folder's judgments from before rubrics existed are read as the completeness rubric's and never rewritten or deleted.
 
