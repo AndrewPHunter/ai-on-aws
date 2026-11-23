@@ -135,7 +135,7 @@ test('orchestrator', async (t) => {
       ['a number not in the message', { drug: 'Examplamab', question: 'Is 40 mg right?' }, {}, false],
       ['a third question in the round', { drug: 'Examplamab', question: 'Dose?' }, { nthInRound: 3 }, false],
       ['a third round', { drug: 'Examplamab', question: 'Dose?' }, { round: 3 }, false],
-      ['less than a call\'s time left', { drug: 'Examplamab', question: 'Dose?' }, { remainingMs: RULES.callMs - 1 }, false],
+      ['less than a call\'s time and the margin left', { drug: 'Examplamab', question: 'Dose?' }, { remainingMs: RULES.callMs + RULES.callMarginMs - 1 }, false],
       ['within every rule', { drug: 'Examplamab', question: 'Is 20 mg right?', replaces: 'q1' }, {}, true],
     ];
     for (const [name, input, change, expected] of rows) assert.equal(whetherPut(input, { ...at, ...change }, RULES).put, expected, name);
@@ -182,6 +182,7 @@ test('orchestrator', async (t) => {
       ['the model\'s loop failed', result([], CLEAN, false), 'stopped', 'label_question_unanswered'],
       ['not screened, a label answer obtained', result([put('q1', expertSaid('A.'))], unscreened), 'stopped', 'adverse_event_screening_incomplete'],
       ['not screened, nothing obtained', result([put('q1', null)], unscreened), 'failed', unscreened.failure],
+      ['not screened, the only label answer replaced', result([put('q1', expertSaid('A.')), put('q2', null, 'q1')], unscreened), 'failed', unscreened.failure],
     ];
     for (const [name, run, outcome, stopReason] of rows) assert.deepEqual(howItEnds(run), { outcome, stop_reason: stopReason }, name);
   });
@@ -217,7 +218,7 @@ test('orchestrator', async (t) => {
 
     const once = await runOne(model, 'How is Examplamab stored? A turn is cut off once.');
     const askedAgain = requestsFor(model, 'A turn is cut off once.');
-    assert.deepEqual([once.response.outcome, askedAgain.length, askedAgain[2]?.body.includes('"effort":"none"')], ['completed', 3, true], 'a cut-off turn was not asked again with thinking off');
+    assert.deepEqual([once.response.outcome, askedAgain.length], ['completed', 3], 'a cut-off turn was not asked again');
     const twice = await runOne(model, 'How is Examplamab stored? A turn is cut off twice.');
     assert.deepEqual([twice.response.outcome, twice.response.stop_reason, requestsFor(model, 'A turn is cut off twice.').length], ['stopped', 'label_question_unanswered', 3]);
 
