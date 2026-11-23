@@ -5,7 +5,8 @@
 # do and a cross-site POST; what each may and may not do through the client; an inquiry to each intake agent
 # and a question to the label expert, through each agent's exchange to its tool server and the end of the run;
 # an inquiry to the orchestrator, through its delegations to the intake agent on Strands and the label expert
-# and on to their tool servers; an inquiry kept from anyone but who entered it; tokens the gate gets itself,
+# and on to their tool servers; that a run read back holds no steps and its trace is read by the auditor alone;
+# an inquiry kept from anyone but who entered it; tokens the gate gets itself,
 # presented to each service and agent; and sign-out. Then, on the Docker host, that the client wrote no
 # revocation failure while the gate ran. See platform/identity/README.md.
 #

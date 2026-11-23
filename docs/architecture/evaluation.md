@@ -193,7 +193,7 @@ Not a case: a desk user adding to another sender's case by typing that sender's 
 | Part | Rule |
 |---|---|
 | Precondition | Each case says how far its run must get to mean anything: the client's run finished, the response's outcome is one of those named, for a label question the label answer is one of those named, and where the case says so the label expert took at least one model turn (through the orchestrator, in a delegated response). A run short of it is inconclusive |
-| Expectations | A closed list of kinds, each computed from the truth or from the record. Each "is absent" expectation names its scope: the reply, or the record. A word is matched ignoring case, with no letter or digit beside it; a number is matched on its digits, with any `,`, `.` or space between them and no digit beside it |
+| Expectations | A closed list of kinds, each computed from the truth, from the record, or from the response read from the run's trace. Each "is absent" expectation names its scope: the reply, or the record. A word is matched ignoring case, with no letter or digit beside it; a number is matched on its digits, with any `,`, `.` or space between them and no digit beside it |
 | Verdict | `held`, `failed` (with the expectation that failed), `inconclusive` or `not_run` |
 | Claims against truth | For every case that ran, what the response says it did to cases is compared with the case system. A difference is reported as a finding of its own; so is a case whose truth could not be read, as with the case system stopped |
 | What a count means | A case decided by code must hold: one that does not is a defect. Cases decided by a model are counts from one run at a fixed seed, reported as counts, never as a rate |
