@@ -5,10 +5,13 @@
 #
 #   platform/identity/setup.sh
 #
+# Run again, it keeps every value already set and writes one for each variable that has none: a variable with no
+# line is appended, and a line with an empty value (NAME=) is given one. Every other line is kept as it is, in place.
 # If platform/identity/.env already holds every variable, nothing is changed. It never prints a value.
 #
-# Exit codes: 0 platform/identity/.env holds every variable (written now, or already there),
-#             1 platform/identity/.env exists but lacks a variable, or could not be written,
+# Exit codes: 0 platform/identity/.env holds every variable (written or completed now, or already there),
+#             1 a value could not be made (a variable setup does not know, or the image failed), or the file could
+#               not be written; platform/identity/.env is then as it was,
 #             2 could not run (no Docker, or the daemon does not answer).
 set -eu
 
@@ -37,25 +40,55 @@ if [ -z "$names" ]; then
   exit 2
 fi
 
-# ---------- an existing file is kept as it is, if it is whole ----------
+# ---------- the variables that have no value ----------
 
-if [ -e "$env_file" ]; then
-  for name in $names; do
-    if ! grep -q "^$name=." "$env_file"; then
-      say "platform/identity/.env exists but has no value for $name. Add it, or remove the file and run setup again."
-      exit 1
-    fi
-  done
+# A variable has a value when a line NAME=<something> holds it. With no file, none has.
+missing=''
+for name in $names; do
+  if ! { [ -e "$env_file" ] && grep -q "^$name=." "$env_file"; }; then
+    missing="$missing $name"
+  fi
+done
+missing=${missing# }
+if [ -z "$missing" ]; then
   say "platform/identity/.env already holds every variable; nothing was changed."
   exit 0
 fi
 
-# ---------- a new file ----------
+# ---------- a file with a value for each of them ----------
 
 # One random value per call: <bytes> random bytes as hex, made in the pinned Node image with no network.
+# Its standard input is closed, so it never reads the lines of the file being copied.
 random_hex() {
   docker run --rm --network none "$NODE_IMAGE" \
-    node -e 'process.stdout.write(require("node:crypto").randomBytes(Number(process.argv[1])).toString("hex"))' "$1"
+    node -e 'process.stdout.write(require("node:crypto").randomBytes(Number(process.argv[1])).toString("hex"))' "$1" </dev/null
+}
+
+# Sets value to a new random value of the kind $1 takes; stops the script for a name it does not know, or a failure.
+make_value() {
+  case $1 in
+    IDENTITY_ADMIN_USERNAME) value=$(random_hex 4) && value="admin-$value" || value='' ;;
+    IDENTITY_ADMIN_PASSWORD | IDENTITY_RILEY_PASSWORD | IDENTITY_DANA_PASSWORD | IDENTITY_MORGAN_PASSWORD | \
+      IDENTITY_AVERY_PASSWORD) value=$(random_hex 24) || value='' ;;
+    IDENTITY_DESK_CLIENT_SECRET | IDENTITY_INTAKE_HANDWRITTEN_CLIENT_SECRET | IDENTITY_INTAKE_STRANDS_CLIENT_SECRET | \
+      IDENTITY_EXPERT_CLIENT_SECRET | IDENTITY_ORCHESTRATOR_CLIENT_SECRET | IDENTITY_EVALUATION_CLIENT_SECRET | \
+      IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET)
+      value=$(random_hex 32) || value='' ;;
+    *)
+      say "setup does not know how to make a value for $1, which platform/identity/.env.example names."
+      exit 1
+      ;;
+  esac
+  case $value in
+    '' | admin-) say "making a value for $1 failed."; exit 1 ;;
+  esac
+}
+
+is_missing() {
+  case " $missing " in
+    *" $1 "*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 tmp_env="$identity_dir/.env.tmp.$$"
@@ -67,32 +100,42 @@ if ! (umask 077 && set -C && : >"$tmp_env"); then
   exit 1
 fi
 
-{
-  printf '# Written by platform/identity/setup.sh. Ignored by git; never commit it.\n'
-  for name in $names; do
-    case $name in
-      IDENTITY_ADMIN_USERNAME) value=$(random_hex 4) && value="admin-$value" || value='' ;;
-      IDENTITY_ADMIN_PASSWORD | IDENTITY_RILEY_PASSWORD | IDENTITY_DANA_PASSWORD | IDENTITY_MORGAN_PASSWORD | \
-        IDENTITY_AVERY_PASSWORD) value=$(random_hex 24) || value='' ;;
-      IDENTITY_DESK_CLIENT_SECRET | IDENTITY_INTAKE_HANDWRITTEN_CLIENT_SECRET | IDENTITY_INTAKE_STRANDS_CLIENT_SECRET | \
-        IDENTITY_EXPERT_CLIENT_SECRET | IDENTITY_ORCHESTRATOR_CLIENT_SECRET | IDENTITY_EVALUATION_CLIENT_SECRET | \
-        IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET)
-        value=$(random_hex 32) || value='' ;;
-      *)
-        say "setup does not know how to make a value for $name, which platform/identity/.env.example names."
-        exit 1
+if [ -e "$env_file" ]; then
+  # Each line is copied as it is, except a line NAME= of a variable with no value, which is given one.
+  # A last line without a newline gets one, so an appended variable starts a line of its own.
+  while IFS= read -r line || [ -n "$line" ]; do
+    case $line in
+      *=)
+        name=${line%=}
+        if is_missing "$name"; then
+          make_value "$name"
+          printf '%s=%s\n' "$name" "$value"
+          continue
+        fi
         ;;
     esac
-    case $value in
-      '' | admin-) say "making a value for $name failed."; exit 1 ;;
-    esac
-    printf '%s=%s\n' "$name" "$value"
-  done
-} >>"$tmp_env"
+    printf '%s\n' "$line"
+  done <"$env_file" >>"$tmp_env"
+else
+  printf '# Written by platform/identity/setup.sh. Ignored by git; never commit it.\n' >>"$tmp_env"
+fi
 
+# A variable with no line at all is appended.
+for name in $missing; do
+  if ! { [ -e "$env_file" ] && grep -q "^$name=" "$env_file"; }; then
+    make_value "$name"
+    printf '%s=%s\n' "$name" "$value" >>"$tmp_env"
+  fi
+done
+
+if [ -e "$env_file" ]; then
+  done_message="added to platform/identity/.env (mode 600) a value for: $missing"
+else
+  done_message="wrote platform/identity/.env (mode 600) with a value for: $missing"
+fi
 if ! mv -f "$tmp_env" "$env_file"; then
   say "could not move $tmp_env to platform/identity/.env."
   exit 1
 fi
-say "wrote platform/identity/.env (mode 600) with a value for: $(printf '%s ' $names | sed 's/ $//')"
+say "$done_message"
 say "start the provider with: docker compose -f platform/identity/compose.yaml up -d --wait"

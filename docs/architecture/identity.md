@@ -71,10 +71,10 @@ A realm file that names a variable the identity secrets lack needs more than a r
 
 | Step | What it takes |
 |---|---|
-| New values | `setup.sh` does not add a variable to an existing `platform/identity/.env`: it exits 1, names the first one missing, and changes nothing. Add the missing variables by hand, or remove the file and run `setup.sh`, which then writes a new random value for every variable: every client secret and every password changes |
+| New values | `platform/identity/setup.sh`, run again, writes a random value for each variable the existing `platform/identity/.env` lacks and names them; every value already there, every client secret and password among them, is kept |
 | The stack started again | `docker compose down`, then `docker compose up -d --build --wait`, at the repository root. The provider starts with the new values and imports the realm file; `down` without `-v` keeps the volumes, the cases among them |
 | Every image built again | `--build` builds the agents, the case system, the client and the retrieval service from the checkout, so each runs the code that matches the realm, with the values its compose file passes |
-| Everyone signs in again | Tokens issued before are refused (`bad_signature`). With a new `platform/identity/.env`, the passwords are new |
+| Everyone signs in again | Tokens issued before are refused (`bad_signature`). People's passwords are the same as before |
 
 ## The realm
 

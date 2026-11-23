@@ -85,11 +85,17 @@ test('identity 1. every secret and password in the realm file is a placeholder t
   }
 })
 
-test('identity 5. running set-up again changes no value that is already set', () => {
+test('identity 5. running set-up again changes no value that is already set, and writes a value for each variable that has none', () => {
   const whole = runSetup(null).env
   assert.notEqual(whole, '', 'setup.sh wrote no .env')
-  // A file setup.sh wrote, and the same file lacking a variable, as a checkout from before a new one is.
-  const partial = whole.replace(/^IDENTITY_DANA_PASSWORD=.*\n/m, '')
+  assert.equal(runSetup(whole).env, whole)
+
+  // The same file lacking two variables, as a checkout from before they were added is.
+  const lacking = ['IDENTITY_DANA_PASSWORD', 'IDENTITY_ORCHESTRATOR_CLIENT_SECRET']
+  const partial = lacking.reduce((text, name) => text.replace(new RegExp(`^${name}=.*\\n`, 'm'), ''), whole)
   assert.notEqual(partial, whole)
-  for (const existing of [whole, partial]) assert.equal(runSetup(existing).env, existing)
+  const completed = runSetup(partial).env
+  assert.ok(completed.startsWith(partial), 'a line that was already in .env was changed or moved')
+  const names = [...read('.env.example').matchAll(/^([A-Z_][A-Z0-9_]*)=/gm)].map((match) => match[1] ?? '')
+  for (const name of names) assert.notEqual(valueOf(completed, name), '', `set-up wrote no value for ${name}`)
 })
