@@ -5,7 +5,17 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { invocationResponseSchema } from '../../shared/agent-contract.ts';
 import type { InvocationResponse } from '../../shared/agent-contract.ts';
-import type { Author, Inquiry, InquiryList, InquirySummary, Run, RunState, RunSummary } from '../shared/api.ts';
+import type {
+  Author,
+  InquiryList,
+  InquirySummary,
+  RunState,
+  RunSummary,
+  Trace,
+  TraceInquiry,
+  TraceList,
+  TracedRun,
+} from '../shared/api.ts';
 
 export const LIST_LIMIT = 100;
 export const INTERRUPTED_ERROR = 'The client restarted while this run was in progress.';
@@ -56,6 +66,10 @@ const STATES = ['running', 'completed', 'failed'] as const;
 export type Actor = { sub: string; name: string };
 
 export type NewInquiry = { id: string; receivedAt: string; sender: string; text: string; enteredBy: Actor };
+
+// What the store holds of an inquiry: its runs carry the agent's whole response, steps included. The server
+// decides what of it leaves.
+export type StoredInquiry = TraceInquiry & { runs: TracedRun[] };
 
 type Row = Record<string, unknown>;
 
@@ -122,7 +136,7 @@ function storedResponse(row: Row): { response: InvocationResponse | null; stale:
   return parsed.success ? { response: parsed.data, stale: false } : { response: null, stale: true };
 }
 
-function runOf(row: Row): Run {
+function runOf(row: Row): TracedRun {
   const { response, stale } = storedResponse(row);
   return {
     id: text(row, 'id'),
@@ -138,7 +152,17 @@ function runOf(row: Row): Run {
   };
 }
 
-function summaryOf(run: Run): RunSummary {
+function inquiryOf(row: Row): TraceInquiry {
+  return {
+    id: text(row, 'id'),
+    received_at: text(row, 'received_at'),
+    entered_by: authorOf(row, 'entered_by_name'),
+    sender: text(row, 'sender'),
+    text: text(row, 'text'),
+  };
+}
+
+function summaryOf(run: TracedRun): RunSummary {
   return {
     id: run.id,
     agent_id: run.agent_id,
@@ -177,7 +201,7 @@ export class InquiryStore {
   }
 
   // Returns undefined when the inquiry does not exist, so no run is started for nothing.
-  startRun(runId: string, inquiryId: string, agentId: string, startedBy: Actor): Run | undefined {
+  startRun(runId: string, inquiryId: string, agentId: string, startedBy: Actor): TracedRun | undefined {
     if (this.db.prepare('select 1 from inquiries where id = ?').get(inquiryId) === undefined) {
       return undefined;
     }
@@ -211,26 +235,19 @@ export class InquiryStore {
     return failed;
   }
 
-  getRun(runId: string): Run | undefined {
+  getRun(runId: string): TracedRun | undefined {
     const row = this.db.prepare('select * from runs where id = ?').get(runId);
     return row === undefined ? undefined : runOf(row);
   }
 
   // The inquiry as its reader may see it: undefined when there is none with that id or another person
   // entered it. An inquiry with no author is nobody's.
-  getInquiry(inquiryId: string, readerSub: string): Inquiry | undefined {
+  getInquiry(inquiryId: string, readerSub: string): StoredInquiry | undefined {
     const row = this.db.prepare('select * from inquiries where id = ? and entered_by_sub = ?').get(inquiryId, readerSub);
     if (row === undefined) {
       return undefined;
     }
-    return {
-      id: text(row, 'id'),
-      received_at: text(row, 'received_at'),
-      entered_by: authorOf(row, 'entered_by_name'),
-      sender: text(row, 'sender'),
-      text: text(row, 'text'),
-      runs: this.runsOf(inquiryId),
-    };
+    return { ...inquiryOf(row), runs: this.runsOf(inquiryId) };
   }
 
   // The inquiries the reader entered, newest first. One more row than the limit is read to know whether
@@ -252,7 +269,39 @@ export class InquiryStore {
     return { inquiries, truncated: rows.length > LIST_LIMIT };
   }
 
-  private runsOf(inquiryId: string): Run[] {
+  // Every person's runs, newest first, bounded as the inquiry list is.
+  listTraces(): TraceList {
+    const rows = this.db.prepare('select * from runs order by n desc limit ?').all(LIST_LIMIT + 1);
+    const traces = rows.slice(0, LIST_LIMIT).map((row) => {
+      const run = runOf(row);
+      return {
+        run_id: run.id,
+        inquiry_id: run.inquiry_id,
+        agent_id: run.agent_id,
+        state: run.state,
+        started_at: run.started_at,
+        started_by: run.started_by,
+        duration_ms: run.duration_ms,
+        outcome: run.response === null ? null : run.response.outcome,
+      };
+    });
+    return { traces, truncated: rows.length > LIST_LIMIT };
+  }
+
+  // One run and the inquiry it was made of, whoever entered it. Undefined when there is no run with that id.
+  getTrace(runId: string): Trace | undefined {
+    const run = this.getRun(runId);
+    if (run === undefined) {
+      return undefined;
+    }
+    const row = this.db.prepare('select * from inquiries where id = ?').get(run.inquiry_id);
+    if (row === undefined) {
+      throw new Error(`Run ${runId} names the inquiry ${run.inquiry_id}, which is not stored`);
+    }
+    return { inquiry: inquiryOf(row), run };
+  }
+
+  private runsOf(inquiryId: string): TracedRun[] {
     return this.db.prepare('select * from runs where inquiry_id = ? order by n').all(inquiryId).map(runOf);
   }
 
