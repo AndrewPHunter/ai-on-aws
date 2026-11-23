@@ -54,7 +54,7 @@ A run's steps are given only on the trace routes. Every other route gives a run 
 | `GET /api/inquiries`, `POST /api/inquiries` | The reader's own inquiries, newest first, at most 100, with `truncated`; a new inquiry, 202. Runs without steps |
 | `GET /api/inquiries/<id>`, `POST /api/inquiries/<id>/runs` | 200 with the inquiry, 202 with the new run, both without steps; 404 `inquiry_not_found` to anyone but the person who entered it |
 | `GET /api/traces` | 200 `{ traces, truncated }`: every person's runs, newest first, at most 100, each with when it started, who started it, the agent, its state, its outcome and the time it took. 403 `not_allowed` without `traces:read` |
-| `GET /api/traces/<run_id>` | 200 `{ trace: { inquiry, run } }`: the message as it was received, and the run with the agent's whole response, steps included. 403 `not_allowed` without `traces:read`, decided before the store is read; 404 `unknown_run` for a run that does not exist |
+| `GET /api/traces/<run_id>` | 200 `{ trace: { inquiry, run } }`: the message as it was received, and the run with the agent's whole response, steps included. A run still running is 200 with `state` `running` and no response yet. A stored response that no longer matches the agent contract is 200 with the run shown as `failed`, the store's reason as its `error`, and no response. 403 `not_allowed` without `traces:read`, decided before the store is read; 404 `unknown_run` for a run that does not exist |
 
 In this phase the steps still arrive in the agent's response and are stored by the client with the rest of it, so `traces:read` is a permission on reading them, not yet a store of traces of their own.
 
@@ -62,7 +62,7 @@ In this phase the steps still arrive in the agent's response and are stored by t
 
 - **Inquiries, Cases and System work,** with each of the four [agents](../agents/README.md). An inquiry can be sent to any agent the signed-in person may run, and again to another.
 - **The read-outs for citations, whether the label answered, label searches, report checks and calls to another agent have not been looked at in a browser with real output.** Replies and case actions have; so have the model and tool step read-outs, which the Traces screen uses unchanged.
-- **The Traces screen, and the Inquiries screen as it is now laid out without a run's steps, have not been looked at in a browser.** Both are typechecked, linted and built.
+- **The Traces screen, and the Inquiries screen as it is now laid out without a run's steps, have not been looked at in a browser.** `toolchain/check.sh` shows that both typecheck, lint and build.
 - **Label search and evaluation have no screen.**
 
 ## Always true
@@ -76,9 +76,9 @@ In this phase the steps still arrive in the agent's response and are stored by t
 7. No token reaches the browser.
 8. Signing out removes the session and revokes the refresh token; a failed revocation does not stop it.
 9. A POST from another site is refused.
-10. What a session may do comes from the scopes it was granted at sign-in: which agents it may run, whether it may read cases, whether it may decide one, whether it may read traces. A call for anything else is answered 403 before the identity provider, the target or the store is asked.
+10. What a session may do comes from the scopes it was granted at sign-in: which agents it may run, whether it may read cases, whether it may decide one, whether it may read traces. A call for anything else is answered 403 before the identity provider or the target is asked.
 11. An inquiry and its runs are read, and a run is started on it, only by the person who entered it. To anyone else it is answered as an unknown inquiry is. The one exception is the trace routes of invariant 12.
-12. A run's steps leave the server only on the trace routes, and only to a session granted `traces:read`. Every other route returns a run without its steps, to anyone. The trace routes cover every person's runs.
+12. A run's steps leave the server only on the trace routes, and only to a session granted `traces:read`. Any other session is answered 403 there before the store is read, so the answer says nothing about whether a run exists. Every other route returns a run without its steps, to anyone. The trace routes cover every person's runs; an id that names no run is 404.
 
 The server's tests in `test/` are one per item, named by its number. They run through the server with scripted agents, a scripted case system and an identity provider whose refresh is a function, except invariant 4 and those beside it in `auth.test.ts`, which use the stand-in provider, and invariant 5's two calls arriving together, which runs on the token function in `src/tokens.ts`.
 

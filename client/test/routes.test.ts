@@ -19,7 +19,8 @@ mkdirSync(join(webRoot, 'assets'));
 writeFileSync(join(webRoot, 'index.html'), 'the app page');
 writeFileSync(join(webRoot, 'assets', 'app.js'), 'the app script');
 
-const agent = await scripted({ after }, () => ({ status: 200, body: EXAMPLE_RESPONSE }));
+const WITH_STEP = { ...EXAMPLE_RESPONSE, steps: [{ kind: 'error' as const, started_at: '2026-03-01T09:00:00.000Z', duration_ms: 5, message: 'A synthetic step.' }] };
+const agent = await scripted({ after }, (r) => ({ status: 200, body: at(r.body, 'message', 'text') === 'A message with steps' ? WITH_STEP : EXAMPLE_RESPONSE }));
 const cases = await scripted({ after }, () => ({ status: 200, body: { answered: 'by the case system' } }));
 const agents = [
   { id: 'first', name: 'First', description: 'scripted', url: agent.url },
@@ -192,10 +193,12 @@ test("invariant 12: a run's steps leave the server only on the trace routes, to 
   const traces = (body: unknown): unknown[] => [at(body, 'traces')].flat();
   const rows = [
     { name: 'its own inquiry, to a session without the scope', cookie: dana, path: `/api/inquiries/${id}`, status: 200, shows: (b: unknown) => ['steps' in Object(at(b, 'inquiry', 'runs', 0, 'response')), at(b, 'inquiry', 'runs', 0, 'response', 'reply')], expected: [false, EXAMPLE_RESPONSE.reply] },
+    { name: 'its own inquiry list, to a session without the scope', cookie: dana, path: '/api/inquiries', status: 200, shows: (b: unknown) => [JSON.stringify(b).includes('"steps"')], expected: [false] },
     { name: 'the trace list, to a session without the scope', cookie: dana, path: '/api/traces', status: 403 },
     { name: 'a trace, to a session without the scope', cookie: dana, path: `/api/traces/${runId}`, status: 403 },
+    { name: 'an unknown run, to a session without the scope', cookie: dana, path: '/api/traces/no-such-run', status: 403 },
     { name: "the trace list holds a run another person started", cookie: avery, path: '/api/traces', status: 200, shows: (b: unknown) => [traces(b).some((r) => at(r, 'run_id') === runId && at(r, 'started_by', 'name') === DANA.name)], expected: [true] },
-    { name: "that run's trace holds its steps and its message", cookie: avery, path: `/api/traces/${runId}`, status: 200, shows: (b: unknown) => [at(b, 'trace', 'run', 'response', 'steps'), at(b, 'trace', 'inquiry', 'text')], expected: [EXAMPLE_RESPONSE.steps, 'A message with steps'] },
+    { name: "that run's trace holds its steps and its message", cookie: avery, path: `/api/traces/${runId}`, status: 200, shows: (b: unknown) => [at(b, 'trace', 'run', 'response', 'steps'), at(b, 'trace', 'inquiry', 'text')], expected: [WITH_STEP.steps, 'A message with steps'] },
     { name: 'an unknown run', cookie: avery, path: '/api/traces/no-such-run', status: 404 },
   ];
   for (const row of rows) {
