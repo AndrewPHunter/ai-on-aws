@@ -63,7 +63,7 @@ flowchart TD
     Allowed -- no --> Tell["The model is told why.<br/>Nothing is called"] --> Limits
     Allowed -- yes --> Call[/"Call the retrieval service"/]
     Call --> Read{"What came back?"}
-    Read -- "label_not_found,<br/>invalid_input" --> Tell
+    Read -- "label_not_found,<br/>invalid_input" --> TellError["The model is told the error.<br/>A search made still counts"] --> Limits
     Read -- "any other error,<br/>or no answer" --> FailedSearch(["failed: the kind is named.<br/>The model is not told"])
     Read -- "passages or labels" --> Show["Give each passage its handle.<br/>Show whole passages, best first,<br/>while they fit the allowance"] --> Limits
 
@@ -110,7 +110,7 @@ A search that is answered gives the model each passage best first: shown whole w
 
 ## What code checks about an answer
 
-For each statement, in this order; every problem is told to the model at once, by statement number:
+For each statement, in this order. Every problem found is told to the model at once, by statement number. A statement whose fields are of the wrong type, or that fails check 1, is told that and is not checked further:
 
 1. The text is not empty, at least one passage is cited, and every handle cited was shown in this run.
 2. The quote is 15 to 600 characters and is found in one cited passage. Both sides are compared after removing footnote marks (`[^…]`), turning each run of white space into one space, and ignoring case. Nothing else is forgiven.
@@ -119,7 +119,7 @@ For each statement, in this order; every problem is told to the model at once, b
 
 No statements, or more than 8, is a problem. Only a passage's text is compared, never its handle, its label's names or its section path.
 
-What the model is told when an answer does not pass, one line per problem, each naming its statement. Nothing of a passage's text is put into the message beyond the model's own quote words that matched:
+What the model is told when an answer does not pass: for each statement, one line for its quote and one line joining its other problems, each line naming the statement. Nothing of a passage's text is put into the message beyond the model's own quote words that matched:
 
 | Problem | What the model is told |
 |---|---|
@@ -133,7 +133,7 @@ What the model is told when an answer does not pass, one line per problem, each 
 
 After the problems, always one closing line: "Send the whole answer again, by calling answer, with these corrected. A statement that cannot be supported from the passages shown may be left out." A refused `cannot_answer` is told why and closes with "Call answer or cannot_answer again."
 
-Readings chosen where the rules leave a choice. They are details of the code, read from it; no test pins them:
+Readings chosen where the rules leave a choice:
 
 | Question | Reading |
 |---|---|
@@ -163,18 +163,19 @@ Readings chosen where the rules leave a choice. They are details of the code, re
 |---|---|---|
 | `completed` | `answer` accepted | none. `label_answer` is `answered`; one citation per statement |
 | `completed` | `cannot_answer` accepted | none. `label_answer` is the reason; no citations |
-| `stopped` | The turn limit, or the time limit (checked before each turn, before each tool call, and by a timer for a request in flight) | The same sentences as the intake agents |
+| `stopped` | The turn limit, or the time limit found reached before a turn or before a tool call | The same sentences as the intake agents |
 | `stopped` | A third final tool that does not pass | "The answer did not pass the checks after 2 corrections, and was not returned." |
 | `stopped` | The model ended its turn with text and no final tool | Names the finish reason; the text stays in the model step |
 | `stopped` | A turn cut off at the output allowance after the one retry with thinking off | Says so; nothing written is returned |
-| `failed` | The model could not be asked | The same sentences as the intake agents |
+| `failed` | The model could not be asked, or the run's time ran out while a request to it was in flight | The same sentences as the intake agents |
+| `failed` | The model wrote tool arguments that are not JSON | "The model wrote tool arguments that are not JSON, and Strands stops the run when that happens." |
 | `failed` | The identity provider refused to exchange the caller's token for one meant for the retrieval service | "The agent could not get a token for the retrieval service: " and the provider's refusal |
 | `failed` | The exchange could not be made: no answer in time, the provider not reached, or an answer it cannot read | "The agent could not get a token for the retrieval service: the identity provider could not be reached or did not answer in time." |
 | `failed` | The retrieval service could not be reached, refused the token, could not check it, or does not offer both tools | One sentence each |
 | `failed` | `find_labels` or `search_label` answered `index_not_built`, `search_timed_out`, `search_unreachable`, `search_error` or `search_unexpected_answer` | One sentence each |
-| `failed` | Either tool answered an error code no list names | "The label search answered with an error this agent does not know: " and the code |
+| `failed` | Either tool answered any other error code, the retrieval service's vector, embedding and reranker codes among them | "The label search answered with an error this agent does not know: " and the code |
 | `failed` | Either tool answered an error that is not `{ error, detail }`, or a success of a shape the agent does not expect | One sentence each |
-| `failed` | No answer within the tool limit | Names the limit |
+| `failed` | No answer within the tool limit, or the run's time ran out while a tool call was in flight | Names the limit |
 | `failed` | A search answered with a passage from another label than the one searched | "The retrieval service returned a passage from another label than the one searched." |
 | `failed` | Strands stopped the run with an error no row above names | "Strands stopped the run with" the error's type |
 
@@ -198,21 +199,6 @@ A `stopped` or `failed` run has no reply, no citations and no `label_answer`.
 | Quote length | 15 to 600 characters | `EXPERT_SETTINGS.answer` |
 | Corrections | 2 | `EXPERT_SETTINGS.answer` |
 
-## Measured before it was built
-
-Measured by the planner's probe, 21 runs, with the real model and the 640-label index:
-
-- Passage ids of about 83 characters were miscopied by the model in 1 of 3 runs. Short handles were copied correctly in all 18 runs that used them. So the model is shown handles.
-- A structured final answer took 84 to 1,232 output tokens. One long answer ran out at 2,048. So the output allowance is 4,096, and a cut-off turn is asked again once with thinking off.
-- The model ignored a search limit written in its prompt in 1 run. So the search limit is enforced by code.
-- Told what was wrong with a quote, the model corrected it in the next turn.
-- The model derived a number, a daily total, that no passage writes. The number check refuses that.
-- The largest passage in the index is 22,467 characters. The model's context is 32,768 tokens.
-
-Measured by the planner, 18 real questions: 16 ended as expected; in 2 runs a failed quote was resent unchanged, which is why a correction says where the quote stops matching.
-
-Passage text costs a median of 0.24, a 99th percentile of 0.59, and at most 0.75 tokens a character, measured by the planner over 2,000 chunks with the chat model's tokenizer. At the worst rate, the 30,000-character allowance is about 22,500 tokens, which leaves room in the context for the output allowance, the prompt and the turns.
-
 ## How it is tested
 
 `agents/test/expert.test.ts`: one test for each line of "Always true" (expert 1 to 7), and one (expert 8) that a refused token exchange, a run with no final tool, a model server that fails, or an answer that never passes ends inside the contract with no unchecked model text in the reply. Each calls the handler with the caller and a scripted token exchange as values, through the real Strands loop and its MCP client, against a scripted model server and a scripted retrieval service on loopback; no token is signed, and every response is checked against the contract schema. Whether this agent and the real retrieval service agree is not checked here. The SDK server and the edge are tested in `agents/test/runtime.test.ts` with a handler written for the tests, not this agent's.
@@ -228,5 +214,5 @@ The model's and the tools' time limits are kept in real time by their clients. T
 - Whether a message is a report or a question is the model's judgement. A bare report of a side effect is declined as `not_a_label_question` by instruction, not by a check.
 - The reading allowance is counted in characters, not tokens, so it is safe only up to the worst rate recorded in `expert/settings.ts`. Text denser than that could still overflow the context, and the run would then end `failed` with the model server's status.
 - No choice of how passages are ranked: the retrieval service ranks by its own setting (`SEARCH_STRATEGY`: keyword, vector, fused or fused_reranked; keyword in the lab's compose file), and the retrieval step records the strategy the service reports it ran, with each hit's score as the service returned it.
-- One implementation, on Strands. The two intake agents exist to show what a framework's loop does and what it leaves to the agent's own code, and that comparison is made. This agent's subject is retrieval and what code checks about an answer. Evaluation scores an agent, so a second loop would double what is scored and show nothing new.
+- One implementation, on Strands. There is no hand-written loop for this agent.
 - No hand-off to the intake agent when a message reports an adverse event: it is declined, and the caller must send it to intake.

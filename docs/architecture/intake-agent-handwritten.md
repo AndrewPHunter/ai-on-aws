@@ -64,6 +64,7 @@ flowchart LR
     Run --> Record
     Loop -->|"ChatModel.complete"| Chat
     Loop -->|"ToolSet.call"| ToolSet
+    Loop -->|"isCaseTool,<br/>missingCaseTools"| CaseTools
     CaseTools -. "is a" .-> ToolSet
     Run -->|"caseActionFrom"| CaseTools
     Server -->|"validates with"| Contract
@@ -76,7 +77,7 @@ flowchart LR
 | `contract/server.ts` | The HTTP surface, written by hand and used by this agent alone (the agents on Strands are served by AWS's SDK server, see [agent-runtime.md](agent-runtime.md)). That a valid request always gets an answer inside the contract | The model, tools, cases, what the handler does |
 | `intake/handwritten.ts` | The order of work in a run: when the model is asked, when a tool is called, when each rule is applied. Three rules of its own: an unknown tool, arguments that are not JSON, and when a failed request to the model is sent again | HTTP, MCP, the model server's address, how a tool is reached |
 | `intake/run.ts` (shared) | The rules both implementations apply (one case per run, the repeat of a lost write, an unsettled write, what follows the model's reply) and the state they keep | Who is looping, the model, how a tool is reached |
-| `run/state.ts`, `run/steps.ts`, `run/turns.ts`, `run/endings.ts` (shared) | The state every run keeps, the run's record, the turn lost to thinking, and the wording of every ending | Who is looping, the model, how a tool is reached |
+| `run/state.ts`, `run/limits.ts`, `run/steps.ts`, `run/turns.ts`, `run/endings.ts` (shared) | The state every run keeps, the shape of its limits, the run's record, the turn lost to thinking, and the wording of every ending | Who is looping, the model, how a tool is reached |
 | `intake/prompt.ts` | What the model is told, and how the message is laid out for it | Everything else |
 | `intake/report-check.ts` (shared) | The report check's prompt, reading its answer as a finding, the check made with a `ChatModel`, and `atReply`: where both loops come when the model replies, which makes the check when the rule in `intake/run.ts` asks for it, keeps the finding and records the step | The run's conversation, tools, how a loop goes on |
 | `run/record.ts` | Measuring a step and counting down the run's time | What is being timed |
@@ -89,7 +90,7 @@ flowchart LR
 | `model/served.ts` (shared) | The model settings, the question "which model do you serve", and the wording of a model failure | Chat requests |
 | `intake/main-handwritten.ts` | Connecting this implementation's modules, the exchange before the tool connection among them | The rules of a run |
 
-The loop receives the model, the tool connection, the report check, its clock, its way of waiting and its source of randomness as arguments (`IntakeDeps`). It knows nothing about the case system. The shared rules in `intake/run.ts` do: they import `caseActionFrom` from `tools/case-system.ts`, and they name `create_case` and `add_follow_up`.
+The loop receives the model, the tool connection, the report check, its clock, its way of waiting and its source of randomness as arguments (`IntakeDeps`). Of the case system it knows only which tools a run needs: it imports `missingCaseTools` and `isCaseTool` from `tools/case-system.ts`, to end a run that is not offered both and to leave any other tool out of what the model is shown. The shared rules in `intake/run.ts` know more: they import `caseActionFrom` from `tools/case-system.ts`, and they name `create_case` and `add_follow_up`.
 
 ## One request, end to end
 
@@ -150,7 +151,7 @@ The same flow by function:
 | # | Where | What happens |
 |---|---|---|
 | 1 | `createContractServer` in `contract/server.ts`, this agent's own server | Routes `POST /invocations` to `invoke`. `GET /ping` answers `Healthy`, needs no token, and does not check the model or the case system |
-| 1a | `invoke` → the access-token check | Checks the `Authorization` header before the body is read (see "The caller's token"). A refused token gets 401 and a check that cannot be made gets 503; nothing else runs |
+| 1a | `invoke` → the access-token check | Checks the `Authorization` header before the body is read (see "The caller's token"). A refused token gets 401, or 403 when all it lacks is the scope, and a check that cannot be made gets 503; nothing else runs |
 | 2 | `invoke` → `readJson` | Reads the body, at most 1,000,000 bytes, as JSON |
 | 3 | `invoke` | Checks the body against `invocationRequestSchema`. A body that fails gets 400, and nothing else runs |
 | 4 | Handler in `run/serve.ts` → `ready`, given the caller | On the first request, asks the model server which model it serves (`servedModelId`, `GET /models`, 10 s at most) unless `MODEL_ID` names it, then has `main-handwritten.ts` build the client (`createChatModel`) and the handler. If the model server cannot say, the request ends `failed` with an error step, and the next request asks again |
@@ -159,12 +160,13 @@ The same flow by function:
 | 6 | `connectCaseTools` in `tools/case-system.ts` | Opens the MCP connection with the three context headers, taken from the message, and `Authorization: Bearer` with the case-system token, on every request. Connecting and listing the tools each have what the exchange left of the limit in step 5a, never more than the run has left. Each tool becomes a tool description. If `create_case` or `add_follow_up` is not offered, `handleInquiry` ends the run `failed`, naming what is missing, before the model is asked. Any other tool the case system offers is left out of what the model is shown, so a call to it is refused as `unknown_tool` |
 | 7 | `loop` | Starts the conversation: `SYSTEM_PROMPT`, then `userTurn(message)` |
 | 8 | `loop` → `askModel` → `ChatModel.complete` in `model/chat.ts` | Sends the conversation and the tool descriptions. The time allowed is the smaller of the model limit and what the run has left. A request that fails may be sent again (see "A failed request to the model") |
-| 9 | `loop` | Records a model step. If the model asked for no tools and wrote a reply, `atReply` in `intake/report-check.ts` decides what follows (see "The report check"); otherwise the run ends here (see "How a run ends") |
+| 9 | `loop` | Records a model step. If the model asked for tools, steps 10 to 13 follow. If it asked for none and wrote a reply, `atReply` in `intake/report-check.ts` decides what follows (see "The report check"). If it asked for none and wrote nothing, the turn is asked again once with thinking off, or the run ends (see "How a run ends") |
 | 10 | `loop` → `runToolCall`, once per tool the model asked for, in order | Decides whether the call is made: its own two checks, then `refusalBeforeCall` in `intake/run.ts` (see "One tool call") |
 | 11 | `runToolCall` → `callOnce` → `ToolSet.call` | Makes the MCP call and records a tool step (`recordToolCall`) |
 | 12 | `runToolCall` → `afterCall` in `intake/run.ts` → `caseActionFrom` | Turns the case system's answer into a case action, remembers the case this run opened or found open, and says whether the call is done, to be repeated, or unsettled |
 | 13 | `loop` | Appends one tool message per call to the conversation, and goes to step 8 |
 | 14 | `completed`, `stoppedAt...`, `failed` in `run/endings.ts` | Builds the response: outcome, stop reason, reply, case actions, steps |
+| 14a | `handleInquiry` → `holdingToFinding` in `intake/run.ts` | Gives a `stopped` ending the report check's sentence when the check found an adverse event and no case was recorded (see "The report check") |
 | 15 | `handleInquiry` | Closes the MCP connection |
 | 16 | `invoke` | Checks the response against `invocationResponseSchema` and sends it with 200 |
 
@@ -231,7 +233,7 @@ What follows the reply is `afterReply` in `intake/run.ts`, a function of the run
 
 | Case actions | Finding | Told | Next |
 |---|---|---|---|
-| Any | Not asked | Either | `completed` with the reply |
+| One or more | Not made | Either | `completed` with the reply |
 | None | Not yet made | No | Make the check, then ask again |
 | None | `none` | Either | `completed` with the reply |
 | None | `unknown` | Either | `stopped`: "The run recorded no case, and the separate check for an adverse event could not be made." |
@@ -241,8 +243,6 @@ What follows the reply is `afterReply` in `intake/run.ts`, a function of the run
 Told once, the model either records the event, and the run ends `completed` with its case action at the next reply, or does not, and the run ends `stopped`.
 
 Once the check has found an adverse event, a run with no case that ends `stopped` for any reason (the turn limit, the time limit on the told turn, a reply written after being told) ends with "A separate check of the message found an adverse event, and the run recorded no case. A person must read this message." `holdingToFinding` in `intake/run.ts` puts that sentence in place where each handler returns its ending. A `failed` run keeps its own reason.
-
-Measured: on 2026-11-23 the lab's model server was asked the check's question for four messages with `tools: []`. Each answered 200 with one word, in about 70 to 100 ms. Not established: how often the report check and the agent's own reading disagree on a real model. No test sends the check to the real model server.
 
 ## How a run ends
 
@@ -263,9 +263,9 @@ Measured: on 2026-11-23 the lab's model server was asked the check's question fo
 
 One exception to "writes nothing": if that turn ended because the output allowance ran out (`finish_reason` `length`) and thinking was on, the model is asked again with thinking off, once in a run (`askAgainWithoutThinking`). The lost turn is recorded and counts towards the turn limit.
 
-A turn that ends at the output allowance with some text written ends the run as `completed`, with that cut-off text as the reply. The Strands implementation returns no reply in that case.
+A turn that ends at the output allowance with some text written is a reply like any other: `atReply` decides what follows, and a run that completes carries the cut-off text as its reply. The Strands implementation returns no reply in that case.
 
-These answers are not outcomes of a run: 401 for a refused token, 503 when the token cannot be checked, 400 for a body over the limit, not JSON, or outside the contract, 404 for another path, 405 for another method on `/invocations`, and 500 if the agent's own response is outside the contract or the request could not be handled.
+These answers are not outcomes of a run: 401 for a refused token, 403 for a token that lacks the scope, 503 when the token cannot be checked, 400 for a body over the limit, not JSON, or outside the contract, 404 for another path, 405 for another method on `/invocations`, and 500 if the agent's own response is outside the contract or the request could not be handled.
 
 ## The caller's token
 
@@ -290,7 +290,7 @@ The case system never sees this token. The agent exchanges it for the case-syste
 
 ## Always true
 
-1. A request that matches the contract, with an accepted token, gets 200 with an outcome and every step taken, whatever went wrong after it was accepted. The one exception is a response of the agent's own outside the contract, which is 500.
+1. A request that matches the contract, with an accepted token, gets 200 with an outcome and every step taken, whatever went wrong after it was accepted. Two exceptions: a handler that throws is answered 200 `failed` with no steps, and a response of the agent's own outside the contract is 500.
 2. The model makes no call. A call the agent's rules refuse never reaches the case system, and the model is told it was refused. Every call that does reach it is one the model asked for, or the one repeat the agent's code makes itself.
 3. The message identifier, the receipt time and the sender reach the case system as headers set by code when the connection is opened, beside the token the agent got for the case system. None is in the tool descriptions, so the model cannot supply them. The agent's own name is not sent: the case system takes it from that token.
 3a. No handler runs, and no body is read, for a request without an accepted access token. A token is accepted only if it has at least the run's 150 s left, so it cannot expire during the run it starts.
@@ -337,7 +337,7 @@ Each row is a control this agent does not have, where it would sit in the flow, 
 
 | Missing | Where it would sit | What follows |
 |---|---|---|
-| Proof of who sent the message | The request | `sender` is free text from the caller. The reporter recorded in a case is whatever was typed. The limit on follow-ups rests on this text: a caller that supplies another sender's exact text and the id of one of that sender's cases can add to that case |
+| Proof of who sent the message | The request | `sender` is free text from the caller. The reporter recorded in a case is whatever was typed. The limit on follow-ups rests on this text: a caller that supplies another sender's text (compared ignoring case and spacing) and the id of one of that sender's cases can add to that case |
 | A check of the identifier and receipt time | `invoke` | Both are forwarded as given. A second identifier for the same message opens a second case. A receipt time in the past is accepted, so the start of the reporting clock can be set by the caller |
 | A token limited to one run | `connectWithToolToken` | The case-system token is limited to this agent and its one scope, not to the run or the message: until it expires it is good for any run of this agent for that user |
 | Special handling of a token refused mid-run | `ToolSet.call` | A tool call the case system refuses (401) or cannot check (503) after the connection was accepted falls under the rules for a call that got no answer (see "One tool call") |
@@ -374,7 +374,7 @@ Each row is a control this agent does not have, where it would sit in the flow, 
 | Missing | Where it would sit | What follows |
 |---|---|---|
 | Rate and concurrency limits | `createContractServer` | Each request holds a model call for up to 150 seconds, and nothing bounds how many run at once. Two runs of one message at the same time race; the case system still opens one case |
-| Reading of `Retry-After` | `askModel` | A server that says how long to wait is not listened to: the loop waits its own half second and second. The local model server does not send the header |
+| Reading of `Retry-After` | `askModel` | A server that says how long to wait is not listened to: the loop waits its own 250 to 500 ms and 500 to 1,000 ms. The local model server does not send the header |
 | A shared view of the model's health | Around `askModel` | Each run decides on its own. While the model server is down, every run in flight sends its three requests |
 | A record kept by the agent | The endings in `run/endings.ts` | If the caller goes away mid-run, the steps are lost. What remains is the case system's audit trail and the agent's error output |
 | Tracing and metrics | Around `complete` and `ToolSet.call` | No trace identifiers and no exported measurements. A step carries its own timing and token counts |
@@ -398,7 +398,7 @@ Each row is a control this agent does not have, where it would sit in the flow, 
 | Time to exchange the caller's token | 10 s, or what the run has left, shared with connecting | `intake/settings.ts`, `Deadline.within` |
 | Time to connect to the case system, and to list its tools | What the exchange left of that limit, each | `connectWithToolToken` in `tools/tool-token.ts` |
 | Time to ask the model server which model it serves | 10 s | `run/serve.ts` |
-| Time for one request to the identity provider | 5 s | `run/serve.ts` |
+| Time to fetch the identity provider's discovery document or its keys | 5 s | `run/serve.ts` |
 | Request body | 1,000,000 bytes | `contract/server.ts` |
 | Model temperature, seed | 0, fixed | `run/sampling.ts` |
 | Output allowance for a turn | 2,048 tokens, thinking included | `run/sampling.ts` |
@@ -407,7 +407,7 @@ Each row is a control this agent does not have, where it would sit in the flow, 
 | Model name | Asked of the model server, unless `MODEL_ID` is set | `run/serve.ts` |
 | Case system address | `CASE_MCP_URL` | `agents/compose.yaml` |
 | Agent's name | `AGENT_ID` | `agents/compose.yaml` |
-| Access-token check | `AUTH_DISCOVERY_URL`, `AUTH_ISSUER`, `AUTH_ALLOWED_AUDIENCE`, `AUTH_ALLOWED_CLIENTS`, `AUTH_ROLES_CLAIM` | `agents/compose.yaml` |
+| Access-token check | `AUTH_DISCOVERY_URL`, `AUTH_ISSUER`, `AUTH_ALLOWED_AUDIENCE`, `AUTH_ALLOWED_CLIENTS`, `AUTH_REQUIRED_SCOPES`, `AUTH_ROLES_CLAIM` | `agents/compose.yaml` |
 | Token exchange | `EXCHANGE_TOKEN_ENDPOINT`, `EXCHANGE_CLIENT_SECRET`; the client id is `AGENT_ID` | `agents/compose.yaml`; the secret from `platform/identity/.env` |
 | Minimum life left on a token | 150 s, the run's time limit | `agentSettingsFrom` in `run/serve.ts`, with the limits from `intake/settings.ts` |
 | Wait before fetching the keys again | 30 s | `run/serve.ts` |

@@ -21,12 +21,12 @@ Every command on this page is run from the root of the repository.
 docker compose -f tools/case-system/compose.yaml up -d --build --wait
 ```
 
-That starts the case system on its own; without the identity provider on the same network it answers every request but `/ping` with 503. `docker compose up -d --build --wait` at the root starts it together with the [client](../../client/README.md), which is how the review screens reach it.
+That starts the case system on its own; without the identity provider on the same network it answers `/ping`, answers 401 to a request with no token or a malformed one, and answers every other request with 503. `docker compose up -d --build --wait` at the root starts it together with the [client](../../client/README.md), which is how the review screens reach it.
 
 | Port | For | What it serves |
 |---|---|---|
 | 8000 | Agents | MCP over HTTP at `POST /mcp`, and `GET /ping` |
-| 8001 | Reviewers | `GET /cases`, `GET /cases/<id>`, `POST /cases/<id>/review` |
+| 8001 | Reviewers | `GET /cases`, `GET /cases/<id>`, `POST /cases/<id>/review`, and `GET /ping` |
 
 Both are published on this machine only. Cases are kept in a SQLite file on a Docker volume, so they survive the container being removed. The volume is `ai-on-aws-case-system_cases` when the case system is started on its own, and `ai-on-aws_cases` when it is started from the root with the client; the two do not share cases. To keep the file in a directory of your own instead, change the `cases:/data` line in `compose.yaml` to that directory's path.
 
@@ -65,6 +65,8 @@ The four elements are an identifiable patient, an identifiable reporter, a suspe
 9. A tool or a route is reached only with a token that carries its scope: `create_case` and `add_follow_up` need `cases:write`, `find_case` needs `cases:lookup`, reading cases needs `cases:read`, deciding one needs `cases:review`. A tool whose scope the token lacks is not offered, and calling it changes nothing.
 10. A tool that changes a case answers with a receipt: the case's id, status, version and what it still lacks. It never answers with what the case holds.
 
+The tests in `test/` are named `case-system` and the item's number, one for each item, with three probes, P1 to P3, that drive both servers over loopback. P1 and P2 show the token's part of items 7 and 5: the agent recorded is the token's client whatever header a request carries, and the reviewer is the token's holder.
+
 ## The rules it enforces
 
 - **Complete or not is decided here, by code.** A case with all four elements is `awaiting_review`. A case missing any is `incomplete` and lists what is missing. The check is that each element is present; whether it is good enough is the reviewer's judgement.
@@ -102,6 +104,10 @@ An `x-agent-id` header is not read. The access token comes first, before the hea
 | 401, `WWW-Authenticate: Bearer error="invalid_token"`, `{"error":"unauthorized","reason","detail"}` | No token, or one that is malformed, signed by another key or not with RS256, from another issuer, not for `case-system`, not issued to a client this server accepts, or expired. `reason` names which |
 | 403, `WWW-Authenticate: Bearer error="insufficient_scope", scope="..."`, `{"error":"forbidden","reason":"insufficient_scope","detail"}` | A token holding none of the server's scopes, or, on the review server, not the route's own scope, which the header names |
 | 503 `identity_unavailable` | The identity provider's discovery document or keys cannot be fetched, or it names another issuer |
+| 404 `case_not_found` | The review server, for a case id that names no case |
+| 400 | The review server: a `status` filter that is not a status; a decision of `request_information` without a note (`note_required`); a body that names a `reviewer` |
+| 409 `not_allowed` | The review server: a decision on a case whose status does not allow it |
+| 404 | The agent server, for any path but `/mcp` and `/ping` |
 
 ## Settings
 
@@ -124,7 +130,7 @@ The scopes are set in code, not by a setting: each server's token check requires
 With an access token of a signed-in user, issued to `desk` with `cases:read` (to list) or `cases:review` (to decide), in `$ACCESS_TOKEN`:
 
 ```bash
-curl -s http://127.0.0.1:8001/cases?status=awaiting_review -H "authorization: Bearer $ACCESS_TOKEN"
+curl -s 'http://127.0.0.1:8001/cases?status=awaiting_review' -H "authorization: Bearer $ACCESS_TOKEN"
 ```
 
 ```bash
@@ -133,20 +139,13 @@ curl -s -X POST http://127.0.0.1:8001/cases/AE-000001/review -H "authorization: 
 
 `decision` is `approve`, `reject` or `request_information`; the last needs a `note`. The reviewer recorded is the token's `name`, with its subject. A body that names a `reviewer` is refused with 400. A token without `cases:review` is refused with 403 `insufficient_scope`, decided before the case is looked up, so the answer says nothing about whether it exists. `GET /cases/<id>` returns the case with every version and its audit trail; an agent's entries carry `acting_for`, a reviewer's carry `actor_subject`.
 
-## What was measured
-
-- The repository check runs 13 tests for this piece, named `case-system` and a number: one for each invariant under "Always true", numbered as they are, and three probes of the wiring, P1 to P3. Invariants 1 to 7 are shown on the store over an in-memory database (for invariant 5, the statuses a decision is allowed from). Invariant 9 is shown on the function that decides a route and on the MCP server built for one request, reached through the MCP SDK's in-memory transport, one row per scope. Invariant 10 is shown on that same server, one row for each answer that carried the case before: a create, a conflicting create, a follow-up and a conflicting follow-up. Invariant 8 and the probes drive the real servers over loopback, P1 and P3 with the MCP SDK's own client: P1, the three tools offered to a token holding both agent scopes and a create recorded against the context headers and the token's client and user, with an `x-agent-id` header naming another agent; P2, a decision through the review route recorded under the token's user, and refused for a body naming a reviewer or a token without `cases:review`; P3, another sender's case answered over MCP as one that does not exist. Their token check is a function that names a caller, refuses or is unavailable; verifying a token is tested in [`shared/`](../../shared/README.md).
-- By hand against the running container, on an arm64 Mac: a case created, the same call repeated, the container removed and started again on the same volume, and the same call repeated a third time. One case existed throughout, and the audit trail showed one creation and two replays.
-
 ## Known limits
 
-- **The context headers are not established to reach the server through AgentCore.** The Runtime documentation read for this says session headers are forwarded and shows an allowlist setting for others; whether these pass through Runtime or Gateway has not been tried. Whether the Strands MCP client can send them has not been tried either.
+- **The context headers travel straight from the agent to this server.** Nothing here passes them through AgentCore Runtime or Gateway.
 - **A conflict is reported to the model, and what the model does next is not controlled here.** After a refused create it could send the reworded content as a follow-up, which adds a version and sends the case back to review.
 - **The context headers are trusted as sent.** The agent is the token's client, but the message and its sender are headers the agent's code claims: an intake agent's token can record a change against any message, from any sender. The limit to a sender's own cases is only as good as that sender text, which the signed-in user vouches for.
 - **One event reported by two senders becomes two cases.** The second sender cannot find the first sender's case, and nothing links them.
-- **A store written before senders were kept** opens, but its existing cases have no sender, so no agent lookup finds them. Reviewers still see them.
 - **A token with `cases:read` can list and read every case** on the review server, from every sender.
-- **A store written before tokens were checked** opens; its existing audit entries have no `acting_for` and no `actor_subject`.
 - **One case per message.** A message that reports two patients produces one case.
 - **SQLite support in Node 22 is marked experimental** and prints a warning at start. It was chosen because it adds no dependency that needs compiling.
 - **The storage does not carry to AgentCore Runtime as it is.** Runtime sessions do not keep a local disk; the interface (stateless MCP over HTTP at `/mcp` on port 8000) is what matches.

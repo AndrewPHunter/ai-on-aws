@@ -32,7 +32,7 @@ One inquiry can hold an adverse event report, a question a label answers, both, 
 | The case system opens one case per message id | The intake agent receives the original message under its own id. No model-written text reaches it |
 | The expert answers from one label, and its checks live in its handler | The expert is called through its contract. A question about two medicines is two calls |
 | Text from the message is untrusted | The model cannot stop screening, change what the intake agent receives, or put text in the reply |
-| The client and the agents' front doors wait at most 300 s for an answer (Node's `fetch`) | The whole run is limited to 280 s |
+| The client waits for an answer with Node's `fetch`, which stops waiting at 300 s | The whole run is limited to 280 s |
 
 ## One message
 
@@ -110,7 +110,7 @@ The expert accepts `agents:expert` or `agents:expert:delegated`. So desk staff r
 
 ## Always true
 
-1. Every accepted message is sent to the intake agent once, unchanged and under its own id, by code, whatever the model does or fails to do.
+1. Every accepted message is sent to the intake agent once, unchanged and under its own id, by code, whatever the model does or fails to do. The one thing that keeps it from being sent is a failed exchange for the intake agent's token (invariant 7), which is screening's failure.
 2. A label question is put to the expert only if it names a medicine and a question in words, any question it says it replaces was put, every number in it is in the message, it is within two questions a round and two rounds, and the run has a sub-agent call's time left. A question not put is told to the model and named in the reply. Each question put is one call to the expert; the orchestrator sends none again.
 3. The model is shown, for each question, the expert's label answer or that it did not complete, its stop reason and its reply, and nothing else of the run: not the intake agent's result.
 4. The reply is written by code. No text from the orchestrator's model is in it, and each expert reply shown is word for word, except that its citation numbers are moved to their place in the combined list. A question that was replaced is not shown.
@@ -147,7 +147,7 @@ Screening completed means the intake agent's response has outcome `completed`. A
 
 | Number | Value | Set in |
 |---|---|---|
-| Model turns in a run | 3. The first turn of a run that uses up its output allowance having written nothing is asked again once, with thinking off for the rest of the run, as in the intake agent on Strands; Strands does not count that request as a turn, and the run's 280 s bounds it. Any later cut-off turn ends the model's loop | `ORCHESTRATOR_LIMITS`, `orchestrator/settings.ts`; the rule in `run/turns.ts` |
+| Model turns in a run | 3. A turn that uses up its output allowance having written nothing, while thinking is still on, is asked again once, with thinking off for the rest of the run, as in the intake agent on Strands; Strands does not count that request as a turn, and the run's 280 s bounds it. Any later cut-off turn ends the model's loop | `ORCHESTRATOR_LIMITS`, `orchestrator/settings.ts`; the rule in `run/turns.ts` |
 | Questions in a round | 2 | `ORCHESTRATOR_SETTINGS`, `orchestrator/settings.ts` |
 | Rounds | 2 | `ORCHESTRATOR_SETTINGS` |
 | Each model turn | 30 s, for each request Strands' OpenAI client makes | `ORCHESTRATOR_LIMITS` |
@@ -170,6 +170,4 @@ Screening completed means the intake agent's response has outcome `completed`. A
 | The orchestrator's name in the case system's audit trail | A case opened through the orchestrator names the intake agent as the acting agent. The exchanged token names only the last agent in the chain |
 | Asking the sender a question and waiting for the answer | The agent contract is one message in and one response out |
 | A third round | A question the first two rounds leave unanswered is named in the reply |
-| A measure of how well it splits and asks again | Not measured yet |
 | A limit on a whole model turn | The 30 s is each request's. Strands' OpenAI client sends a request that timed out or failed with 408, 409, 429 or 5xx again, up to three in all, and Strands asks again after 429; the run's 280 s stops either |
-| A test of the run when the model's name cannot be learnt | Screening still runs and the model's loop counts as failed (`orchestrator/main.ts`, `run/serve.ts`); no test calls that path |

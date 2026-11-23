@@ -20,7 +20,7 @@ Three programs sign a person in without a browser: the identity gate, the stack 
 | Token exchange | OAuth 2.0 Token Exchange (RFC 8693): an agent sends the token it was called with, as itself, and gets a token for one audience and the scopes it asks for |
 | Gate | `platform/identity/gate.sh` and `platform/identity/gate/gate.ts`: the check that decides whether a running provider issues and refuses the tokens described here. Its statements are named G1 to G16 in `gate.ts` |
 | Stack gate | `platform/identity/stack-gate.sh` and `platform/identity/gate/stack-gate.ts`: the check of sign-in and token use through the whole running stack |
-| Client | The desk's server, `client/src/`, the relying party registered as `desk` |
+| Client | The desk's server, `client/src/`, the relying party registered as `desk`. "A client" with a name in code font (`desk`, `expert`, `evaluation`) is an OAuth client registered in the realm |
 | Session | The client's record of one signed-in user: who they are and their tokens, in the client's memory, found by a random identifier |
 
 ## What runs
@@ -34,12 +34,12 @@ flowchart LR
     client["client"]
     agents["agents"]
     servers["case system, retrieval service"]
-    gates["identity gate and stack gate (when run)"]
+    gates["identity gate, stack gate and attack runner (when run)"]
     machines["knowledge gate and evaluation runner (when run)"]
   end
   browser["Browser on this machine"] -- "http://localhost:8090 (published on 127.0.0.1)" --> kc
   browser -- "http://localhost:3000, session cookie" --> client
-  client -- "http://identity:8080: discovery, token (code, refresh), revocation" --> kc
+  client -- "http://identity:8080: discovery, keys, token (code, refresh), revocation" --> kc
   agents -- "http://identity:8080: discovery, keys, token exchange" --> kc
   servers -- "http://identity:8080: discovery and keys" --> kc
   gates -- "http://identity:8080: sign-in page, form, token" --> kc
@@ -65,7 +65,7 @@ The realm file is read only at start. A running provider keeps the realm it impo
 |---|---|
 | Edits `realm/lab-realm.json` | Nothing, until the provider restarts. `docker compose up -d` does not restart it: the compose configuration has not changed |
 | Restarts the provider: `docker compose restart identity` at the repository root, or `docker compose -f platform/identity/compose.yaml restart identity` when it was started on its own | The edited realm is imported; new signing keys |
-| Then | Every access token issued before the restart is refused (`bad_signature`: its key is no longer published). Every client session ends at its next refresh, which the provider refuses (401 `not_signed_in`); its users sign in again |
+| Then | Every access token issued before the restart is refused (`bad_signature`: its key is no longer published). Every session of the client ends at its next refresh: the provider refuses it, the client answers 401 `not_signed_in`, and its users sign in again |
 
 A realm file that names a variable the identity secrets lack needs more than a restart. Every compose file that passes a secret requires it (`${NAME:?run platform/identity/setup.sh}`), so `docker compose up` stops before starting anything and names it.
 
@@ -166,7 +166,7 @@ How a token is got decides what it holds. Each row is a statement of the gate:
 | Refresh with `scope=openid <one granted scope>` | That scope alone of the lab's scopes | That scope's audiences alone; none for `traces:read` | G3 |
 | The same, with the refresh token that refresh returned | The whole grant again, or any other granted scope | As asked | G4 |
 | Refresh for a scope `desk` may ask for that the role does not grant | Not that scope; answered 200 | None of that scope's | G5 |
-| `desk` asking for a scope it may not ask for (`labels:search`, `agents:expert:delegated`) | Refused 400 `invalid_scope`, at a refresh and at the authorization endpoint | — | G6 |
+| `desk` asking for a scope it may not ask for (`labels:search`, `agents:expert:delegated`) | Refused `invalid_scope`: 400 at a refresh; at the authorization endpoint, a redirect back that carries the error | — | G6 |
 | An agent's exchange | Every scope asked for, and no other of the lab's scopes | The one audience asked for | G7, G8 |
 | An agent's exchange asking for a scope its client may not ask for (`traces:read` among them, for all four agents' clients) | Refused 400 `invalid_scope` | — | G9 |
 | The orchestrator's exchange of a person's token for it, for a sub-agent | The sub-agent's scope alone of the lab's scopes | That sub-agent alone | G15 |
@@ -200,7 +200,7 @@ sequenceDiagram
 |---|---|---|
 | Browser | `http://localhost:8090` | Authorization endpoint, sign-in form, sign-out |
 | Container on the lab's network: the client, the agents, the case system, the retrieval service, the knowledge gate, the evaluation runner | `http://identity:8080` | Discovery, token endpoint, `jwks_uri`, revocation (the client) |
-| Container on the lab's network standing in for a browser: the gate and the stack gate | `http://identity:8080` | As above, and the sign-in page and form: each sends a URL it is given on `http://localhost:8090` to `http://identity:8080` with the same path and query |
+| Container on the lab's network standing in for a browser: the gate, the stack gate and the attack runner | `http://identity:8080` | As above, and the sign-in page and form: each sends a URL it is given on `http://localhost:8090` to `http://identity:8080` with the same path and query |
 
 | Discovery field, fetched at `http://identity:8080` | Address given |
 |---|---|
@@ -223,7 +223,7 @@ sequenceDiagram
   B->>C: GET /auth/login
   C->>K: GET http://identity:8080/.../.well-known/openid-configuration (first need only#59; issuer must equal OIDC_ISSUER)
   C->>C: pending sign-in: state, nonce, PKCE verifier, browser binding (256 bits each)
-  C-->>B: 302 to authorization_endpoint (localhost:8090) with scope openid, the agents' scopes, cases:read and cases:review, state, nonce, S256 challenge#59; Set-Cookie desk_signin (binding, Path=/auth, 10 minutes)
+  C-->>B: 302 to authorization_endpoint (localhost:8090) with scope openid, the agents' scopes, cases:read, cases:review and traces:read, state, nonce, S256 challenge#59; Set-Cookie desk_signin (binding, Path=/auth, 10 minutes)
   B->>K: sign in
   K-->>B: 302 to http://localhost:3000/auth/callback?code, state, iss
   B->>C: GET /auth/callback, with desk_signin
@@ -235,7 +235,7 @@ sequenceDiagram
   C-->>B: 302 to /, Set-Cookie desk_session (HttpOnly, SameSite=Lax, Path=/)
 ```
 
-The client asks for `openid`, the scope of each agent it is configured with, `cases:read` and `cases:review`. It keeps the scopes the token response grants on the session. A scope left out because the person's role does not grant it is normal, not a failure.
+The client asks for `openid`, the scope of each agent it is configured with, `cases:read`, `cases:review` and `traces:read`. It keeps the scopes the token response grants on the session. A scope left out because the person's role does not grant it is normal, not a failure.
 
 | Step | Refused when | Answer |
 |---|---|---|
@@ -273,20 +273,22 @@ No token is written to disk or to the store, and no response carries a token, in
 | An agent's scope (`agents:intake`, `agents:expert`, `agents:orchestrator`) | Run that agent: enter an inquiry for it, or start a run of one |
 | `cases:read` | Read cases |
 | `cases:review` | Decide a case |
+| `traces:read` | Read every person's runs with their steps, on the trace routes. The client checks this grant itself: the scope names no audience, and no token carrying it is sent anywhere |
 
 What may be done is read from the scopes granted at sign-in, which the client keeps on the session. A token response without `scope` is taken as granting nothing.
 
 | Route | Answers |
 |---|---|
-| `GET /api/session` | `{ user: { name, username, roles }, may: { agents, read_cases, decide_cases } }`: the ids of the agents whose scope was granted, and whether `cases:read` and `cases:review` were. No token |
+| `GET /api/session` | `{ user: { name, username, roles }, may: { agents, read_cases, decide_cases, read_traces } }`: the ids of the agents whose scope was granted, and whether `cases:read`, `cases:review` and `traces:read` were. No token |
 | `GET /api/agents` | `{ agents: [{ id, name, description }] }`, only the agents whose scope was granted |
 | A call for anything the session may not do | 403 `not_allowed`, before the provider or the target is asked. An agent id that is not configured is 400 `unknown_agent` |
 | `GET /api/inquiries` | Only the inquiries the reader entered, matched by the subject who entered them |
 | Another person's inquiry: reading it, or starting a run on it | 404 `inquiry_not_found`, the answer an inquiry that does not exist gets |
+| `GET /api/traces`, `GET /api/traces/<run_id>` | Every person's runs, with their steps, to a session granted `traces:read`; 403 `not_allowed` to any other, before the store is read. Every other route gives a run without its steps |
 
 ### What the client sends downstream
 
-A target is a scope. Before a call, the client takes the session's token for the call's scope if it has the time below left; otherwise it refreshes with `scope=openid <that scope>` and keeps the new token under that scope. The token from sign-in is sent to nobody.
+Before a call, the client takes the session's token for the call's scope if it has the time below left; otherwise it refreshes with `scope=openid <that scope>` and keeps the new token under that scope. The token from sign-in is sent to nobody.
 
 | Call | `Authorization` | Token must have left |
 |---|---|---|
@@ -342,7 +344,7 @@ A token must hold at least one of the agent's scopes, from any of its clients. W
 | 401, `WWW-Authenticate: Bearer error="invalid_token"`, `{"error":"unauthorized","reason","detail"}` | A refusal above other than `insufficient_scope`. The handler is not called |
 | 403, `WWW-Authenticate: Bearer error="insufficient_scope", scope="<the agent's scopes, separated by spaces>"`, `{"error":"forbidden","reason":"insufficient_scope","detail"}` | A token with none of the agent's scopes. The handler is not called |
 | 503 `identity_unavailable` | Discovery or keys cannot be fetched, discovery names another issuer, or the key set holds an RSA key that is not a valid RS256 public key. The handler is not called |
-| As before, the handler given the caller | An accepted token |
+| The handler runs, given the caller | An accepted token |
 
 The discovery document and keys are fetched on first need and kept; a failure is not kept. Each request to the provider waits at most 5 s. A token naming a key not yet seen makes the agent fetch the keys again, at most every 30 s, so new keys after a provider restart are picked up without restarting the agent. `GET /ping` needs no token.
 
@@ -358,7 +360,7 @@ The orchestrator makes the same exchange, through the same file, once for each c
 | The label expert | Audience `knowledge`, scope `labels:search` | The retrieval service's MCP endpoint | `Authorization: Bearer` on every request (connect, tool list, every tool call), and no other header of the caller's |
 | The orchestrator | Audience `intake-strands`, scope `agents:intake`, to screen the message; audience `expert`, scope `agents:expert:delegated`, for each label question | The intake agent on Strands, or the label expert: `POST /invocations` | `Authorization: Bearer`, with the agent contract's request |
 
-What the provider issues, as the gate states it (G7, G8; G15 for the orchestrator's exchange, G16 for a sub-agent's exchange of the token the orchestrator got): `aud` is the one audience asked for; `client_id` and `azp` are the agent; `sub`, `preferred_username`, `name` and `roles` are those of the token exchanged; `scope` holds every scope asked for and no other of the lab's scopes; `exp` is that of the token exchanged. No refresh token comes with it. Only the four agents' clients have token exchange on. The provider refuses to exchange a token the agent, the orchestrator among them, is not an audience of (403 `Client is not within the token audience`, G9), and refuses an agent a scope its client may not ask for (400 `invalid_scope`, G9): an intake agent or the label expert asking for the other kind of agent's scopes or for `agents:expert:delegated`, an intake agent asking for `cases:lookup`, the orchestrator asking for `labels:search`, and any of the four agents' clients asking for `traces:read`. `desk`, the two audience-only clients and both machines cannot exchange (G10).
+What the provider issues, as the gate states it (G7, G8; G15 for the orchestrator's exchange, G16 for a sub-agent's exchange of the token the orchestrator got): `aud` is the one audience asked for; `client_id` and `azp` are the agent; `sub`, `preferred_username`, `name` and `roles` are those of the token exchanged; `scope` holds every scope asked for and no other of the lab's scopes; `exp` is that of the token exchanged. No refresh token comes with it. Only the four agents' clients have token exchange on. The provider refuses to exchange a token the agent, the orchestrator among them, is not an audience of (403 `Client is not within the token audience`, G9), and refuses an agent a scope its client may not ask for (400 `invalid_scope`, G9): an intake agent asking for the retrieval service (`labels:search`) or the label expert for the case system (`cases:write`), either asking for `agents:expert:delegated`, an intake agent asking for `cases:lookup`, the orchestrator asking for `labels:search` or `agents:expert`, and any of the four agents' clients asking for `traces:read`. `desk`, the two audience-only clients and both machines cannot exchange (G10).
 
 | Result | The run | Reason given |
 |---|---|---|
@@ -411,7 +413,7 @@ The retrieval service (`knowledge/src/search/`) checks the token with `shared/ac
 
 ## Signing in without a browser
 
-Each of these runs in a container on the stack's default network (`<compose-project>_default`), reaches the provider at `http://identity:8080`, and is given only the values it names from the identity secrets, by Compose. None prints a password, secret, code or token. Only the two identity gates and the attack runner are given a person's password, because acting as each person is what they are for. The two machines hold their own client's secret and nothing else.
+Each of these runs in a container on the stack's default network (`<compose-project>_default`), reaches the provider at `http://identity:8080`, and is given only the values it names from the identity secrets, by Compose. None prints a password, secret, code or token. Only the identity gate, the stack gate and the attack runner are given a person's password, because acting as each person is what they are for. The two machines hold their own client's secret and nothing else.
 
 | Party | Started by | As | How | Secrets given | What it does with it |
 |---|---|---|---|---|---|
@@ -549,7 +551,7 @@ sequenceDiagram
 | `desk` client secret | `setup.sh`, random | Identity secrets | The provider, through the realm import; the gate; the stack gate; the client, as `OIDC_CLIENT_SECRET`, the only value its container takes from the identity secrets |
 | The four agents' client secrets | `setup.sh`, random | Identity secrets | The provider, through the realm import; each agent its own, as `EXCHANGE_CLIENT_SECRET`; the gate (all four); the stack gate (`intake-handwritten`'s, `expert`'s and `orchestrator`'s) |
 | The two machines' client secrets | `setup.sh`, random | Identity secrets | The provider, through the realm import; the evaluation runner (`evaluation`'s only) and the knowledge gate (`knowledge-gate`'s only); the gate and the stack gate (both) |
-| The four people's passwords | `setup.sh`, random | Identity secrets | The provider, through the realm import; the gate and the stack gate (all four). No other program |
+| The four people's passwords | `setup.sh`, random | Identity secrets | The provider, through the realm import; the gate, the stack gate and the attack runner (all four). No other program |
 | Token signing keys | The provider, at start | The provider's database, on a tmpfs | Nobody outside; the public keys are at `jwks_uri` |
 
 The realm file holds a `${NAME}` placeholder where each secret goes, and no secret.
@@ -574,17 +576,6 @@ The realm file holds a `${NAME}` placeholder where each secret goes, and no secr
 | The provider does not answer on a running project's network, or a statement on this page about its realm or tokens does not hold | The gate exits 1 and names the first statement that does not hold |
 | The gate cannot run: no `platform/identity/.env`, no network for the project, or no report | The gate exits 2 and says why on standard error |
 
-## Measured by the planner, 2026-11-22
-
-On a trial stack built from this repository, run under Docker on an Apple-silicon laptop (arm64), with the chat model served on the GPU machine and the label index built:
-
-| Gate | Command | Result |
-|---|---|---|
-| Identity gate | `platform/identity/gate.sh` | 251 statements held, none failed (2026-11-23, with the scope `traces:read`) |
-| Stack gate | `platform/identity/stack-gate.sh` | 132 statements held, none failed, none in `not_checked` (2026-11-23, with the trace routes): each person's run read back holds no steps, the trace routes are 403 to everyone but the auditor, and the statements about delegations and retrieval are taken from the trace |
-| Knowledge gate, with its token as its own client `knowledge-gate` | `knowledge/gate.sh` | 20 statements held |
-| The same three gates, on a stack started from the earlier realm with an inquiry store and a label index, then moved to the new realm with its volumes kept, by removing `platform/identity/.env`, running set-up, and stopping and starting the stack with `--build` | as above | 151, 102 and 20 statements held, none failed. Measured before the gates had their statements about the orchestrator |
-
 ## Not present
 
 | What | Note |
@@ -596,7 +587,7 @@ On a trial stack built from this repository, run under Docker on an Apple-silico
 | Use of the caller's roles by the agents | The roles are read and given to the handler; nothing is decided on them |
 | Rules on data | No rule limits reading to a person's own cases: a token with `cases:read` lists and reads every case on the review server. No four-eyes rule: one person with `cases:review` decides a case alone |
 | Refresh-token rotation | The realm file sets none; Keycloak's defaults for a new realm apply |
-| Session expiry of the client's own | A session ends only at sign-out, a failed refresh or a restart |
+| Session expiry of the client's own | A session ends only at sign-out, at a restart, or when a call cannot get its token: a failed refresh, no refresh token, or a refreshed token with less life than the call needs |
 | `Secure` on the session cookie | The client is served over HTTP on this machine |
 | HTTPS | HTTP on loopback and the lab's network only |
 | Persistence | Nothing survives a restart; tokens issued before one stop verifying after it |

@@ -1,6 +1,6 @@
 # Knowledge
 
-The corpus of the lab's Bedrock Knowledge Bases stand-in: US drug labels from DailyMed, pinned by set id and version, fetched onto disk, counted, parsed into structured documents, and split into chunks. Each chunk can be given a vector by the embedding server. The chunks, with their vectors, are indexed in a search engine, and a retrieval service serves search over them to agents as MCP tools: by keyword, by vector, or both fused by rank and then reranked, as one setting of the service chooses. To use it, see [knowledge/README.md](../../knowledge/README.md).
+The corpus of the lab's Bedrock Knowledge Bases stand-in: US drug labels from DailyMed, pinned by set id and version, fetched onto disk, counted, parsed into structured documents, and split into chunks. Each chunk can be given a vector by the embedding server. The chunks, with their vectors, are indexed in a search engine, and a retrieval service serves search over them to agents as MCP tools: by keyword, by vector, by both fused by rank, or fused and then reranked, as one setting of the service chooses. To use it, see [knowledge/README.md](../../knowledge/README.md).
 
 ## The corpus as pinned
 
@@ -161,7 +161,7 @@ flowchart LR
     CK -- "read-only mount" --> IX
     VK -- "read-only mount" --> IX
     IX -- "create index, bulk, refresh, count, then move alias" --> OS
-    AG -- "the caller's Bearer token,<br/>knowledge:8000/mcp" --> RS
+    AG -- "a Bearer token exchanged from<br/>its caller's for this service,<br/>knowledge:8000/mcp" --> RS
     MC -- "Bearer token, 127.0.0.1:8002" --> RS
     RS -- "discovery and keys" --> ID
     RS -- "fetch: mapping, _search, _count" --> OS
@@ -185,7 +185,7 @@ The embedding stage (`knowledge/embed.sh`) asks the embedding server for a vecto
 | `fused` | Reciprocal rank fusion of the best 50 by each: score = Σ 1 / (60 + rank); ties by chunk id | As `vector`, plus the keyword search, at once |
 | `fused_reranked` | The best 20 fused, each sent as the text the embedding stage embeds (context line, newline, text), ordered by the reranker's score (`max_tokens_per_doc` 7000); ties by fused rank | As `fused`, plus the reranker |
 
-Before a vector is used the service reads which index the alias points at and the identity it records, and compares it with its configuration (`model/retrieval.env`) and constants: `null` is `vectors_not_built`, any difference `vectors_do_not_match`, and the embedding server is not called. Both legs then search that one index. Fusion is done in the service's code: OpenSearch 3.9's `hybrid` query, sent without a search pipeline, returns unnormalised results with no error and no field gives each sub-query's rank.
+Before a vector is used the service reads which index the alias points at and the identity it records, and compares it with its configuration (`model/retrieval.env`) and constants: `null` is `vectors_not_built`, any difference `vectors_do_not_match`, and the embedding server is not called. Both legs then search that one index. Fusion is done in the service's code, by rank.
 
 | Failure | Error result |
 |---|---|
@@ -194,7 +194,7 @@ Before a vector is used the service reads which index the alias points at and th
 | Embedding server not reached; no answer in 3 s; error status, the query refused as too long, a wrong-length vector or an unreadable answer | `embedding_unreachable`, `embedding_timed_out`, `embedding_error` |
 | Reranker not reached; no answer in 5 s; error status, an unreadable answer or one not scoring each passage once | `rerank_unreachable`, `rerank_timed_out`, `rerank_error` |
 | The alias does not exist | `index_not_built` |
-| The alias points at no index or at more than one | `search_unexpected_answer` |
+| The alias points at no index or at more than one, under a strategy that uses vectors (a keyword search goes to the alias as it is) | `search_unexpected_answer` |
 
 No failure is retried or falls back to a quieter kind of search. The key goes to the two model servers only. The verdict on an index's embedding identity is kept by index name for the life of the service.
 
@@ -202,7 +202,6 @@ The model servers are reached at `MODEL_EMBED_BASE_URL` and `MODEL_RERANK_BASE_U
 
 A whole search (`search_label` or `find_labels`) has 8 s from the moment it starts (`SEARCH_LIMIT_MS`, `knowledge/src/search/limits.ts`). Every request it makes gets the smaller of its own limit (engine 5 s, embedding 3 s, reranker 5 s) and what is left; when nothing is left the answer is `search_timed_out`, with a detail naming the step. When a request runs out of time, which limit ran out is decided by what it was given, before it was sent, never by which timer fired first: if it was given what was left of the search (less than its own limit), the search as a whole ran out; otherwise the request's own limit did, and the failure is that request's own (`search_timed_out`, `embedding_timed_out` or `rerank_timed_out`). A search therefore answers inside an agent's 10 s tool limit.
 
-The figures measured for the embedding stage, the index build and each strategy are in [knowledge/README.md](../../knowledge/README.md#the-retrieval-service).
 
 | Tool | Returns | Its counterpart in a Bedrock Knowledge Base retrieval result |
 |---|---|---|
@@ -221,6 +220,7 @@ The retrieval service accepts a token for the audience `knowledge`, issued to `e
 |---|---|
 | `GET /ping` | 200 `{status: "Healthy"}`, with no token |
 | No token, or one that is not valid | 401 `{error: "unauthorized", reason, detail}` with `WWW-Authenticate: Bearer` |
+| A valid token without the scope `labels:search` | 403 `{error: "forbidden", reason: "insufficient_scope", detail}` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="labels:search"` |
 | The identity provider cannot be asked | 503 `{error: "identity_unavailable", detail}` |
 | A target that is not a path; a body over 100,000 bytes or not JSON | 400 `{error: "bad_request", detail}` |
 | A path other than `/mcp` | 404 `{error: "not_found"}` |
@@ -258,7 +258,7 @@ The agent that calls these two tools is the label expert: [expert-agent.md](expe
 9. The fetch report and the census describe what is in the data folder, not what one run did. A run on complete data sends no request and changes no file.
 10. Reasons written to any file are fixed codes, never a parser's message: those of one closed list (`knowledge/src/reasons.ts`) for refusals, and `missing`, `checksum-mismatch`, `no-parsed-file`, `check-failed` and `other` in the census, parse and chunk reports.
 11. At most 2 requests to DailyMed are in flight at once (`knowledge/lib.sh`); the tool refuses a setting above 4. Only no response, a body cut short or not read in time, 408, 429 and 5xx are retried, 3 attempts in all, with growing waits. A 404, and any other status, is final.
-12. Every request carries the User-Agent `label-corpus-fetch/1.0` and nothing else that identifies who sent it.
+12. Every request the corpus commands make, to DailyMed and to the benchmark's host, carries the User-Agent `label-corpus-fetch/1.0` and nothing else that identifies who sent it.
 13. A request that fails during pinning fails the run: every set id is still tried, each failure is named, and nothing is written to `knowledge/corpus/` or `knowledge/data/benchmark/`.
 14. The census runs with no network and writes counts and codes only.
 15. Every setting is a named flag of the tool, given by the script. The tool has no defaults and reads no environment variable, with one exception: the embed command reads the embedding server's address, the key and the model's identity from the environment it is given (`model/.env` and `model/retrieval.env`, passed by `--env-file`), so the key is never on a command line. Every other command is run with no variable.
@@ -364,10 +364,8 @@ In the census, a pinned label that is missing from the data folder or does not m
 - No record of which passages the reranker read only in part (over 7,000 tokens).
 - One passage of the corpus is over the embedding model's limit: it has no vector and is found by keyword only.
 - Vectors are not bit-for-bit repeatable across runs of the embedding stage, which is why the index is named from the vectors it holds.
-- No strategy is shown better than another: the measured differences are within the margin of 200 questions.
 - No approximate (HNSW) vector search: each vector search is exact, over the documents of one label.
 - No check of the reranker's repository or revision: the service names the reranker only by its served name.
-- Fusion is not done with OpenSearch's `hybrid` query: without a search pipeline it returns unnormalised results with no error, and gives no sub-query's rank.
 - No removal of old indexes, and no backup of an index: it is rebuilt from the chunks.
 - No size limit on a table that is not splittable, or on a split chunk of one row.
 - No decision on which table rows are column headings beyond the one inference rule; no text read from images; no section numbers in old-format labels.

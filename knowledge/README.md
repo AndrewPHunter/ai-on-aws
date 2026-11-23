@@ -2,11 +2,11 @@
 
 A local stand-in for Amazon Bedrock Knowledge Bases: taking documents in, storing them for search, and answering retrieval requests from agents.
 
-The documents are US drug labels from DailyMed. This piece gets them onto disk, reproducibly, counts what they are, parses each into a structured document, and splits it into chunks that can be searched and cited: the labels of the public benchmark [FDARxBench](https://github.com/xiongbetty/FDARxBench), each pinned at one version of its DailyMed label. Which ones are pinned, and why the others are not, is in `knowledge/corpus/manifest.json`. Each chunk can be given a vector by the embedding server. The chunks are indexed in a search engine (OpenSearch), and a retrieval service gives agents search over them as two MCP tools, behind the same token check as the rest of the lab: by keyword, by vector, or both fused by rank and then reranked, as one setting of the service chooses. See "Search and retrieval" below.
+The documents are US drug labels from DailyMed. This piece gets them onto disk, reproducibly, counts what they are, parses each into a structured document, and splits it into chunks that can be searched and cited: the labels of the public benchmark [FDARxBench](https://github.com/xiongbetty/FDARxBench), each pinned at one version of its DailyMed label. Which ones are pinned, and why the others are not, is in `knowledge/corpus/manifest.json`. Each chunk can be given a vector by the embedding server. The chunks are indexed in a search engine (OpenSearch), and a retrieval service gives agents search over them as two MCP tools, behind the same token check as the rest of the lab: by keyword, by vector, by both fused by rank, or fused and then reranked, as one setting of the service chooses. See "Search and retrieval" below.
 
 ## The corpus as pinned
 
-Measured by `knowledge/pin.sh` and `knowledge/census.sh` on the committed `knowledge/corpus/manifest.json`:
+What the committed `knowledge/corpus/manifest.json` holds, as `knowledge/census.sh` counts it:
 
 | | Labels |
 |---|---|
@@ -33,15 +33,15 @@ Every command on this page is run from the root of the repository. The host need
 | `knowledge/parse.sh` | Parses every fetched label into a structured document, checks that no text was lost, and reports what did not parse cleanly. Numbers, codes and identifiers only in the report | None | `knowledge/data/parsed/<set id>/<version>.json` for each label without an error; `knowledge/data/parse-report.json` |
 | `knowledge/chunk.sh` | Splits every parsed label into chunks, checks that nothing was lost or doubled, and reports what it made. Numbers, codes and identifiers only in the report | None | `knowledge/data/chunks/<set id>/<version>.jsonl`, one chunk per line in document order; `knowledge/data/chunk-report.json` |
 
-`knowledge/index.sh` and `knowledge/gate.sh`, which work on a running stack, are described under "Search and retrieval".
+`knowledge/embed.sh`, `knowledge/index.sh` and `knowledge/gate.sh`, which work on a running stack and take its Compose project as their argument, are described under "Search and retrieval".
 
-Each takes no arguments. Each builds the image `knowledge-corpus:checkout-<number>` from the `run` stage of `toolchain/Dockerfile`, named for the checkout like the toolchain's check image, and runs the tool in it as your user, with a read-only root filesystem and no capabilities, with only `knowledge/corpus/` and `knowledge/data/` mounted.
+Each of the five corpus commands takes no arguments. Each builds the image `knowledge-corpus:checkout-<number>` from the `run` stage of `toolchain/Dockerfile`, named for the checkout like the toolchain's check image, and runs the tool in it as your user, with a read-only root filesystem and no capabilities, with only `knowledge/corpus/` and `knowledge/data/` mounted.
 
 | Exit code | `pin.sh` | `fetch.sh` | `census.sh` | `parse.sh` and `chunk.sh` |
 |---|---|---|---|---|
 | 0 | Both files written | Everything fetched and verified | Every pinned label counted | Ran to the end, whatever the labels' results |
 | 1 | The run failed: a request failed (after every attempt, or at once for a status that is not retried), a benchmark file or a history could not be read, or the manifest would not pass its schema; neither file was written | A label or a benchmark file was refused; the rest was fetched | Some pinned labels are missing or do not match; the rest were counted | An unexpected failure, such as a file of the data folder that is not JSON |
-| 2 | Could not run | Could not run, or the committed files do not pass their schema | The same, or a benchmark file missing or not matching the pin | The same |
+| 2 | Could not run | Could not run, or the committed files do not pass their schema | The same, or a benchmark file missing or not matching the pin | Could not run, or the manifest does not pass its schema |
 
 ### Pinning
 
@@ -150,11 +150,11 @@ Tables:
 
 ## Search and retrieval
 
-Two services in `knowledge/compose.yaml`, started with the rest of the lab by the root `compose.yaml`, and two commands that work on a running stack:
+Two services in `knowledge/compose.yaml`, started with the rest of the lab by the root `compose.yaml`, and three commands that work on a running stack:
 
 | | What it is |
 |---|---|
-| `search` | OpenSearch 3.9.0, released 2026-09-29: the newest stable 3.x release published at least 14 days before it was pinned. Pinned by the digest of its multi-architecture index (linux/amd64, linux/arm64). One node, a 1 GB heap, its data in the named volume `search-data`. It publishes no port: only containers on the stack's network reach it. Healthy once the cluster answers and is not red |
+| `search` | OpenSearch 3.9.0, pinned by the digest of its multi-architecture index (linux/amd64, linux/arm64). One node, a 1 GB heap, its data in the named volume `search-data`. It publishes no port: only containers on the stack's network reach it. Healthy once the cluster answers and is not red |
 | `knowledge` | The retrieval service, built from `knowledge/src/` with the `run` stage of `toolchain/Dockerfile`. MCP at `POST /mcp` and `GET /ping` on port 8000, published at `127.0.0.1:8002` |
 | `knowledge/embed.sh <compose-project>` | Asks the embedding server for a vector of every chunk, from a container on the stack's network |
 | `knowledge/index.sh <compose-project>` | Loads the chunks, and their vectors when there is an embed report, into the stack's search engine, from a container on its network |
@@ -183,7 +183,7 @@ The embedding stage and the retrieval service reach the model servers at the add
 
 ### Indexing
 
-- The index is named `labels-` and 16 hex characters of a SHA-256 of the chunk report's bytes, the embed report's bytes when there is one, and the index definition below. The chunk report records the SHA-256 of each label's chunk file, and the embed report the SHA-256 of the vector files; the index command checks every file against its hash before sending anything, so a change to any chunk's or vector's bytes, or to the mapping, is a different index. A chunk report written before it recorded the hashes is refused: run `knowledge/chunk.sh` again.
+- The index is named `labels-` and 16 hex characters of a SHA-256 of the chunk report's bytes, the embed report's bytes when there is one, and the index definition below. The chunk report records the SHA-256 of each label's chunk file, and the embed report the SHA-256 of the vector files; the index command checks every file against its hash before sending anything, so a change to any chunk's or vector's bytes, or to the mapping, is a different index. A chunk report in which a chunked label has no hash is refused before anything is sent: run `knowledge/chunk.sh` again.
 - With an embed report, the report must name the chunk report being loaded (by its SHA-256); otherwise it exits 1 with the reason, and nothing is built. Each document is loaded with `embedding` (its vector) and `hasVector` (true or false), and the index's `_meta` records the embedding identity: repository, revision, dimensions, recipe, instruction, and the vector files' SHA-256. Without an embed report the index is built without vectors and `_meta` records `null`.
 - It reads `knowledge/data/` through a read-only mount.
 - Each request to the engine may take 60 seconds (`knowledge/index.sh`).
@@ -221,6 +221,7 @@ Settings, each required and read by name: `SEARCH_URL` (`http://search:9200`: an
 |---|---|
 | `GET /ping` | 200 `{"status":"Healthy"}`, with no token |
 | No token, or one that is not valid | 401 `{error: "unauthorized", reason, detail}`, with `WWW-Authenticate: Bearer error="invalid_token"` |
+| A valid token without the scope `labels:search` | 403 `{error: "forbidden", reason: "insufficient_scope", detail}`, with `WWW-Authenticate: Bearer error="insufficient_scope", scope="labels:search"` |
 | The identity provider cannot be asked | 503 `{error: "identity_unavailable", detail}` |
 | With a valid token: a target that cannot be read as a path; a body over 100,000 bytes or not JSON | 400 `{error: "bad_request", detail}` |
 | A path other than `/mcp` | 404 `{error: "not_found"}` |
@@ -263,7 +264,7 @@ Every failure is an error result that says which; none is ever an empty list.
 | `search_timed_out` | The engine did not answer in time, or answered that its search timed out (`timed_out: true`); or the search as a whole used its 8 seconds, and the detail names the step it was on |
 | `search_unreachable` | The engine could not be reached, or closed the connection part way through its answer |
 | `search_error` | The engine answered with an error status, or answered that a shard failed |
-| `search_unexpected_answer` | The engine answered in a form the service does not expect: a missing field, a version that is not a whole number of 1 or more, a passage from another label, an alias that does not point at exactly one index |
+| `search_unexpected_answer` | The engine answered in a form the service does not expect: a missing field, a version that is not a whole number of 1 or more, a passage from another label, or, under a strategy that uses vectors, an alias that does not point at exactly one index (a keyword search goes to the alias as it is) |
 | `vectors_not_built` | The strategy uses vectors and the index the alias points at was built without them |
 | `vectors_do_not_match` | The index's vectors were made with another repository, revision, dimensions, recipe or instruction than this service makes a query's vector with |
 | `embedding_unreachable`, `embedding_timed_out`, `embedding_error` | The embedding server could not be reached; did not answer within 3 seconds; answered with an error status, a refusal of the query as too long, a vector of the wrong length, or an answer it cannot read |
@@ -286,22 +287,6 @@ The numbers, and where each is set:
 | Model, revision, served name, dimensions | from `model/retrieval.env` | `model/retrieval.env` |
 
 Every request a search makes (the mapping read, each engine request, the embedding request, the reranker request, the count) gets the smaller of its own limit and what is left of the search's 8 seconds, and none is sent when nothing is left. A request that runs out of time is the search's failure only if what it was given was what was left of the search (less than its own limit); otherwise it is the request's own. So a search answers inside an agent's 10 s tool limit, whatever its strategy.
-
-Measured by the planner on 2026-11-22, with the real embedding server and reranker on the GPU machine and OpenSearch 3.9.0:
-
-- `knowledge/embed.sh`: exit 0 in 154 s. 31,827 chunks; 31,826 vectors; 1 without a vector (the over-length table: the server's refusal matched `isOverLength`); 7,281,847 tokens; 170 MB of vector files.
-- `knowledge/index.sh` with vectors: exit 0 in 18 s. The definition was accepted, both count checks passed, the alias moved, and both older indexes were left and listed. `_meta` holds the embedding identity, and a fetched document has no `embedding` in its source.
-- The index's store on disk: 654 MB before a flush and about 1,000 MB after, against 30 MB without vectors, in up to 19 segments, about 18 KB a document. Most of that is probably the engine's own copy of the original documents, kept for recovery when the source is filtered, which later merges may drop; that is inferred, not established.
-- The gate under each strategy, with the service restarted on that setting (a passage of a referenced section among the first 5, of 200 questions whose label is known):
-
-| Strategy | Right section in the first 5 | Gate |
-|---|---|---|
-| `keyword` | 159 | passes, 20 statements |
-| `vector` | 167 | passes, 22 statements |
-| `fused` | 170 | passes, 22 statements |
-| `fused_reranked` | 171 on a first run, with one search answering an error (statement 8 failed; the gate did not then say which error); 172 on a second, with none. `search_label` median 176 ms, 95th percentile 251 ms over 207 calls | passes on the second run, 22 statements |
-
-With 200 questions the margin is about 6 points either way, so these figures do not separate the strategies.
 
 ### The gate
 
@@ -326,7 +311,7 @@ It also measures, and does not assert, how often a passage from a referenced sec
 
 ### Hardening
 
-The retrieval service runs with a read-only root, no capabilities, no new privileges and an init process, like the case system. The search engine runs with no capabilities, no new privileges and an init process, with `/tmp` and its log folder on tmpfs. It cannot have a read-only root: at every start OpenSearch writes `config/opensearch.keystore` into its configuration folder, whose other files must come from the image. A tmpfs over that folder would hide them. With every other writable folder given a tmpfs, a read-only root still stopped it at start (exit 70).
+The retrieval service runs with a read-only root, no capabilities, no new privileges and an init process, like the case system. The search engine runs with no capabilities, no new privileges and an init process, with `/tmp` and its log folder on tmpfs. It cannot have a read-only root: at every start OpenSearch writes `config/opensearch.keystore` into its configuration folder, whose other files must come from the image. A tmpfs over that folder would hide them, and with every other writable folder on a tmpfs a read-only root still stops it at start (exit 70).
 
 ## Where data goes
 
@@ -365,7 +350,7 @@ A manifest entry holds: set id, version, document id, effective time, published 
 
 ## Requests
 
-- At most 2 requests to DailyMed at once, and 1 to GitHub, from 2 workers. The tool refuses a DailyMed setting above 4; `lib.sh` sets 2, because a first pinning run at 4 at once, with waits of 2 and 8 seconds, was answered 429 by DailyMed's history service for 20 set ids three times running.
+- At most 2 requests to DailyMed at once, and 1 to GitHub, from 2 workers. The tool refuses a DailyMed setting above 4; `lib.sh` sets 2: DailyMed's history service answers 429 to more.
 - A request with no response, a body cut short or not read in time, or a status of 408, 429 or 5xx, is tried 3 times in all, waiting 10 and then 60 seconds. A 404, or any other status, is not tried again. Redirects are followed. One attempt may take 120 seconds.
 - A benchmark file may be at most 256 MiB (268,435,456 bytes).
 - Every request carries the User-Agent `label-corpus-fetch/1.0` and nothing that identifies a person, a machine or this repository.
@@ -393,12 +378,9 @@ The libraries: [yauzl](https://github.com/thejoshwolfe/yauzl) 3.4.0 reads the zi
 - **The search engine's security plugin is off.** It has no TLS, no sign-in and no access control: any container on the stack's network can read, change or delete every index. It publishes no port, so nothing outside that network reaches it. The retrieval service is the only path an agent is given, and it holds the token check. Do not publish the engine's port.
 - No Bedrock data source.
 - No record of which passages the reranker read only in part: a passage over 7,000 tokens is cut by the reranker, and nothing says which.
-- One passage of the corpus is over the embedding model's 8,192 tokens (measured by the planner on 4,000 passages, the 1,500 largest among them): it has no vector, and is found by keyword only.
+- One passage of the corpus is over the embedding model's 8,192 tokens: it has no vector, and is found by keyword only.
 - Vectors are not bit-for-bit repeatable across runs of the stage on a GPU. That is why the index is named from the vectors it holds (the embed report's hash), not from the chunks alone.
-- No strategy is shown better than another: on 200 questions the planner's figures differ by less than their margin of about 6 points.
-- The code of the one error seen under `fused_reranked` in the planner's first gate run was not captured. The model servers' logs show no refused request during those runs.
 - No check of the reranker's repository or revision: the service names the reranker only by its served name (`RERANK_MODEL_ID`).
-- The index's size on disk after the engine's merges is not known.
 - No approximate (HNSW) vector search: each search is exact, over the documents of one label.
 - Fusion is done in this service's code, not with OpenSearch's `hybrid` query: in 3.9 a `hybrid` query sent without a search pipeline returns unnormalised results with no error, and no response field gives each sub-query's rank.
 - No removal of old indexes; `index.sh` lists them.

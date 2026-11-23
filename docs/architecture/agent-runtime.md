@@ -30,7 +30,7 @@ sequenceDiagram
     participant H as The agent's handler
 
     C->>E: POST /invocations, Bearer token
-    E->>E: check the token, body unread (401, 503)
+    E->>E: check the token, body unread (401, 403, 503)
     E->>E: session id: the caller's, or a new UUID (400 if not 33 to 256 characters)
     E->>E: read the body, at most 1,000,000 bytes (400 beyond)
     E->>S: the body, a content length, allowed headers only, a request id
@@ -73,7 +73,7 @@ sequenceDiagram
 
 | The edge | On AWS |
 |---|---|
-| Checks the access token with `shared/access-token.ts` before reading the body: 401 with `WWW-Authenticate: Bearer error="invalid_token"`, or 503 when the identity provider cannot be asked, in the hand-written server's shapes | Runtime's JWT authorizer, configured with the same discovery URL, audience and client ids |
+| Checks the access token with `shared/access-token.ts` before reading the body: 401 with `WWW-Authenticate: Bearer error="invalid_token"`, 403 with `error="insufficient_scope"` and the scopes for a token that lacks only the scope, or 503 when the identity provider cannot be asked, in the hand-written server's shapes | Runtime's JWT authorizer, configured with the same discovery URL, audience and client ids |
 | Passes a session id of 33 to 256 characters through, makes a UUID when there is none, answers 400 otherwise | Runtime: `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id`, 33 to 256 characters; AWS's clients make one when the caller gives none |
 | Forwards only the content type, accept, `Authorization`, headers starting `X-Amzn-Bedrock-AgentCore-Runtime-Custom-`, the session id, and a request id it makes (`X-Amzn-Bedrock-AgentCore-Runtime-Request-Id`). Everything else, a cookie or `X-Forwarded-For` included, is dropped | Runtime forwards `Authorization` only when it is in the request header allowlist, and the custom headers |
 | Reads the body itself, at most 1,000,000 bytes, then sends the whole of it with a content length | Runtime's own payload limit |
@@ -97,7 +97,7 @@ The token is checked a second time in `process`, as the hand-written server does
 
 ## What the SDK does on its own
 
-- Fastify's own error messages are fixed strings. For a body that is not JSON, a body that does not match the request schema, and a normal request, the SDK's default logging quoted no body. The logging configuration above is kept for what was not tried.
+- Fastify's own error messages are fixed strings. For a body that is not JSON, a body that does not match the request schema, and a normal request, the SDK's default logging quotes no body. The logger is configured all the same (`contract/sdk-app.ts`): a request is logged as its method and its path without the query, and an error as its type, code and status, never its message or stack.
 - The SDK prints Fastify's deprecation warning FSTDEP023 (`disableRequestLogging`) at every start.
 - The SDK is loaded only on the SDK path: `run/serve.ts` imports `contract/runtime.ts` only for an agent on the SDK server, and what the edge and the start-up share is in `contract/runtime-contract.ts`, which loads nothing of the SDK. Importing the agents' start-up code therefore stays cheap, and the hand-written agent never loads the SDK.
 
@@ -115,28 +115,31 @@ For the intake agent on Strands, the label expert and the orchestrator, compared
 | A session id under 33 or over 256 characters | Not read | 400 `bad_request`, from the edge | Passed to the handler's context unchecked |
 | The agent's own code answers outside the contract | 500 `{"error":"internal_error","detail":"The agent produced a response outside its contract."}` | 200, `outcome: failed`, reason "The agent produced a response outside its contract.", no steps | The same |
 | No valid token | 401 | 401, from the edge | 200, `outcome: failed`, reason "The request reached the agent with no valid access token. ..." |
+| A token that lacks only the agent's scope | 403 | 403, from the edge | The same 200 `failed` as for no valid token |
 | The identity provider cannot be asked | 503 | 503, from the edge | 200, `outcome: failed`, reason "The request reached the agent, and its access token could not be checked: ..." |
 
 The same in all three: a handler that throws gives 200 with `outcome: failed` and "The agent failed unexpectedly.", and a valid request with a valid token gets the handler's answer.
 
-With the edge off, the SDK answers 413 from the declared `Content-Length`, before it reads the body, and then closes the connection. So what a client sends over the limit decides what it sees. A client that waits for the answer before sending the body, or sends none, reads the 413. A client that is still sending the body when the connection closes can instead see the connection fail (in Node's `fetch`, "fetch failed"), and which one it sees depends on timing. No test covers it.
+With the edge off, the SDK answers 413 from the declared `Content-Length`, before it reads the body, and then closes the connection. So what a client sends over the limit decides what it sees. A client that waits for the answer before sending the body, or sends none, reads the 413. A client that is still sending the body when the connection closes can instead see the connection fail (in Node's `fetch`, "fetch failed"), and which one it sees depends on timing.
 
 ## The setting
 
 | Setting | Values | Meaning |
 |---|---|---|
-| `LOCAL_RUNTIME_EDGE` | `on` | The edge on `0.0.0.0:8080`, the SDK app on `127.0.0.1:9080` behind it. Set in `agents/compose.yaml` for both Strands agents |
+| `LOCAL_RUNTIME_EDGE` | `on` | The edge on `0.0.0.0:8080`, the SDK app on `127.0.0.1:9080` behind it. Set in `agents/compose.yaml` for the three agents on Strands |
 | | `off` | The SDK app alone on `0.0.0.0:8080`, as it runs on AgentCore Runtime |
 
 It is required and has no default. A missing or other value stops the agent at start (exit 2), naming the variable, as a missing setting of any agent does. If `contract/runtime.ts` and the SDK cannot be loaded, the agent stops with exit 1 and says so. The hand-written agent does not read the setting.
 
 ## Always true
 
-- Wherever this repository runs an agent, a request with no valid access token is refused with 401 before its body is read, one whose token lacks every scope the agent requires gets 403 naming those scopes, and one whose token cannot be checked gets 503: by the edge, or by the hand-written server. The SDK app itself cannot set a status and answers a token without the scope as it answers any refused token, which is why the edge stands in front of it. With the edge off, that is AgentCore Runtime's JWT authorizer.
-- On the SDK server, a valid request with a valid token always gets an answer inside the contract, unless the edge itself answers 502 or 500. Nothing the handler does surfaces as the SDK's 500 with an error's own message. On the hand-written server the same holds, except that an answer of the agent's own outside the contract is 500.
-- No line written by the SDK's logger, the edge or `contract/sdk-app.ts` carries a token, a message's text, or an error's message. The SDK's logger stays on with its request lines; a request is logged as its method and path, an error as its type, code and status, and a line about an error has the error's code as its message. What Strands itself writes to the log is in the [Strands document](intake-agent-strands.md#not-present-in-addition).
-- On the SDK server, SIGTERM and SIGINT end the process with exit 0. The SDK registers no handler of its own. The hand-written agent closes its server and every open connection on either signal.
-- An agent sends a tool server only a token it got for that server: it exchanges the token it was called with, as itself, for one naming that server's audience and scopes, once per run, before it connects. The caller's token goes to the identity provider's token endpoint and nowhere else. An exchange that is refused or cannot be made ends the run failed with the reason: nothing is connected and the model is not asked.
+1. Wherever this repository runs an agent, a request with no valid access token is refused with 401 before its body is read, one whose token lacks every scope the agent requires gets 403 naming those scopes, and one whose token cannot be checked gets 503: by the edge, or by the hand-written server. The SDK app itself cannot set a status and answers a token without the scope as it answers any refused token, which is why the edge stands in front of it. With the edge off, that is AgentCore Runtime's JWT authorizer.
+2. On the SDK server, a valid request with a valid token always gets an answer inside the contract, unless the edge itself answers 502 or 500. Nothing the handler does surfaces as the SDK's 500 with an error's own message. On the hand-written server the same holds, except that an answer of the agent's own outside the contract is 500.
+3. No line written by the SDK's logger, the edge or `contract/sdk-app.ts` carries a token, a message's text, or an error's message. The SDK's logger stays on with its request lines; a request is logged as its method and path, an error as its type, code and status, and a line about an error has the error's code as its message. What Strands itself writes to the log is in the [Strands document](intake-agent-strands.md#not-present-in-addition).
+4. On the SDK server, SIGTERM and SIGINT end the process with exit 0. The SDK registers no handler of its own. The hand-written agent closes its server and every open connection on either signal.
+5. An agent sends a tool server only a token it got for that server: it exchanges the token it was called with, as itself, for one naming that server's audience and scopes, once per run, before it connects. The caller's token goes to the identity provider's token endpoint and nowhere else. An exchange that is refused or cannot be made ends the run failed with the reason: nothing is connected and the model is not asked.
+
+`agents/test/runtime.test.ts` has one test for each item, `runtime 1` to `runtime 5`, and one probe, `runtime P1`, that the hand-written agent's model client reads a text answer and a tool call from a model server.
 
 ## Not present
 
@@ -146,4 +149,4 @@ It is required and has no default. A missing or other value stops the agent at s
 | WebSocket | The SDK's `/ws` route is not registered: no WebSocket handler is given |
 | Session memory | The session id is carried to the SDK app and not used. Every request is handled on its own |
 | Closing the SDK app in-process | `run()` returns no handle and the app has no close method. The process ends on SIGTERM, and tests start the app in a child process |
-| A run on AgentCore Runtime | Nothing here has run on AgentCore Runtime. The edge-off layout is the one Runtime would use, and is tested locally only |
+| Deployment to AgentCore Runtime | Nothing here deploys an agent. The edge-off layout is the one Runtime would call |

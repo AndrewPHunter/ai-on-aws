@@ -27,7 +27,7 @@ flowchart TD
   lock --> lockfile[lockfile: one file] --> out[package-lock.json written by toolchain/lock.sh]
   base --> rundeps[run-deps: run-time dependencies only, no dev and no optional packages]
   manifests --> rundeps
-  rundeps --> runstage[run: run-deps + one piece's src]
+  rundeps --> runstage[run: run-deps + shared/*.ts + one piece's src]
   piece[One piece's src folder] --> runstage
   runstage --> container[The piece's container, started by its own compose file]
   deps --> webbuild[web-build: a piece's React app built to static files]
@@ -43,17 +43,21 @@ flowchart TD
 4. Dependencies are installed only by `npm ci` from the committed lockfile, with install scripts off. A lockfile that disagrees with `package.json` fails the install.
 5. Every dependency version in the root `package.json` is exact. A test in `toolchain/test/` fails otherwise.
 6. The Node pin is one digest. One test in `toolchain/test/` compares the Dockerfile's with every other file that pins Node: `model/gate/compose.yaml`, `model/setup.sh`, `model/setup/run-tests.sh`, `platform/identity/gate/compose.yaml` and `platform/identity/setup.sh`.
-7. The only base image is the Node pin. Nothing is installed from the operating system's package manager.
-8. No `.git`, `node_modules`, `.env` file (other than `.env.example`), `secrets` folder or gate report enters an image.
+7. The only base image is the Node pin; the `lockfile` stage starts from `scratch` and holds one file. Nothing is installed from the operating system's package manager.
+8. No `.git`, git worktree, `node_modules`, `dist` folder, `.env` file (other than `.env.example`), `secrets` folder, gate report, or anything under `knowledge/data` or `evaluation/data` enters an image.
 9. The only place `toolchain/` names a piece is the Node pin test, which reads the files listed in 6. `model/` does not depend on the toolchain: its setup, its gate and its own test command run in the bare Node image with only `model/` mounted and no installed dependency.
 10. TypeScript is run by Node directly, in the check and in a running piece. The compiler emits nothing.
-11. A piece's image holds the run-time dependencies, the source files at the top of `shared/`, and that piece's `src/` folder: no tests, no other piece, and none of the check's tools. A piece with a React app also holds that app's built static files, and none of the libraries it was built from.
+11. A piece's image holds the run-time dependencies, the source files at the top of `shared/`, and that piece's `src/` folder: no tests, no other piece, and none of the check's tools. A piece with a React app also holds its own `shared/` folder (the types its server and its app share) and that app's built static files, and none of the libraries it was built from.
+12. The check image is named for the checkout it is built from, so two checkouts can be checked at the same time.
+13. A piece's run-time install leaves out dev and optional packages, and no package in the lockfile is optional without also being dev.
+
+The tests in `toolchain/test/` are named T1 to T5: T1 shows 6, T2 shows 5, T3 shows 12, T4 shows the `shared/` part of 11, and T5 shows 13.
 
 ## Where each thing runs
 
 | Thing | Where | Network |
 |---|---|---|
-| `npm ci` for the `deps` stage | Image build | Yes, to the npm registry |
+| `npm ci` for the `deps` and `run-deps` stages | Image build | Yes, to the npm registry |
 | Lockfile resolution | Image build | Yes, to the npm registry |
 | Typecheck, lint, tests, and the build of the React app | The check container | None |
 | The same four steps, on demand | The dev container, as user `node` | Whatever the host gives it |
@@ -62,7 +66,7 @@ flowchart TD
 
 | Failure | Result |
 |---|---|
-| A type error, a lint error or warning, or a failing test | `toolchain/check.sh` exits non-zero; the tool's own message is shown |
+| A type error, a lint error or warning, a failing test, or a failing build of the React app | `toolchain/check.sh` exits non-zero; the tool's own message is shown |
 | The lockfile and `package.json` disagree | The image build fails at `npm ci` |
 | Docker is not reachable, or the image cannot be built | `toolchain/check.sh` exits non-zero |
 | `toolchain/lock.sh` cannot resolve, or npm has not finished in 300 seconds | It exits non-zero; the existing `package-lock.json` is unchanged |
@@ -71,7 +75,7 @@ flowchart TD
 
 | Owner | Owns |
 |---|---|
-| Root `package.json` | Dependency versions, and the definition of the check. Its `overrides` hold five `@aws-sdk` packages that `bedrock-agentcore` brings in at the release of `@aws-sdk/client-bedrock-runtime` that Strands' entry in the lockfile holds (3.1174.0), so that adding `bedrock-agentcore` moved no version already locked. They go when Strands' AWS packages next move |
+| Root `package.json` | Dependency versions, and the definition of the check. Its `overrides` hold five `@aws-sdk` packages that `bedrock-agentcore` brings in at 3.1174.0, the release of `@aws-sdk/client-bedrock-runtime` that Strands' entry in the lockfile holds |
 | `package-lock.json` | The resolved dependency tree. Written only by `toolchain/lock.sh` |
 | `tsconfig.json` | What the compiler accepts |
 | `eslint.config.js` | The lint rules |
@@ -79,4 +83,4 @@ flowchart TD
 | `toolchain/Dockerfile` | The stages, including the `run` stage every piece is packaged with, and the toolchain's copy of the Node pin |
 | `toolchain/compose.yaml` | The check container's isolation: no network, read-only |
 | `.devcontainer/devcontainer.json` | How VS Code attaches: the stage, the mount, the volume, the user |
-| Each piece | Its own TypeScript in `src/`, its own tests in `test/`, and its own compose file: command, ports, volumes, settings |
+| Each piece packaged with the `run` stage | Its own TypeScript in `src/`, its own tests in `test/`, and its own compose file: command, ports, volumes, settings |

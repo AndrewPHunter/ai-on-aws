@@ -16,7 +16,7 @@ reaches them by their URLs and that key.
 | Profile | a file in `model/profiles/`: a chat model at a pinned revision, its context length, how many requests it serves at once, the size of its context cache in bytes, and the chat server's start-up share of the card |
 | Retrieval settings | `model/retrieval.env`: the embedding model and the reranker, each at a pinned revision, with its name, longest input, cache size in bytes and start-up share of the card; the embedding model's number of dimensions. The same for every profile |
 | Gate | `model/gate/`: the check that decides whether the running servers are fit for the lab |
-| Tier | a profile that has passed the gate, with the free GPU memory it and the two retrieval servers need. Listed in `model/tiers.json` |
+| Tier | a profile, with the free GPU memory it and the two retrieval servers need. Listed in `model/tiers.json` |
 
 ## Servers
 
@@ -72,11 +72,14 @@ flowchart TD
     G -- "requests with the key" --> VR
 ```
 
+With `--check`, setup stops after the disk check and prints the tier it would select. With `--keep-env`, the existing machine settings are used as they are and none are written.
+
 ## Invariants
 
 1. Each server process serves one model, and all three run on one GPU. Every
    request to any of them must carry the one key; a request without it is
-   rejected.
+   rejected. The one exception is `/health`, which each server's own health
+   check reads without the key.
 2. The servers are configured by exactly three files, passed by name: the
    machine settings, one profile and the retrieval settings. Nothing else
    reaches them: no default of the machine, the shell or the user. Setup
@@ -88,16 +91,17 @@ flowchart TD
    it is never reduced to fit.
 4. Weights are fetched by separate download steps, one per model, at the
    pinned revisions. The servers themselves never fetch from the network.
-5. One server image serves all three, and it and the tool image are pinned
-   by digest.
-6. The servers run as the owner of the cache directory, and write on the GPU
-   machine only inside it.
+5. One server image serves all three. It, and the Node image that setup's
+   tool and the gate run in, are pinned by digest.
+6. The servers run as the owner of the cache directory, the only folder of
+   the GPU machine mounted into them. What else a server writes stays in its
+   own container.
 7. The gate is one bar for every tier: the same checks and thresholds
    whatever the chat model.
 8. A tier's need is its chat model's peak GPU memory, plus the peaks of the
    embedding and reranker servers, plus a margin. The disk check counts the
-   image and the weights of each of the three models not already in the
-   cache.
+   server image when the GPU machine does not hold it, and the weights of
+   each of the three models not already in the cache directory.
 9. Setup selects the largest tier whose need fits in the GPU's free memory.
    It never selects a tier that does not fit and never replaces a tier that
    was asked for by name.
@@ -127,7 +131,7 @@ flowchart TD
 
 | Action | What happens |
 |---|---|
-| Restart any one server | it starts beside the other two, with the same cache, because its start-up share is free while they run |
+| Restart any one server | it starts beside the other two, with the same context cache, because its start-up share is free while they run |
 | `docker compose ... up -d chat embed rerank` | chat starts first; the embedding and reranker servers wait until it reports healthy |
 | Set up again | refused until all three are stopped |
 
@@ -136,14 +140,14 @@ flowchart TD
 | Step | Runs on | Changes anything |
 |---|---|---|
 | Parse flags, select a tier, decide the disk verdict | control machine | no |
-| List the lab's running servers; run the pinned Node image once; probe the GPU; inspect the cache directory and Docker's storage | GPU machine | no |
+| Ask Docker's version when `--host` is given; list the lab's running servers; run the pinned Node image, once as a trial and then for the GPU probe and the disk probe; look for the server image; inspect the cache directory and Docker's storage | GPU machine | no, except that a Node image the machine lacks is pulled |
 | Write machine settings | control machine | `model/.env` |
 | Download weights of the three models | GPU machine | the cache directory |
 | Run the three servers, one at a time, each waited on until healthy for at most 900 seconds | GPU machine | three containers |
 | Check capacity from the chat and embedding servers' start-up logs | control machine | no |
 | Gate, on the host's network when the servers are published on a loopback address | control machine | `model/gate-report.json`; an earlier one is removed before the downloads |
 
-Every decision (flags, selection, disk verdict, the text of machine settings, health, capacity, exit codes) is made by `model/setup/tool.ts`, run in the pinned Node image on the control machine with no network.
+Every decision (flags, selection, disk verdict, the text of machine settings, health, capacity, exit codes) is made by `model/setup/tool.ts`, run in the pinned Node image on the control machine with no network. The exceptions are the refusals `setup.sh` makes itself, before the tool can run, each with exit 2: `DOCKER_HOST` or a variable that would override the three files set in the shell, Docker missing or not answering, and the tool not starting.
 
 ## What the gate checks
 
@@ -169,7 +173,7 @@ Every decision (flags, selection, disk verdict, the text of machine settings, he
 |---|---|---|
 | 0 | the three servers running and shown fit; with `--check`, the machine would get the printed tier | machine settings, the gate's report, the servers; with `--check`, nothing written and nothing started |
 | 1 | a download failed, or a server started and was not shown fit | machine settings; the servers stopped, their containers kept for their logs; the gate's report if the gate ran |
-| 2 | could not run | no server left running; machine settings only if the failure came after they were written |
+| 2 | could not run | no server that setup started left running; a server found running already is left as it was; machine settings only if the failure came after they were written |
 | 3 | machine not supported or too small | nothing written, nothing started |
 
 ## Ownership
@@ -179,7 +183,7 @@ Every decision (flags, selection, disk verdict, the text of machine settings, he
 | Server and download definitions | `model/compose.yaml` | setup, a person starting the servers by hand |
 | Profiles | `model/profiles/` | the chat server, the gate, setup |
 | Retrieval settings | `model/retrieval.env` | the embedding and reranker servers, the gate, setup; in the knowledge piece, the embedding stage, the retrieval service and the knowledge gate |
-| Tiers: chat peaks, retrieval peaks, margin, download sizes, minimum driver and GPU generation | `model/tiers.json` | setup |
+| Tiers: chat peaks, retrieval peaks, margin, download sizes, the server image's size on disk, minimum driver and GPU compute capability | `model/tiers.json` | setup |
 | Machine settings | `model/.env` | the servers, the gate, the rest of the lab (the agents; the knowledge piece's embedding stage and retrieval service) |
 | Setup: sequencing | `model/setup.sh` | a person |
 | Setup: decisions, as pure functions with tests | `model/setup/` | `setup.sh` |
