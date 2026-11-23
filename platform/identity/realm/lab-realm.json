@@ -23,7 +23,7 @@
       },
       {
         "name": "auditor",
-        "description": "Reads every case and its audit trail; changes nothing."
+        "description": "Reads every case and its audit trail, and every run's trace in the client; changes nothing."
       },
       {
         "name": "evaluation",

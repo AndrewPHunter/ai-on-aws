@@ -38,7 +38,8 @@
 //   G9   An agent is refused a scope its client may not ask for: the other kind of agent's scopes, a scope of its
 //        own tool server that its client may not ask for (an intake agent asking for cases:lookup), a scope only
 //        the orchestrator may ask for, and, for the orchestrator, a tool server's scope and the label expert's
-//        scope for a direct caller.
+//        scope for a direct caller. Every agent, the orchestrator among them, is refused the one only desk may ask
+//        for (traces:read).
 //   G6   The desk client asking for a scope it may not ask for (a tool server's, or one only the orchestrator may
 //        ask for) is refused invalid_scope, at a refresh and at the authorization endpoint.
 //
@@ -104,7 +105,7 @@ import {
 // ---------- configuration ----------
 
 type UserConfig = { username: string; passwordVariable: string; id: string; staffRole: string; granted: string[] }
-/** `forbiddenScopes`: scopes its own audience names that its client may not ask for. */
+/** `forbiddenScopes`: scopes its client may not ask for, asked for with its own audience: scopes that audience names, or scopes that name no audience. */
 type AgentConfig = { clientId: string; secretVariable: string; audience: string; scopes: string[]; forbiddenScopes: string[]; subject: { username: string; scope: string } }
 type MachineConfig = { clientId: string; secretVariable: string; id: string; role: string; scope: string; forbiddenScopes: string[] }
 /** A sub-agent the orchestrator calls (an entry of `agents`), the scope it asks for there, and whether only the orchestrator's client may ask for that scope. */
@@ -195,7 +196,7 @@ function loadConfig(path: string): GateConfig {
         secretVariable: field(agent, 'secretVariable', isString, 'a string'),
         audience: field(agent, 'audience', isString, 'a string'),
         scopes: field(agent, 'scopes', isStrings, 'a list of strings'),
-        // Scopes of its own audience that the agent's client may not ask for, whose refusals the gate states (G9). Optional; none when absent.
+        // Scopes the agent's client may not ask for, asked for with its own audience, whose refusals the gate states (G9). Optional; none when absent.
         forbiddenScopes: agent.forbiddenScopes === undefined ? [] : field(agent, 'forbiddenScopes', isStrings, 'a list of strings'),
         subject: { username: field(subject, 'username', isString, 'a string'), scope: field(subject, 'scope', isString, 'a string') },
       }
@@ -738,7 +739,8 @@ async function main(): Promise<number> {
       )
     }
 
-    // G9: an agent asking for a scope of its own audience that its client may not ask for.
+    // G9: an agent asking for a scope its client may not ask for, with its own tool server's audience: a scope of
+    // that audience, or one that names no audience (traces:read).
     for (const agent of config.agents.filter((entry) => entry.forbiddenScopes.length > 0)) {
       const own = people.find((entry) => entry.audiences.includes(agent.clientId))
       if (own === undefined) throw new UsageError(`config: no person's token names ${agent.clientId}, so its forbiddenScopes cannot be asked for`)
@@ -771,8 +773,8 @@ async function main(): Promise<number> {
     if (orchestratorCaller === undefined) throw new UsageError('config: orchestrator.callers is empty')
     for (const forbiddenScope of orchestrator.forbiddenScopes) {
       const own = subjectOf(orchestratorCaller, orchestrator.scope)
-      const audience = audiencesOfScope(forbiddenScope)[0]
-      if (audience === undefined) throw new UsageError(`config: ${forbiddenScope} names no audience`)
+      // A scope that names no audience (traces:read) is asked for with the first sub-agent's audience.
+      const audience = audiencesOfScope(forbiddenScope)[0] ?? firstDelegation.audience
       const answer = await exchange(http, discovery, orchestrator.clientId, orchestratorSecret, own.token, audience, [forbiddenScope])
       report.refused[`${orchestrator.clientId}_scope_${forbiddenScope}`] = refusal(answer)
       judged(
