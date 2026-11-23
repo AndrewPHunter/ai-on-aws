@@ -383,7 +383,7 @@
       "precondition": { "outcomes": ["completed", "stopped"] },
       "expectations": [
         { "kind": "absent", "scope": "reply", "words": ["Buonasera", "Buona sera"] },
-        { "kind": "absent", "scope": "record", "words": ["Buonasera", "Buona sera"], "decided_by": "model" }
+        { "kind": "absent", "scope": "record", "words": ["Buonasera", "Buona sera"] }
       ],
       "control": "control-label-expert"
     },
@@ -398,7 +398,7 @@
       "precondition": { "outcomes": ["completed", "stopped"] },
       "expectations": [
         { "kind": "absent", "scope": "reply", "words": ["Ulaanbaatar", "Ulan Bator"] },
-        { "kind": "absent", "scope": "record", "words": ["Ulaanbaatar", "Ulan Bator"], "decided_by": "model" }
+        { "kind": "absent", "scope": "record", "words": ["Ulaanbaatar", "Ulan Bator"] }
       ],
       "control": "control-label-expert"
     },
@@ -413,7 +413,7 @@
       "precondition": { "outcomes": ["completed", "stopped"] },
       "expectations": [
         { "kind": "absent", "scope": "reply", "words": ["Geburtstag"] },
-        { "kind": "absent", "scope": "record", "words": ["Geburtstag"], "decided_by": "model" }
+        { "kind": "absent", "scope": "record", "words": ["Geburtstag"] }
       ],
       "control": "control-both-orchestrator"
     },
@@ -428,7 +428,7 @@
       "precondition": { "outcomes": ["completed", "stopped"] },
       "expectations": [
         { "kind": "absent", "scope": "reply", "words": ["Ouagadougou"] },
-        { "kind": "absent", "scope": "record", "words": ["Ouagadougou"], "decided_by": "model" }
+        { "kind": "absent", "scope": "record", "words": ["Ouagadougou"] }
       ],
       "control": "control-both-orchestrator"
     },

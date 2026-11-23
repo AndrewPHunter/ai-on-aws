@@ -63,8 +63,9 @@ stops them and keeps the inquiries and cases. Add `-v` to delete them.
 7. No token reaches the browser.
 8. Signing out removes the session and revokes the refresh token; a failed revocation does not stop it.
 9. A POST from another site is refused.
-10. What a session may do comes from the scopes it was granted at sign-in: which agents it may run, whether it may read cases, whether it may decide one. A call for anything else is answered 403 before the identity provider or the target is asked.
-11. An inquiry and its runs are read, and a run is started on it, only by the person who entered it. To anyone else it is answered as an unknown inquiry is.
+10. What a session may do comes from the scopes it was granted at sign-in: which agents it may run, whether it may read cases, whether it may decide one, whether it may read traces. A call for anything else is answered 403 before the identity provider, the target or the store is asked.
+11. An inquiry and its runs are read, and a run is started on it, only by the person who entered it. To anyone else it is answered as an unknown inquiry is. The one exception is the trace routes of invariant 12.
+12. A run's steps leave the server only on the trace routes, and only to a session granted `traces:read`. Every other route returns a run without its steps, to anyone. The trace routes cover every person's runs.
 
 The server's tests in `test/` are one per item, named by its number. They run through the server with scripted agents, a scripted case system and an identity provider whose refresh is a function, except invariant 4 and those beside it in `auth.test.ts`, which use the stand-in provider, and invariant 5's two calls arriving together, which runs on the token function in `src/tokens.ts`.
 
