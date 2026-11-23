@@ -14,12 +14,13 @@
 //        person's one staff role and no other lab role, no realm_access or resource_access, and the realm's
 //        lifetime (G14). The ID token is signed the same way, names the issuer and the client, and carries the
 //        same roles.
-//   G3   A refresh with scope=openid <one granted scope> gives a token for that scope's audiences alone.
+//   G3   A refresh with scope=openid <one granted scope> gives a token for that scope's audiences alone, or, for a
+//        scope that names none (traces:read), a token that names no audience.
 //   G4   The refresh token that refresh returned still reaches the whole grant, and another granted scope.
 //   G5   A refresh for a scope the role does not grant is answered 200 with the scope and its audiences absent.
 //   G11, G12  Each machine obtains a token by client credentials for its scope, with its fixed sub, its name and
-//        its one role; each is refused the scopes its client may not ask for: a tool server's, and the one only
-//        the orchestrator may ask for.
+//        its one role; each is refused the scopes its client may not ask for: a tool server's, the one only
+//        the orchestrator may ask for, and the one only desk may ask for (traces:read).
 //   G7, G8, G11  Each agent exchanges the token it is called with for a token for the one service it calls, holding
 //        every scope it asked for and no other custom scope.
 //   G15  The orchestrator exchanges each caller's token for it for a token for each sub-agent it calls, with
@@ -503,7 +504,10 @@ async function main(): Promise<number> {
       entry.idTokenRoles = await checkIdToken(session.idToken, keys, config, user)
 
       for (const scope of user.granted) {
-        const statement = `G3 ${who}: a refresh with scope=openid ${scope} gives a token for ${audiencesOfScope(scope).join(' and ')} alone`
+        const audiences = audiencesOfScope(scope)
+        // A scope that names no audience (traces:read) gives a token that names none.
+        const target = audiences.length === 0 ? 'naming no audience' : `for ${audiences.join(' and ')} alone`
+        const statement = `G3 ${who}: a refresh with scope=openid ${scope} gives a token ${target}`
         const answer = await refresh(http, config, discovery, secrets, session.refreshToken, `openid ${scope}`)
         const verified = await verifiedAnswer(answer, keys, `${statement}: answered`, ['access_token', 'refresh_token'])
         judged(statement, checkNarrowedToken(verified.claims, { scope, audiences: audiencesOfScope(scope), customScopes: custom }))
