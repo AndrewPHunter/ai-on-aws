@@ -15,13 +15,13 @@ docker compose up -d --build --wait
 
 Then open <http://localhost:3000>, by that name and not `127.0.0.1`: the identity provider sends the browser back to `localhost`, and the session cookie belongs to it. Sign in as one of the four people: `dana.desk` (who runs the intake agents and the orchestrator), `morgan.medinfo` (who also runs the label expert), `riley.reviewer` (who reads and decides cases) or `avery.auditor` (who reads cases and every run's trace); their passwords are `IDENTITY_DANA_PASSWORD`, `IDENTITY_MORGAN_PASSWORD`, `IDENTITY_RILEY_PASSWORD` and `IDENTITY_AVERY_PASSWORD` in `platform/identity/.env`, which the first command writes. What each person sees is set by the scopes their role is granted; see [what each person sees](#what-each-person-sees).
 
-That starts the client together with the [agents](../agents/README.md), the [case system](../tools/case-system/README.md) and the [identity provider](../platform/identity/README.md), on one network. All are published on this machine only. The agents need the model server, so [set that up](../model/README.md) first.
+That starts the client together with the [agents](../agents/README.md), the [case system](../tools/case-system/README.md), the [identity provider](../platform/identity/README.md), and the search engine and retrieval service of [knowledge](../knowledge/README.md), on one network. All are published on this machine only. The agents need the model server, so [set that up](../model/README.md) first.
 
 ```bash
 docker compose down
 ```
 
-stops them and keeps the inquiries and cases. Add `-v` to delete them.
+stops them and keeps the inquiries, the cases and the label index. Add `-v` to delete all three.
 
 ## The screens
 
@@ -35,7 +35,7 @@ stops them and keeps the inquiries and cases. Add `-v` to delete them.
 
 ## What each person sees
 
-`GET /api/session` gives the person signed in and what they may do: `{ user: { name, username, roles }, may: { agents, read_cases, decide_cases, read_traces } }`. `may` comes only from the scopes the identity provider granted at sign-in; the role names are shown, never compared.
+`GET /api/session` gives the person signed in and what they may do: `{ user: { name, username, roles }, may: { agents, read_cases, decide_cases, read_traces } }`. `may` comes only from the scopes the identity provider granted at sign-in; the role names are returned, never compared.
 
 | Granted | The session may | The app shows |
 |---|---|---|
@@ -53,17 +53,13 @@ A run's steps are given only on the trace routes. Every other route gives a run 
 |---|---|
 | `GET /api/inquiries`, `POST /api/inquiries` | The reader's own inquiries, newest first, at most 100, with `truncated`; a new inquiry, 202. Runs without steps |
 | `GET /api/inquiries/<id>`, `POST /api/inquiries/<id>/runs` | 200 with the inquiry, 202 with the new run, both without steps; 404 `inquiry_not_found` to anyone but the person who entered it |
+| `GET /api/cases`, `GET /api/cases/<id>`, `POST /api/cases/<id>/review` | The case system's own answers, passed back unchanged, to a session granted `cases:read` (and `cases:review` for a decision); 502 `case_system_unreachable` when it does not answer |
 | `GET /api/traces` | 200 `{ traces, truncated }`: every person's runs, newest first, at most 100, each with when it started, who started it, the agent, its state, its outcome and the time it took. 403 `not_allowed` without `traces:read` |
 | `GET /api/traces/<run_id>` | 200 `{ trace: { inquiry, run } }`: the message as it was received, and the run with the agent's whole response, steps included. A run still running is 200 with `state` `running` and no response yet. A stored response that no longer matches the agent contract is 200 with the run shown as `failed`, the store's reason as its `error`, and no response. 403 `not_allowed` without `traces:read`, decided before the store is read; 404 `unknown_run` for a run that does not exist |
 
-In this phase the steps still arrive in the agent's response and are stored by the client with the rest of it, so `traces:read` is a permission on reading them, not yet a store of traces of their own.
+Every `/api` route answers 401 `not_signed_in` without a session; a call naming an agent id that is not configured, 400 `unknown_agent`; a POST from another site, 403 `cross_site_request`.
 
-## What works today
-
-- **Inquiries, Cases and System work,** with each of the four [agents](../agents/README.md). An inquiry can be sent to any agent the signed-in person may run, and again to another.
-- **The Traces list, a run's trace and the read-out for a call to another agent have been looked at in a browser with real output,** as the auditor, on 2026-11-23, at desktop and phone width. So have replies, case actions, and the model and tool step read-outs.
-- **The read-outs for citations, whether the label answered, label searches and report checks have not been looked at in a browser with real output.** Nor have the Inquiries screen as it is now laid out without a run's steps, or a run's result on a run's trace. `toolchain/check.sh` shows that they typecheck, lint and build.
-- **Label search and evaluation have no screen.**
+The steps arrive in the agent's response and are stored by the client with the rest of it. `traces:read` is a permission on reading them from that store; there is no separate store of traces.
 
 ## Always true
 
@@ -80,7 +76,7 @@ In this phase the steps still arrive in the agent's response and are stored by t
 11. An inquiry and its runs are read, and a run is started on it, only by the person who entered it. To anyone else it is answered as an unknown inquiry is. The one exception is the trace routes of invariant 12.
 12. A run's steps leave the server only on the trace routes, and only to a session granted `traces:read`. Any other session is answered 403 there before the store is read, so the answer says nothing about whether a run exists. Every other route returns a run without its steps, to anyone. The trace routes cover every person's runs; an id that names no run is 404.
 
-The server's tests in `test/` are one per item, named by its number. They run through the server with scripted agents, a scripted case system and an identity provider whose refresh is a function, except invariant 4 and those beside it in `auth.test.ts`, which use the stand-in provider, and invariant 5's two calls arriving together, which runs on the token function in `src/tokens.ts`.
+The server's tests in `test/` are one per item, named by its number, with one probe of the routes; `test/format.test.ts` tests the app's formatting helpers. The server's tests run through the server with scripted agents, a scripted case system and an identity provider whose refresh is a function, with three exceptions: invariant 4 and those beside it in `auth.test.ts` use the stand-in provider, invariant 5's two calls arriving together run on the token function in `src/tokens.ts`, and invariant 2's restart runs on the store.
 
 ## How it is put together
 
@@ -101,7 +97,7 @@ browser ── React app ──> client server ──> agents          POST /inv
 - **Every call to an agent or the case system carries a token got for that target alone,** as `Authorization: Bearer`. A target is a scope: the agent's `scope`, `cases:read` for reading cases, `cases:review` for a decision. The session keeps one token per scope. Before calling an agent the kept token must have as long left as the server waits for that agent (its `wait_seconds`); before calling the case system, 30 seconds. With less, or none, the server refreshes with `scope=openid <that scope>` and keeps the result under that scope.
 - **Refreshes of one session run one at a time, in the order asked.** Each uses the newest refresh token the provider returned, and looks again for a kept token when its turn comes, so two calls for the same target share one refresh. If a refresh fails, the session ends, the request answers 401, nothing is sent, and the user signs in again. If it succeeds with a token that lacks the scope asked for, the request answers 403 `not_allowed` and the session goes on. Health checks carry no token. The agents and the case system each check the token and refuse a call without a valid one.
 - **The reviewer of a case is whoever is signed in.** The server forwards a decision as `{ decision, note? }` with the token got for `cases:review` and no reviewer field; the case system takes the reviewer's name and subject from the token. A decision that names its own reviewer is refused here with 400, and one from a session not granted `cases:review` with 403. The case system refuses both behind it too, and its answers are passed back unchanged.
-- **No token reaches the browser.** No response body, and no header but `Set-Cookie`, carries an access, refresh or ID token.
+- **No token reaches the browser.** No response body and no header carries an access, refresh or ID token. `Set-Cookie` carries the session identifier and the sign-in binding, neither of them a token.
 - **Signing out** removes the session, clears the cookie, revokes the refresh token at the revocation endpoint set by `OIDC_REVOCATION_ENDPOINT` (unless that is `none`), and sends the browser to the provider's end-session URL with `client_id` and the post-logout redirect URI, and no token. If the revocation fails, sign-out still ends the session here and the failure is logged.
 - **Only the browser that started a sign-in can complete it.** `/auth/login` sets a second cookie, `desk_signin` (`HttpOnly`, `SameSite=Lax`, `Path=/auth`, 10 minutes), holding a random value kept with the pending sign-in; the callback is refused without it or with another sign-in's, and clears it.
 - **A POST from a page on another site is refused,** by its `Origin` header.
@@ -111,7 +107,7 @@ browser ── React app ──> client server ──> agents          POST /inv
 | `src/` | The server: routes, sign-in and sessions, the inquiry store, the calls to agents and to the case system |
 | `shared/api.ts` | The types of the server's API, read by both the server and the app |
 | `web/` | The React app, built by Vite to static files that the server hands out |
-| `test/` | Tests of the server |
+| `test/` | Tests of the server, and of the app's formatting helpers |
 
 ## Settings
 
@@ -131,16 +127,15 @@ Set in [`compose.yaml`](compose.yaml).
 | `OIDC_POST_LOGOUT_REDIRECT_URI` | `http://localhost:3000/` |
 | `OIDC_REVOCATION_ENDPOINT` | Where the refresh token is revoked at sign-out: `http://identity:8080/realms/lab/protocol/openid-connect/revoke`, or `none` for a provider without one. A setting, not taken from the discovery document, because Keycloak names this one endpoint at the browser's address (`localhost:8090`) even when its document is fetched from inside the network, and the server cannot reach that address |
 | `APP_ORIGIN` | The origin the app is served from: `http://localhost:3000` |
-| `ROLES_CLAIM` | The ID-token claim that lists the user's roles, shown on the session: `roles` |
+| `ROLES_CLAIM` | The ID-token claim that lists the user's roles, returned by `GET /api/session`: `roles` |
 
 The case system's two scopes, `cases:read` and `cases:review`, are fixed in the code. Every setting is required; the server stops at start-up naming any that is missing. The identity provider is not asked anything until someone signs in, so the server starts, and answers `/ping` and the app, while it is down.
 
 ## Known limits
 
-- **Sessions live in the server's memory.** A restart signs everyone out, and a session is only removed by signing out or by a failed refresh.
+- **Sessions live in the server's memory.** A restart signs everyone out. Otherwise a session is removed only by signing out, or when a call cannot get its token: a failed refresh, a session with no refresh token, or a refreshed token with less life than the call needs.
 - **What a session may do is fixed at sign-in.** A change to a person's role takes effect when they sign in again.
 - **The cookie is not marked `Secure`,** because the lab is served over plain HTTP on this machine.
-- **Inquiries recorded before sign-in existed** have no author, so nobody can read them through the desk.
 - **A run that is in progress when the server stops is marked as failed** when it starts again. The agent may still have acted.
-- **The React app has one test, of its formatting helpers.** It is typechecked, linted and built by the repository check. The screens from before sign-in were looked at by hand; the sign-in screen, the signed-in rail, the decision controls and the screen for an account with nothing to do have not been.
-- **Sign-in has been tested against a stand-in provider only** (`test-support/issuer.ts`), not yet through this server against the lab's Keycloak.
+- **The React app's only tests are of its formatting helpers.** The repository check typechecks, lints and builds it.
+- **Label search and evaluation have no screen.**

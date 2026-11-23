@@ -66,13 +66,23 @@ anything under a `secrets/` directory.
 
 ## Documents
 
+- A `README.md` says what its piece is and how to use it: what it does, how
+  to run it, what is always true of it, its settings, how it fails and what
+  is not present.
 - `docs/architecture/` describes the system as it is: what is always true,
   what moves where, who owns what. Diagrams and tables over prose. No plans,
-  no status words, no alternatives considered, no sources. Git history is the
-  record of how it got here.
-- `docs/write-ups/` holds what was learned by building and measuring: the
-  question, what was run, the result, and the sources. A write-up names the
-  hardware and the revision it was measured on.
+  no alternatives considered, no sources.
+- **No status in either.** Not what was run, looked at, tried or measured, by
+  whom, when or on which machine. Not how many tests or gate statements
+  passed. Not what changed, what a thing was before, or what comes next.
+  Progress is reported to the user, and git history is the record of how the
+  system got here.
+- A limit is written as what the code does or does not do, under "Known
+  limits" or "Not present". "Not yet tried" is not a limit.
+- `docs/write-ups/` holds what was learned, by research and by building and
+  measuring: the question, what was read or run, the result, and the
+  sources. A write-up that reports a measurement names the hardware and the
+  revision it was measured on.
 
 ## Testing
 

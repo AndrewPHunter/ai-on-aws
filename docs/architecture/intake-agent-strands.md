@@ -16,6 +16,7 @@ Strands is used the way it comes. Its default model is Amazon Bedrock; here the 
 | Rules of a run, its record, its endings | `intake/run.ts` (rules); `run/state.ts`, `run/steps.ts`, `run/turns.ts`, `run/endings.ts` (state, record, endings) | The same files |
 | Limits and sampling settings | `intake/settings.ts` (limits), `run/sampling.ts` (sampling) | The same files |
 | Startup and environment | `intake/serve.ts`, `run/serve.ts` | The same files, plus `LOCAL_RUNTIME_EDGE` |
+| Who may call, and where | `AUTH_ALLOWED_AUDIENCE` `intake-handwritten`, `AUTH_ALLOWED_CLIENTS` `desk`, published on port 8080 | `AUTH_ALLOWED_AUDIENCE` `intake-strands`, `AUTH_ALLOWED_CLIENTS` `desk,orchestrator` (the orchestrator calls it to screen every message), published on port 8081 |
 | HTTP surface | `contract/server.ts`, written by hand | `BedrockAgentCoreApp` (`contract/sdk-app.ts`), behind the local edge (`contract/edge.ts`), started by `contract/runtime.ts` |
 | The access-token check | `shared/access-token.ts`, in `contract/server.ts` | The same file, in the edge and again in `contract/sdk-app.ts` |
 | Exchanging the caller's token for the case-system token | `tools/tool-token.ts` (`connectWithToolToken`, wired in `intake/main-handwritten.ts`) | `tools/tool-token.ts` (`toolToken`), called in `handleInquiry`, with the exchange given in `StrandsDeps` |
@@ -71,7 +72,7 @@ flowchart LR
     MCP -->|"MCP over HTTP,<br/>context headers"| Cases
 ```
 
-`intake/strands.ts` is the only file of the intake agent that imports Strands. The label expert's `expert/strands.ts` is the only other.
+`intake/strands.ts` is the only file of the intake agent that imports Strands. The label expert's `expert/strands.ts` and the orchestrator's `orchestrator/strands.ts` are the only others in `agents/`.
 
 Before anything is connected, `handleInquiry` exchanges the caller's token for the case-system token, within the tool limit, 10 s, or what the run has left. A refused exchange, or one that cannot be made, ends the run `failed` with the same reasons as the hand-written agent: no MCP client is made and the model is not asked. Connecting to the case system and listing its tools then share one time limit of their own, asked of the run's deadline again after the exchange: the tool limit, or what the run has left by then. The hand-written agent differs here: its exchange and its connection share one tool limit. A connection that fails or runs out of time ends the run `failed`, with the same three reasons as the hand-written agent: not reached, the token refused, or the token not checkable. A case system that does not offer both `create_case` and `add_follow_up` ends it `failed`, naming what is missing. Only those two become `CaseTool`s: any other tool it offers is not given to the `Agent`, so the model is not shown it.
 
@@ -114,10 +115,12 @@ sequenceDiagram
         end
     end
     A-->>O: AgentResult, or an error
-    O->>R: completed, stopped or failed, from the run's own state
-    opt Strands ended its turn with a reply, and the run has recorded no case
-        O->>V: report check, POST /chat/completions through model/chat.ts, outside Strands: the message alone, no tools
-        V-->>O: yes, no, or anything else; only the finding is kept
+    O->>R: an error, a limit or an unsettled write: stopped or failed, from the run's own state
+    opt Strands ended its turn with a reply
+        opt the run has recorded no case
+            O->>V: report check, POST /chat/completions through model/chat.ts, outside Strands: the message alone, no tools
+            V-->>O: yes, no, or anything else, and only the finding is kept
+        end
         O->>R: afterReply: complete, tell once, or stop
         opt told once, with turns left
             O->>A: invoke again, the same Agent, with TOLD_ONCE, the same cancel signal and the turns left
@@ -147,14 +150,14 @@ The rule is one function in `intake/run.ts` or `run/turns.ts` in both agents. Th
 
 ## What Strands does differently
 
-The rules are tested once, on the hand-written agent, in [`agents/test/intake.test.ts`](../../agents/test/intake.test.ts). [`agents/test/intake-strands.test.ts`](../../agents/test/intake-strands.test.ts) has six tests that this agent's hooks are wired to them: a case action from the tool's answer (with the exchanged token, and only that one, on every request to the case system, and only `create_case` and `add_follow_up` shown to the model when the case system offers a lookup as well), a refused call that does not reach the case system, a write repeated once by code, the turn limit, a model server that fails, and a report check that finds an adverse event, after which the same `Agent` is invoked again with the turn that tells it to record. The differences below are read from the code and from the source of Strands; no test asserts them.
+The rules themselves are the same functions in both agents. What follows is what Strands' own loop does differently around them, as its source and this file's code have it.
 
 | Situation | Hand-written loop | Strands | What this file does about it |
 |---|---|---|---|
 | A tool call's reply never arrives | Gives up after 10 s | Its own MCP tool sets no time limit, so the call waits until the run is cancelled | `CaseTool` makes the call with the 10 s limit |
 | Tool arguments are not JSON | Tells the model and carries on | Throws, which ends the run | Reports the run as `failed` with that reason. Nothing is called in either |
 | The output allowance runs out with nothing written | Asks again with thinking off | Throws `MaxTokensError` | Retries from the hook with thinking off |
-| The output allowance runs out part way through a reply | Returns the cut-off reply as `completed` | Throws `MaxTokensError`, which carries what was written | Ends as `stopped` with no reply. The text is kept in the step |
+| The output allowance runs out part way through a reply | Treats the cut-off text as a reply like any other | Throws `MaxTokensError`, which carries what was written | Ends as `stopped` with no reply. The text is kept in the step |
 | The model names a tool that does not exist | Tells the model which tools exist | Tells the model `Tool '<name>' not found in registry` | Records the step |
 | A tool result is an error | The model is sent the result as it is | The model is sent it with `[ERROR] ` in front | Nothing |
 | A turn lost to thinking is asked again | Counts as one of the 6 turns | Not counted, so a run can have 7 turns | Nothing |
@@ -186,19 +189,15 @@ What follows:
 - **A model that never answers holds the run for all of its 150 s.** The first request times out at 90 s, the client sends it again, and the run's time limit cuts the second one short. The hand-written agent does not send a timed-out request again, so its run fails at 90 s.
 - **Only a failure that reaches Strands** is seen by this file's hooks and recorded.
 
-The numbers are read from the source of Strands 1.25.0 and OpenAI client 6.49.0. No test sends a failed request again in either layer: the tests' failing model server answers 400, which neither sends again.
-
-### A known defect on the path not taken
-
-Strands' OpenAI model can also speak chat completions (`api: 'chat'`). An earlier version of this agent set that, to send the same request as the hand-written agent, and met a defect: of several tool calls in one turn Strands kept only the last, and text written before a tool call was lost. It is reported as `strands-agents/harness-sdk` issue 4975, with a fix in pull request 4980 that was open on 2026-11-20. The newest release on that day, 1.26.0, still had it. The default API used here does not: against the real model server, a turn with a sentence and two tool calls came through whole.
+The numbers are those of Strands 1.25.0 and OpenAI client 6.49.0.
 
 ## Settings that are not Strands' defaults
 
-Each is set in `converse` in `intake/strands.ts`.
+Each is set in `intake/strands.ts`: the `McpClient` for each message in `handleInquiry`, the rest where `converse` makes the `Agent`.
 
 | Setting | Strands' default | Set to | Why |
 |---|---|---|---|
-| `toolExecutor` | Runs the tool calls of one turn at the same time | `sequential` | Two `create_case` calls at once would both pass the one-case rule. A test sends two in one turn and the second is refused |
+| `toolExecutor` | Runs the tool calls of one turn at the same time | `sequential` | Two `create_case` calls at once would both pass the one-case rule. |
 | `printer` | Prints the conversation to the log | `false` | The conversation holds patient details |
 | One `Agent` for all requests | An `Agent` keeps its conversation between calls | A new `Agent` and `McpClient` per message | One sender's message would otherwise be in the next sender's conversation, and the context headers belong to one message |
 | `conversationManager` | Keeps the last 40 messages | `NullConversationManager` | A run is one message and at most 6 turns. Nothing should be trimmed |
@@ -213,12 +212,3 @@ Everything in the hand-written agent's "Not present" list is also absent here, i
 | Control of what Strands writes to the log | Strands logs its own warnings and errors to the container's output, including a stack trace when tool arguments cannot be parsed |
 | A smaller image | Strands requires the AWS SDK's Bedrock client and the OpenAI client, and the AgentCore SDK brings Fastify and more AWS SDK clients. All four agents run from one image, `ai-on-aws-agents:local`, so the hand-written agent's container carries them too |
 
-## What was checked
-
-- Six tests (strands 1 to 6 in `agents/test/intake-strands.test.ts`) show this agent's hooks are wired to the shared rules, which are tested on the hand-written agent.
-- Against the 9B model, before the retries were turned on, the Strands agent was sent the seven prepared inquiries on an empty store. It gave the expected result for all seven and left three cases: one awaiting review at version 2, one incomplete, one awaiting review. The prompt was tuned on these seven with the hand-written agent, so this is not a held-out set.
-- With the retries on, each agent answered one inquiry against the 9B model, and each was run once with a model address where nothing listens. Both failed the run with "The model could not be reached." after about 1.4 s. The hand-written agent recorded three error steps, the Strands agent one.
-- With a bare Strands `Agent` against the 9B model, before this agent was written this way: a turn with a sentence and two tool calls came through whole; a turn cut off by its output allowance raised `MaxTokensError` carrying what had been written; asking again with `reasoning.effort: 'none'` gave an answer with no thinking; a tool result marked as an error was understood by the model.
-- The output is not repeatable on this model server, with the same seed and a temperature of 0, even between two runs of one agent.
-
-Not established: how either retry layer behaves against a model server that fails some of the time (the closed address above only); whether the thinking retry fires in this agent against the real model (the bare `Agent` above only); how this agent behaves when the real model makes two tool calls in one turn (strands 2 against the scripted model, and the bare `Agent` above); what either agent does with a response that starts and then breaks off (from the code, the hand-written loop sends the request again and Strands does not); whether the context headers and the case-system token pass through AgentCore Runtime or Gateway.

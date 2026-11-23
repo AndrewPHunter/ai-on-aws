@@ -23,14 +23,15 @@ model/setup.sh --cache-dir <directory>
 
 Setup then:
 
-1. checks the GPU, its driver and its free memory, and the disk space;
+1. checks the GPU, its driver and its free memory;
 2. selects the largest tier that fits (see below);
-3. writes `model/.env` with a new API key;
-4. downloads the weights of the chat model, the embedding model and the reranker;
-5. starts the chat server, and confirms from its start-up log that it has room for the tier's number of requests;
-6. starts the embedding server, and confirms from its start-up log that it has room for one input of the longest length it accepts;
-7. starts the reranker server;
-8. runs the gate on all three, and reports success only if the gate passes.
+3. checks the disk space that tier needs;
+4. writes `model/.env` with a new API key;
+5. downloads the weights of the chat model, the embedding model and the reranker;
+6. starts the chat server, and confirms from its start-up log that it has room for the tier's number of requests;
+7. starts the embedding server, and confirms from its start-up log that it has room for one input of the longest length it accepts;
+8. starts the reranker server;
+9. runs the gate on all three, and reports success only if the gate passes.
 
 Setup waits at most 900 seconds for each server to report healthy. The embedding and reranker servers start after the chat server is healthy. Each of the three checks at start-up that a set share of the card is free, and the two smaller servers make that check with the chat server's memory already in use.
 
@@ -66,7 +67,7 @@ model/setup.sh --host ssh://<user>@<gpu-machine> --bind <address> --cache-dir <d
 | `--host <docker-host>` | Docker address of the GPU machine, when it is not the machine setup runs on. |
 | `--tier <name>` | Use `large`, `medium` or `small` instead of the largest that fits. It must still fit. |
 | `--check` | Run the checks and the selection, print the result, change nothing. An existing `model/.env` does not stop it. |
-| `--keep-env` | Use the existing `model/.env` as it is, key included. `--cache-dir`, `--bind`, `--port`, `--embed-port` and `--rerank-port` are then not accepted. |
+| `--keep-env` | Use the existing `model/.env` as it is, key included. `--cache-dir`, `--bind`, `--port`, `--embed-port` and `--rerank-port` are then not accepted, and the address in the file is not checked again, with `--host` included. |
 
 The three ports must differ, and setup refuses two that are equal. For that reason `--port 8001` given alone is refused: 8001 is the embedding server's default.
 
@@ -74,7 +75,7 @@ Setup refuses to run if `DOCKER_HOST`, or any variable whose name starts with `M
 
 ## What clients read
 
-Setup writes these to `model/.env`, beside the address, cache directory and user:
+Setup writes these to `model/.env`, beside the address, the cache directory and the user the servers run as (`MODEL_RUN_UID`, `MODEL_RUN_GID`: the cache directory's owner):
 
 | Variable | Meaning |
 |---|---|
@@ -88,7 +89,7 @@ The names of the embedding model and the reranker, the embedding model's number 
 
 ## Tiers
 
-A tier is a chat model and settings that passed the gate, with the GPU memory it needs free. The embedding model and the reranker are the same on every tier; their settings are in `model/retrieval.env`. A tier's need is derived: the chat model's peak measured in the gate, plus the embedding server's peak (2,964 MiB, measured after setup's gate), plus the reranker server's peak (1,882 MiB, measured by hand with the largest passages; the gate's smaller requests reached 1,702 MiB), plus a margin of 512 MiB. The figures are in `model/tiers.json`.
+A tier is a chat model and its settings, with the GPU memory it needs free. The embedding model and the reranker are the same on every tier; their settings are in `model/retrieval.env`. A tier's need is a sum: the chat server's peak memory, the embedding server's (2,964 MiB), the reranker server's (1,882 MiB) and a margin of 512 MiB. The figures are in `model/tiers.json`, and all of them come from one card, an NVIDIA RTX 3090 Ti with 24 GiB: the `medium` and `small` tiers are sized from it, not from a smaller card.
 
 | Tier | Chat model | Context | Requests at once | Needs free |
 |---|---|---|---|---|
@@ -109,15 +110,15 @@ Setup selects on the memory that is free when it runs, not on the size of the ca
 
 | Exit | Meaning | Left behind |
 |---|---|---|
-| 0 | The three servers are running and passed the gate. | `model/.env`, `model/gate-report.json`, the servers |
+| 0 | The three servers are running and passed the gate. With `--check`: the machine would get the tier printed. | `model/.env`, `model/gate-report.json`, the servers. With `--check`: nothing written, nothing started |
 | 1 | A download failed, or a server started but was not shown fit. | `model/.env`; every server that started is stopped, its container kept so its log can be read |
-| 2 | Setup could not run: a bad flag; a variable named under Flags set in the shell; Docker not reachable; `model/.env` already there (without `--keep-env` or `--check`), or missing or incomplete with `--keep-env`; one of the lab's servers already running; the cache directory missing; the pinned Node image not runnable on the GPU machine; output of `nvidia-smi` or of the disk probe not understood; a file of `model/` not as expected; `model/.env` or the old gate report not writable; or setup's own tool failing. | No server left running. `model/.env` only if the failure came after it was written |
+| 2 | Setup could not run: a bad flag; a variable named under Flags set in the shell; Docker not reachable; `model/.env` already there (without `--keep-env` or `--check`), or missing or incomplete with `--keep-env`; one of the lab's servers already running; the cache directory missing; the pinned Node image not runnable on the GPU machine; output of `nvidia-smi` or of the disk probe not understood; a file of `model/` not as expected; `model/.env` or the old gate report not writable; or setup's own tool failing. | No server that setup started is left running; one found running already is left as it was. `model/.env` only if the failure came after it was written |
 | 3 | The machine is not supported or is too small: no GPU, more than one, a driver or GPU too old, too little free GPU memory, or too little disk. | Nothing written, nothing started |
 
 ## Running it again
 
 - `model/.env` is never overwritten. To keep the same key and settings, pass `--keep-env`; to start over, delete the file.
-- A `model/.env` written before the embedding and reranker servers were added lacks `MODEL_EMBED_PORT`, `MODEL_RERANK_PORT`, `MODEL_EMBED_BASE_URL` and `MODEL_RERANK_BASE_URL`, so `--keep-env` stops and names what is missing. Delete the file and set up again. That writes a new key, so the agents must then be recreated to read it (`docker compose up -d --force-recreate` from the root of the repository).
+- With a `model/.env` that lacks a variable setup writes, such as `MODEL_EMBED_PORT`, `MODEL_RERANK_PORT`, `MODEL_EMBED_BASE_URL` or `MODEL_RERANK_BASE_URL`, `--keep-env` stops and names what is missing. Delete the file and set up again. That writes a new key, so the agents must then be recreated to read it (`docker compose up -d --force-recreate` from the root of the repository).
 - Setup stops if any of the lab's three servers is already running, because its memory would make the card look smaller than it is, and names the ones running. Stop them first:
 
   ```bash
@@ -131,42 +132,6 @@ Setup selects on the memory that is free when it runs, not on the size of the ca
 - Any one of the three servers can be restarted on its own with `docker restart <container>` while the other two run. Each gives vLLM an explicit start-up share of the card (`--gpu-memory-utilization 0.05`: in `CHAT_EXTRA_ARGS` in each profile, and in `model/retrieval.env`). Without it vLLM asks for 92% of the card to be free, and with the other two servers running it never is.
 - `docker compose ... up -d chat embed rerank` (the command under [By hand](#by-hand)) starts them in order: the embedding and reranker servers wait until the chat server reports healthy.
 - Setting up again needs all three stopped first (see above).
-
-## What was measured
-
-Only this hardware has been measured; nothing else is claimed to work.
-
-- NVIDIA RTX 3090 Ti (24 GiB), driver 595, NVIDIA Container Toolkit 1.20
-- Docker 29 with Compose, on Ubuntu 24.04
-- vLLM v0.34.0 (image pinned by digest)
-
-On it:
-
-- Each of the three chat profiles passed the gate on its own, serving 4 requests at once. Each profile records its results at the top of its file in `model/profiles/`.
-- Before the embedding and reranker servers were added, `model/setup.sh` with the chat server alone was run on the GPU machine itself, from a second machine with `--host`, and with `--tier small` and `--keep-env`. Each run ended with the gate passing.
-
-With the three servers, on 2026-11-21, from a second machine with `--host`, `large` tier (setup and its gate did the measuring unless a line says otherwise):
-
-1. With the chat server already running, `model/setup.sh --check` refused and named the chat server.
-2. `model/setup.sh --host ... --bind ... --cache-dir ...` exited 0 in 5 min 53 s. The weights of all three models were already in the cache, so the downloader skipped each download. The chat server's start-up line showed room for 4.06 requests of 32,768 tokens; the embedding server's, read from its log by setup, room for 1.14 inputs of 8,192 tokens (a cache of 9,344 tokens). The gate passed with no failures:
-   - chat: 80 of 80 tool-calling conversations correct;
-   - embedding: 178 vectors, none of the wrong length and none off unit length; the answering passage first in 10 of 10 queries; an input over the limit refused with 400; 4 of 4 batches sent at once answered;
-   - reranker: the answering passage first in 10 of 10 queries; a document over the limit refused with 400, and accepted with `max_tokens_per_doc`; 4 of 4 requests sent at once answered.
-3. GPU memory after that gate: chat 16,230 MiB, embedding 2,964 MiB, reranker 1,702 MiB; 20,932 MiB in use, 3,182 MiB free.
-4. The chat container, restarted on its own with the other two running, exited: vLLM found 18.62 of 23.55 GiB free, less than its default start-up share of 0.92 (21.66 GiB). As first built, the chat server could not restart on its own.
-5. Each profile's `CHAT_EXTRA_ARGS` was then given `--gpu-memory-utilization 0.05`. With the cache fixed in bytes the share sizes nothing; it is only vLLM's start-up check.
-6. With the servers stopped, `model/setup.sh --host ... --keep-env`, run against the `model/.env` the first run wrote, exited 0 in 5 min 9 s with the key kept. The gate passed again with the same figures.
-7. The chat container restarted on its own was healthy in about 50 s beside the other two. vLLM found 18.65 GiB free and built the same cache (133,152 tokens, 4.06 requests of 32,768 tokens). GPU memory then: chat 15,674 MiB, embedding 2,932 MiB, reranker 1,702 MiB.
-
-Measured by hand on the same card before setup ran them, with each server started with the flags in `model/retrieval.env` beside the `large` chat tier: the embedding server's peak of 2,960 MiB while embedding 4,000 passages in batches of 32; the reranker server's peak of 1,882 MiB with 20 of the largest passages in one request, the figure `model/tiers.json` uses; an input over the embedding limit is refused, never truncated, and a batch holding one is refused as a whole; a `dimensions` field is refused. These figures are also at the top of `model/retrieval.env`.
-
-Not run:
-
-- The download of the embedding model and the reranker through setup: their weights were already in the cache. No run has been made on a machine where the weights or the vLLM image were not already present.
-- Any card but the one above. The `medium` and `small` tiers are meant for cards with less memory; no run has been made on a 16 GiB or 12 GiB card.
-- Setup and the gate with the three servers on the `medium` and `small` tiers.
-
-The gate's thresholds for the embedding and reranker servers, and its fixed set of queries, are chosen, not measured.
 
 ## By hand
 
@@ -195,7 +160,7 @@ The gate is a script that decides whether the running servers are fit for the la
 - Embedding: no key and a wrong key are rejected and the right key accepted; the model is listed; every vector has the configured number of dimensions and unit length within a tolerance; for a fixed set of queries, each with one passage that answers it and several that do not, the answering passage is the most similar in at least the configured share; an input over the limit is refused; several batches sent at once are all answered.
 - Reranker: the same key checks; the model is listed; for the same set, the answering passage is ranked first in at least the configured share; a document over the limit is refused, and accepted with `max_tokens_per_doc`; several requests sent at once are all answered.
 
-Thresholds are in `model/gate/gate.config.json`, and they are the same for every tier: 20 rounds of 4 tool-calling conversations with at least 95% correct and no server fault; 4 prompts of at least 14,000 tokens at once; vectors of unit length within 0.001; the answering passage first in at least 90% of the fixed set, for the embedding server and for the reranker; 4 batches of 32 inputs, and 4 reranker requests, at once. Each request may take 180 seconds. The report has a section for each server and names each check that failed.
+Thresholds are in `model/gate/gate.config.json`. They and the fixed set of queries are chosen, not measured, and they are the same for every tier: 20 rounds of 4 tool-calling conversations with at least 95% correct and no server fault; 4 prompts of at least 14,000 tokens at once; vectors of unit length within 0.001; the answering passage first in at least 90% of the fixed set, for the embedding server and for the reranker; 4 batches of 32 inputs, and 4 reranker requests, at once. Each request may take 180 seconds. The report has the sections `auth`, `toolCalling` and `context` for the chat server, `embedding` and `reranker`, and its `failures` names each check that failed.
 
 Setup runs it for you. To run it yourself, from `model/gate/`, on any machine that can reach the servers:
 
@@ -209,11 +174,11 @@ When the servers are published on a loopback address of the machine the gate run
 docker compose -f compose.yaml -f compose.host-network.yaml --env-file ../.env --env-file ../profiles/qwen3.5-9b-w4a16.env --env-file ../retrieval.env run --rm gate
 ```
 
-It prints a JSON report and exits 0 on a pass, 1 if a check failed, and 2 if it could not run.
+It prints a JSON report and exits 0 on a pass, 1 if a check failed, and 2 if it could not run: a setting missing, a server that does not answer, a model list not answered with 200 to the right key, a chat server that reports no token usage, or any other error of its own.
 
 ## Tests
 
-The tests assert the invariants in [docs/architecture/model-server.md](../docs/architecture/model-server.md), one test each, where a test can show one (1, 2, 4, 5, 8, 9, 11 to 15), and check that the shipped tiers, profiles and retrieval settings read, and that they and `model/.env.example` name every variable `compose.yaml` uses. They run in a container, with no GPU and no network:
+The tests assert the invariants in [docs/architecture/model-server.md](../docs/architecture/model-server.md), one test each, where a test can show one (1, for the embedding and reranker servers' key checks, 2, 4, 5, 8, 9, 11 to 15), and check that the shipped tiers, profiles and retrieval settings read, and that they and `model/.env.example` name every variable `compose.yaml` uses. They run in a container, with no GPU and no network:
 
 ```bash
 sh model/setup/run-tests.sh

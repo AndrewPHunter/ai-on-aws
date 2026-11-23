@@ -1,6 +1,6 @@
 # Test support
 
-Code that tests use and nothing else runs. It stands in for a service a test cannot start, and each file says so in its first line.
+Code that tests use and nothing else runs. It stands in for a service a test cannot start, and `issuer.ts` says so in its first line.
 
 | File | What it is | Used by |
 |---|---|---|

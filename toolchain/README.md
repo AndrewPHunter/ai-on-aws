@@ -1,6 +1,6 @@
 # Toolchain
 
-The image stages and commands that check the repository's TypeScript and package a piece to run. It is not specific to any piece of the lab: it checks every TypeScript file, wherever it is. Its one reference to a piece is a test that compares its Node image digest with the one `model/` uses. How it is put together is in [docs/architecture/toolchain.md](../docs/architecture/toolchain.md).
+The image stages and commands that check the repository's TypeScript and package a piece to run. It is not specific to any piece of the lab: it checks every TypeScript file, wherever it is. Its one reference to other pieces is a test that compares its Node image digest with the ones `model/` and `platform/identity/` use. How it is put together is in [docs/architecture/toolchain.md](../docs/architecture/toolchain.md).
 
 Every command on this page is run from the root of the repository. The host needs a shell and Docker with Compose; Node is not needed on it.
 
@@ -56,21 +56,12 @@ Commit `package.json` and `package-lock.json` together. If they disagree, the ch
 
 Open the repository in VS Code with the Dev Containers extension and choose "Reopen in Container". VS Code then works inside a container built from the same stage the check installs its dependencies in.
 
-- The repository is mounted at `/repo`, and `npm run check` there runs the same four steps as `toolchain/check.sh`. `npm run typecheck`, `npm run lint` and `npm run test` run one step each.
+- The repository is mounted at `/repo`, and `npm run check` there runs the same four steps as `toolchain/check.sh`. `npm run typecheck`, `npm run lint`, `npm run test` and `npm run build:web` run one step each.
 - Dependencies are kept in a Docker volume, not in the repository. An empty `node_modules` folder appears at the root of the repository on the host: it is where the volume is attached, it stays empty, and git ignores it.
 - The container has no `git`. Commit from a terminal on the host.
 - VS Code downloads its own server and the ESLint extension into the container when it attaches. Those downloads are VS Code's, and the repository does not pin them.
 
-`toolchain/check.sh` is the check that counts: it uses only the source that is in the repository, in a container nothing else has touched.
-
-## What was measured
-
-- `toolchain/check.sh` passed with 24 tests on an arm64 Mac with Docker Desktop and on an amd64 machine with Docker 29 on Ubuntu 24.04. With the case system, the client and both intake agents it runs 164 tests and builds the React app, and that passed on both machines.
-- The `run` stage was built and run for `tools/case-system` on the arm64 Mac only.
-- Each of these, added on purpose to a copy of the repository, made it exit non-zero: a type error, an unchecked index access, an un-awaited call to a library function, and a failing test.
-- With `.env` files, a `.git` folder, a `secrets` folder and a gate report planted in a copy, none of them was in the image.
-- `toolchain/lock.sh` run twice changed nothing the second time. With a version that does not exist in `package.json`, it exited non-zero at the time limit and left the lockfile unchanged. Both were run on macOS only.
-- The dev container has not been opened in VS Code. What was run is its equivalent with plain Docker: the `deps` image, the repository mounted at `/repo`, a new volume at `/repo/node_modules`, user `node`, then `npm ci --ignore-scripts` and `npm run check`. It has not been run on a Linux host, where VS Code changes the container user's ID to match the host user's.
+`toolchain/check.sh` is the check that counts: it uses only the source that is in the repository, in a container nothing else has touched. It does not build or open the dev container.
 
 ## Image stages
 
@@ -78,19 +69,19 @@ All in `toolchain/Dockerfile`, built with the root of the repository as the buil
 
 | Stage | Contents | Used by |
 |---|---|---|
-| `base` | The pinned Node image, user `node`, working directory `/repo` | Every other stage |
-| `deps` | `base`, the root `package.json` and `package-lock.json`, and the dependencies installed from them | The check, the dev container |
+| `base` | The pinned Node image, user `node`, working directory `/repo` | Every other stage but `lockfile` |
+| `deps` | `base`, the root `package.json` and `package-lock.json`, and the dependencies installed from them | The check, the dev container, the `web-build` stage |
 | `check` | `deps` and the repository's source | `toolchain/check.sh` |
 | `run-deps` | `base` and only the dependencies needed at run time, without the check's tools | The `run` stage |
 | `run` | `run-deps`, a `/data` folder owned by `node`, the source files at the top of `shared/` (`shared/*.ts`), and one piece's `src/` folder. The piece is named by the build argument `PIECE`, such as `tools/case-system` | Each piece's own compose file, which also sets the command |
-| `web-build` | `deps`, `shared/*.ts`, and one piece's React app in its `web/` folder, built by Vite to static files | The `run-web` stage |
-| `run-web` | `run`, and the static files from `web-build` | The compose file of a piece that has a React app, which today is `client/` |
-| `lock`, `lockfile` | npm resolving the lockfile, and the one file it produces | `toolchain/lock.sh` |
+| `web-build` | `deps`, `shared/*.ts`, the piece's own `shared/` folder, and its React app in its `web/` folder, built by Vite to static files | The `run-web` stage |
+| `run-web` | `run`, the piece's own `shared/` folder, and the static files from `web-build` | The compose file of a piece that has a React app: `client/` |
+| `lock`, `lockfile` | npm resolving the lockfile in `base`, and the one file it produces, in a stage that starts from `scratch` | `toolchain/lock.sh` |
 
 A piece's server runs its TypeScript directly on Node; nothing compiles it to JavaScript. Only the React app is built, because a browser cannot run it as written.
 
 ## What never enters an image
 
-The root `.dockerignore` keeps these out of every build: `.git`, git worktrees under `.claude/worktrees`, any `node_modules`, any `.env` or `.env.*` file other than `.env.example`, anything under a `secrets` folder, and `model/gate-report.json`.
+The root `.dockerignore` keeps these out of every build: `.git`, git worktrees under `.claude/worktrees`, any `node_modules`, any `dist` folder, any `.env` or `.env.*` file other than `.env.example`, anything under a `secrets` folder, `model/gate-report.json`, `knowledge/data` and `evaluation/data`.
 
-A piece's image also never holds tests: the run-time stages copy `shared/*.ts`, not the `shared/` folder, so `shared/test/` stays out, and they copy no piece's `test/` folder. A test in `toolchain/test/` fails if a run-time stage copies the `shared/` folder itself. Only the check stage, which runs the tests, copies the whole repository.
+A piece's image also never holds tests: the run-time stages copy `shared/*.ts`, not the `shared/` folder, so `shared/test/` stays out, and they copy no piece's `test/` folder. The `run-web` stage also copies the piece's own `shared/` folder, which for `client/` holds one file of types. A test in `toolchain/test/` fails if a run-time stage copies the `shared/` folder itself. Only the check stage, which runs the tests, copies the whole repository.

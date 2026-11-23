@@ -9,7 +9,7 @@ An agent is an actor in which a step of the behaviour is decided by inference; t
 | A mailbox | `POST /invocations`, with an accepted access token. One message per request | `contract/server.ts` for the hand-written loop; the local edge (`contract/edge.ts`) and AWS's SDK app (`contract/sdk-app.ts`) for Strands |
 | State that nothing else can touch | The run: its steps, its case actions, the case it opened, whether a write is unsettled, what its report check found, whether the model has been told to record it, its deadline. And the conversation with the model | `IntakeRun` in `intake/run.ts`, built on `RunState` in `run/state.ts`; the conversation held by the loop |
 | A behaviour: what it does when a message arrives | Ask the model, apply the rules, call the case system, answer | `intake/handwritten.ts`, or Strands' `Agent` with four hooks in `intake/strands.ts` |
-| Messages it sends to other actors | Requests to the model server (the run's turns, and at most one report check) and to the case system, requests for the identity provider's discovery document and keys, and one answer to the caller | `model/chat.ts` or Strands' `OpenAIModel` for the turns, `model/chat.ts` in both for the report check (`intake/report-check.ts`); `tools/case-system.ts` or Strands' `McpClient`; `shared/access-token.ts` |
+| Messages it sends to other actors | Requests to the model server (the run's turns, and at most one report check) and to the case system, requests to the identity provider (its discovery document and keys, and one token exchange a run), and one answer to the caller | `model/chat.ts` or Strands' `OpenAIModel` for the turns, `model/chat.ts` in both for the report check (`intake/report-check.ts`); `tools/case-system.ts` or Strands' `McpClient`; `shared/access-token.ts` |
 | A lifetime | One message. Each message gets a new run with new state, and nothing is kept once it is answered | `startRun` in `intake/run.ts` |
 
 Two steps of the behaviour are not written in code. What to do next, given the conversation so far, is asked of the agent's model; that is where it decides whether the message is a report. When the model replies and the run has recorded no case, the report check asks the same question again: a second inference, made by code in a separate request that is shown the message alone, whose yes or no code then acts on. Every other step is ordinary code.
@@ -18,7 +18,7 @@ Two steps of the behaviour are not written in code. What to do next, given the c
 
 ```mermaid
 flowchart LR
-    Caller["Caller<br/>the client's server"]
+    Caller["Caller<br/>the client's server, and for the agent<br/>on Strands the orchestrator too"]
     Agent["Intake agent<br/>one run per message"]
     Model["Model server<br/>inference"]
     Cases["Case system"]
@@ -29,9 +29,9 @@ flowchart LR
     Agent -->|"answer: outcome, reply,<br/>case actions, steps,<br/>citations always empty"| Caller
     Agent -->|"conversation and<br/>tool descriptions"| Model
     Model -->|"text, or requests<br/>for tools"| Agent
-    Agent -->|"tool call, with context headers<br/>and the caller's token"| Cases
+    Agent -->|"tool call, with context headers<br/>and the case-system token"| Cases
     Cases -->|"result, refusal,<br/>or nothing"| Agent
-    Agent -->|"discovery document<br/>and signing keys"| Identity
+    Agent -->|"discovery document, signing keys,<br/>and one token exchange a run"| Identity
     Cases -->|"discovery document<br/>and signing keys"| Identity
     Reviewer -->|"approve, reject or<br/>ask for information"| Cases
 ```
@@ -43,7 +43,7 @@ Every message is a request that waits for its answer, with a time limit. None is
 | Caller | The message's identifier, receipt time and sender; the access token; the answers it was given | Which agent is sent the message, and whether to send it again |
 | Intake agent | One run, discarded when answered | The order of work, whether a call may be made, and how the run ends |
 | Model server | Nothing between requests | What to write, or which tool to ask for, given the conversation it is sent |
-| Case system | Cases, their versions and the audit trail | Whether a case exists, is complete or is a repeat, and which sender may see it |
+| Case system | Cases, their versions and the audit trail | Whether a case exists, is complete or is a repeat, and which sender may add to it |
 | Identity provider | Who the caller is: the token's claims and the keys that sign it | Which tokens it issues |
 | Reviewer | Nothing | Whether a case is approved, rejected or sent back for information |
 
@@ -54,16 +54,16 @@ A six-sided box is decided by the agent's model. The report check is a slanted b
 ```mermaid
 flowchart TD
     Arrive(["A message arrives"]) --> Token{"An accepted<br/>access token?"}
-    Token -- no --> RefusedToken(["Refused with status 401,<br/>or 503 if it cannot be checked.<br/>The body is not read"])
+    Token -- no --> RefusedToken(["Refused with status 401,<br/>403 if it lacks only the scope,<br/>or 503 if it cannot be checked.<br/>The body is not read"])
     Token -- yes --> Valid{"Does it match<br/>the contract?"}
     Valid -- no --> Refused(["Refused with status 400.<br/>Nothing runs"])
     Valid -- yes --> Start["Start a run:<br/>new state, a deadline"]
-    Start --> Connect[/"Connect to the case system<br/>with the caller's token,<br/>and list its tools"/]
-    Connect --> Reached{"Reached, and<br/>the token accepted?"}
+    Start --> Connect[/"Exchange the caller's token for<br/>the case-system token, connect to<br/>the case system and list its tools"/]
+    Connect --> Reached{"Exchanged, reached,<br/>the token accepted and<br/>both tools offered?"}
     Reached -- no --> FailedStart(["failed"])
     Reached -- yes --> Limits{"Any turns and<br/>time left?"}
 
-    Limits -- no --> StoppedLimit(["stopped:<br/>the limit is named"])
+    Limits -- no --> StoppedLimit(["stopped: the limit is named,<br/>or, once the report check found<br/>an adverse event, that a person<br/>must read this message"])
     Limits -- yes --> Ask[/"Ask the model:<br/>the conversation and the tools"/]
     Ask --> Answered{"Did it answer?"}
     Answered -- "no, and resending<br/>could help" --> Ask
@@ -100,7 +100,7 @@ A turn is one pass from "Any turns and time left?" through the model and back. A
 
 ## The behaviour for one tool request
 
-Inference asked for the tool. Every box here is code.
+Inference asked for the tool. Every box here is code. Both tools the model is shown change a case, so a call that got no answer is always a write that may or may not have happened.
 
 ```mermaid
 flowchart TD
@@ -112,15 +112,12 @@ flowchart TD
 
     Call --> Reply{"Did it answer?"}
     Reply -- yes --> Record["Record the result.<br/>Note any case it opened or found"]
-    Reply -- no --> IsWrite{"Does the tool<br/>change a case?"}
-    IsWrite -- no --> NoAnswer["The model is told:<br/>no answer"]
-    IsWrite -- yes --> Repeated{"Repeated<br/>already?"}
+    Reply -- no --> Repeated{"Repeated<br/>already?"}
     Repeated -- "no: repeat it,<br/>same content" --> Call
     Repeated -- yes --> Unsettled(["The write is unsettled.<br/>The run fails"])
 
     Tell --> Append(["What the model is told<br/>goes into the conversation"])
     Record --> Append
-    NoAnswer --> Append
 ```
 
 ### Where an implementation differs from the diagrams
@@ -129,7 +126,7 @@ flowchart TD
 |---|---|---|
 | "Did it answer?" for the model | The loop sends a failed request again: up to 3 requests for a turn, never one that ran out of time | The OpenAI client inside Strands sends it again, timed-out ones included; Strands adds its own retry when the model throttles |
 | "Does the tool exist, with JSON arguments?" | The loop's own check | Strands' check. Arguments that are not JSON end the run as `failed` instead of being told to the model |
-| "wrote text", when the text was cut off by the output allowance | `completed`, with the cut-off text as the reply | `stopped`, with no reply |
+| "wrote text", when the text was cut off by the output allowance | A reply like any other: the diagram goes on from "wrote text" | `stopped`, with no reply |
 | "Turn thinking off" | Uses one of the 6 turns | Does not use a turn |
 | "Tell the model once" | One more turn of the same loop | A second `invoke` of the same `Agent`, with the same hooks and cancel signal and the turns the first left |
 | "Report check" | Made by the loop's own chat client | Made outside Strands, by this agent's code, with the chat client |
@@ -156,7 +153,7 @@ flowchart TD
 2. State changes in two places only: the run's own state, which is private and discarded, and the case system, which owns its own.
 3. Runs share no state. Two runs of one message meet only at the case system, which opens one case.
 4. Every message has a time limit and a defined result when no answer comes.
-5. The agent does not fail towards its caller. Once a message is accepted, every failure is an outcome with the steps taken. The one exception is the hand-written server's 500 when the agent's own response is outside the contract; on the SDK server that is a `failed` outcome too.
+5. The agent does not fail towards its caller. Once a message is accepted, every failure is an outcome with the steps taken; a handler that throws is an outcome with no steps. The one exception is the hand-written server's 500 when the agent's own response is outside the contract; on the SDK server that is a `failed` outcome too.
 
 ## What happens to each message when no answer comes
 
@@ -165,7 +162,8 @@ flowchart TD
 | Caller to agent | The caller stops waiting at 180 s and records the run as failed | Once for a run. A person may start another run of the same message | The case system recognises the message identifier |
 | Agent to model, the report check | The finding is `unknown`, and the run ends `stopped` | Once, in both implementations, by the chat client | It is not sent twice |
 | Agent to model | Hand-written loop: a failed connection or a status of 408, 429 or 5xx is sent again; a request that ran out of time is not. Strands: the OpenAI client sends it again, timed-out ones included, and Strands asks again on throttling | Hand-written loop: 3 times for a turn. Strands: 3 for each of up to 6 attempts, within the run's time | Asking the model changes nothing |
-| Agent to identity provider | The token cannot be checked: 503, and the request is not handled. The next request asks again | The discovery document and the keys once, then kept; the keys again for a key not yet seen, at most every 30 s | It is a read |
+| Agent to identity provider, the token exchange | The run ends `failed`: the agent could not get a token for the case system | Once a run | It is not sent twice |
+| Agent to identity provider, the discovery document and keys | The token cannot be checked: 503, and the request is not handled. The next request asks again | The discovery document and the keys once, then kept; the keys again for a key not yet seen, at most every 30 s | It is a read |
 | Agent to case system, a write | Repeated once by code. If that also gets no answer, the run fails as not known | Twice | The case system recognises identical content for the same message |
 
 ## Design choices in this actor

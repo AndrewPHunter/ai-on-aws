@@ -6,16 +6,16 @@ The agents that handle inquiries. Each runs as its own container from one image,
 
 Every command on this page is run from the root of the repository.
 
-| Agent | What it does | State |
-|---|---|---|
-| Intake, hand-written loop | Notices an adverse event in a message and records it in the [case system](../tools/case-system/README.md). Does not answer clinical questions. | Works against the local model. Measured on seven prepared inquiries. |
-| Intake, on Strands | The same agent with the loop left to the Strands SDK, for comparison | Works against the local model. Measured on the same seven. |
-| Label expert, on Strands | Answers a question about a medicine from its approved label, with the passages it relied on; every statement is checked in code against the passage it cites. Records nothing. | Works against the local model. Measured by the [evaluation harness](../docs/architecture/evaluation.md). |
-| Orchestrator, on Strands | Has every message screened for an adverse event by the intake agent on Strands, and the label questions in it answered by the label expert, each called over the agent contract; writes its reply in code from their answers | Tested with scripted sub-agents and a scripted model server. Not measured against the local model |
+| Agent | What it does |
+|---|---|
+| Intake, hand-written loop | Notices an adverse event in a message and records it in the [case system](../tools/case-system/README.md). Does not answer clinical questions. |
+| Intake, on Strands | The same agent with the loop left to the Strands SDK, for comparison |
+| Label expert, on Strands | Answers a question about a medicine from its approved label, with the passages it relied on; every statement is checked in code against the passage it cites. Records nothing. |
+| Orchestrator, on Strands | Has every message screened for an adverse event by the intake agent on Strands, and the label questions in it answered by the label expert, each called over the agent contract; writes its reply in code from their answers |
 
 ## Run it
 
-The agents need the model server. [Set it up](../model/README.md) first; that writes `model/.env`, which tells the agent where the model is and the key to use.
+The agents need the model server. [Set it up](../model/README.md) first; that writes `model/.env`, which tells the agent where the model is and the key to use. They also need `platform/identity/.env`, which `platform/identity/setup.sh` writes: without it Compose stops and says to run it. The label expert needs the label index built (`knowledge/index.sh`, see the [root README](../README.md#run-the-lab)): without it a label search fails, and the run with it.
 
 ```bash
 docker compose up -d --build --wait
@@ -23,7 +23,7 @@ docker compose up -d --build --wait
 
 That starts both intake agents, the label expert and the orchestrator with the case system, the retrieval service, the identity provider and the [client](../client/README.md). Open <http://localhost:3000>, sign in, choose an agent and send an inquiry.
 
-To call an agent directly, use port 8080 for the hand-written intake agent, 8081 for the intake agent on Strands, 8082 for the label expert and 8083 for the orchestrator, with an access token issued to the `desk` client (or, for the label expert, the `evaluation` client) that has at least 150 seconds left, or 280 seconds for the orchestrator. Its audience must hold the agent's own id (`intake-handwritten`, `intake-strands`, `expert` or `orchestrator`), and its scope `agents:intake` for an intake agent, `agents:expert` for the label expert or `agents:orchestrator` for the orchestrator. If the agent's exchange of that token is refused or cannot be made, the run ends `failed` with a sentence naming the service it was for. Without a token the answer is 401:
+To call an agent directly, use port 8080 for the hand-written intake agent, 8081 for the intake agent on Strands, 8082 for the label expert and 8083 for the orchestrator, with an access token issued to the `desk` client (for the label expert: to `desk` for a person whose role is `medical-information`, or to the `evaluation` client) that has at least 150 seconds left, or 280 seconds for the orchestrator. Its audience must hold the agent's own id (`intake-handwritten`, `intake-strands`, `expert` or `orchestrator`), and its scope `agents:intake` for an intake agent, `agents:expert` for the label expert or `agents:orchestrator` for the orchestrator. If the agent's exchange of that token is refused or cannot be made, the run ends `failed` with a sentence naming the service it was for. Without a token the answer is 401:
 
 ```bash
 curl -s http://127.0.0.1:8080/invocations -H 'content-type: application/json' -H "authorization: Bearer $ACCESS_TOKEN" -d '{"message":{"id":"m-1","received_at":"2026-01-01T09:00:00Z","sender":"Dr. A. Rivera, a.rivera@example.org","text":"My patient JD, 54, developed severe muscle pain on atorvastatin 40 mg."}}'
@@ -32,6 +32,7 @@ curl -s http://127.0.0.1:8080/invocations -H 'content-type: application/json' -H
 | Answer | When |
 |---|---|
 | 401, `WWW-Authenticate: Bearer error="invalid_token"`, `{"error":"unauthorized","reason","detail"}` | No token, or one that is malformed, signed by another key or not with RS256, from another issuer, not for this agent's audience, not issued to an allowed client, expired, or with less than the run's time limit left (150 s; 280 s for the orchestrator). `reason` names which |
+| 403, `WWW-Authenticate: Bearer error="insufficient_scope", scope="…"`, `{"error":"forbidden","reason":"insufficient_scope","detail"}` | A token that passes every other check and holds none of the agent's scopes |
 | 503 `identity_unavailable` | The identity provider's discovery document or keys cannot be fetched within 5 s, or it names another issuer, or its keys cannot be used |
 
 The request and the answer are defined in [`shared/agent-contract.ts`](../shared/agent-contract.ts). The answer carries the reply, what was done to cases, and every step taken.
@@ -46,7 +47,7 @@ The intake agent is built twice. Everything that makes it this agent is one copy
 POST /invocations ─> hand-written contract server ─> hand-written loop ─> chat client ──────────┐
                                                         both ask the shared rules             ├─> model server
 POST /invocations ─> local edge ─> SDK app ─────────> Strands Agent ─────> Strands OpenAI model ─┘
-                                                 └── either ──> case system      three MCP tools, with context headers
+                                                 └── either ──> case system      two MCP tools, with three context headers
 ```
 
 The flows, the rules of a tool call, and the controls neither has are in two documents:
@@ -57,7 +58,7 @@ The flows, the rules of a tool call, and the controls neither has are in two doc
 | File | Holds | Used by |
 |---|---|---|
 | [`src/contract/server.ts`](src/contract/server.ts) | `/invocations` and `/ping`, written by hand | Hand-written |
-| [`src/contract/sdk-app.ts`](src/contract/sdk-app.ts), [`src/contract/edge.ts`](src/contract/edge.ts), [`src/contract/runtime.ts`](src/contract/runtime.ts), [`src/contract/runtime-contract.ts`](src/contract/runtime-contract.ts) | `/invocations` and `/ping` through AWS's `BedrockAgentCoreApp`, the local stand-in for AgentCore Runtime's front door, starting both, and `LOCAL_RUNTIME_EDGE` with the headers and sentences they share | Strands, and the label expert |
+| [`src/contract/sdk-app.ts`](src/contract/sdk-app.ts), [`src/contract/edge.ts`](src/contract/edge.ts), [`src/contract/runtime.ts`](src/contract/runtime.ts), [`src/contract/runtime-contract.ts`](src/contract/runtime-contract.ts) | `/invocations` and `/ping` through AWS's `BedrockAgentCoreApp`, the local stand-in for AgentCore Runtime's front door, starting both, and `LOCAL_RUNTIME_EDGE` with the headers and sentences they share | The three agents on Strands |
 | [`src/intake/prompt.ts`](src/intake/prompt.ts) | What the agent is told | Both |
 | [`src/intake/run.ts`](src/intake/run.ts) | The rules of a run and the state they keep, the rule at the model's reply among them | Both |
 | [`src/intake/report-check.ts`](src/intake/report-check.ts) | The report check: its prompt, reading its answer as a finding, the check made with the chat client, and where both loops come at the model's reply | Both |
@@ -94,7 +95,7 @@ The rules both apply, from [`src/intake/run.ts`](src/intake/run.ts) and, for the
 
 The Strands agent uses Strands the way it comes: its own loop, its own MCP client, and its OpenAI model on that model's default API (the Responses API). The hand-written agent speaks chat completions with `fetch`.
 
-The rules are shared code, tested once on the hand-written agent in [`test/intake.test.ts`](test/intake.test.ts); six tests in [`test/intake-strands.test.ts`](test/intake-strands.test.ts) show the Strands agent is wired to them. These nine differences are read from the code and from Strands' source; no test asserts them:
+The rules are shared code, tested once on the hand-written agent in [`test/intake.test.ts`](test/intake.test.ts); six tests in [`test/intake-strands.test.ts`](test/intake-strands.test.ts) show the Strands agent is wired to them. Nine differences, as the code and Strands' source have them:
 
 | Situation | Hand-written loop | Strands 1.25.0 |
 |---|---|---|
@@ -128,7 +129,7 @@ Set in [`compose.yaml`](compose.yaml), for each agent. The intake agents' limits
 | Setting | Meaning |
 |---|---|
 | `MODEL_BASE_URL`, `MODEL_API_KEY` | Where the model server is and its key. Read from `model/.env`. |
-| `MODEL_ID` | The model's name. Optional: if unset, the agent asks the server, which must serve exactly one model. |
+| `MODEL_ID` | The model's name. Optional: if unset, the agent asks the server at the first message, and the server must serve exactly one model. If it cannot say, the model is not asked in that run: it ends `failed`, or, for the orchestrator, the message is still screened and the run ends `stopped`. The next message asks again. |
 | `CASE_MCP_URL` | The intake agents only: the case system's MCP endpoint |
 | `KNOWLEDGE_MCP_URL` | The label expert only: the retrieval service's MCP endpoint |
 | `INTAKE_AGENT_URL`, `EXPERT_AGENT_URL` | The orchestrator only: the addresses of the intake agent on Strands and the label expert, without `/invocations`: `http://intake-strands:8080` and `http://expert:8080` |
@@ -143,28 +144,16 @@ Set in [`compose.yaml`](compose.yaml), for each agent. The intake agents' limits
 | `EXCHANGE_CLIENT_SECRET` | The agent's client secret for the exchange. Read from `platform/identity/.env`, written by `platform/identity/setup.sh`; never logged |
 | `LOCAL_RUNTIME_EDGE` | The three agents on Strands only: `on` runs the local stand-in for AgentCore Runtime's front door in front of the SDK app; `off` serves as on AgentCore Runtime. Set to `on` here |
 
-Every setting but `MODEL_ID` is required; the agent stops at start-up (exit 2) naming any that is missing, or a `LOCAL_RUNTIME_EDGE` other than `on` or `off`. A token must have at least the run's time limit left: 150 s for the intake agents and the label expert, 280 s for the orchestrator. The keys are fetched again, at most every 30 s, when a token names one not yet seen.
-
-## What was measured
-
-Against the local model (Qwen3.5-9B on vLLM), through the client, on the seven prepared inquiries.
-
-- With the first prompt, five of seven behaved as intended on the hand-written agent. After two prompt revisions and one code change, seven of seven did.
-- Each agent was then sent the seven on its own empty store. Both gave the intended result for all seven and left the same three cases at the same statuses and versions.
-- The output was not always the same, with the same seed and a temperature of 0, even between two runs of one agent.
-- A run took 3 to 9 seconds on either agent.
-- Seven inquiries, with the prompt adjusted against those same seven on the hand-written agent. This says both agents can do the job on these messages. It does not say how often they will on others.
-- No turn in these runs had more than one tool call, and no request to the model failed.
+Every setting but `MODEL_ID` is required; the agent stops at start-up (exit 2) naming the first that is missing, or a `LOCAL_RUNTIME_EDGE` other than `on` or `off`. A token must have at least the run's time limit left: 150 s for the intake agents and the label expert, 280 s for the orchestrator. The keys are fetched again, at most every 30 s, when a token names one not yet seen.
 
 ## Known limits
 
 - **The case system checks the token the intake agent sends.** If it refuses the token when the agent connects, the run fails with "The case system refused the agent's token."; if it cannot check tokens, with "The case system could not check the agent's token." A refusal on a later tool call in the same run is not told apart: it is handled as a call that got no answer.
 - **The agent trusts the case system's address,** and holds its own client secret for the exchange. On AWS, AgentCore Identity makes the exchange and the agent holds no secret.
 - **The caller's roles are read but not used:** any accepted token may submit a message.
-- **The token check runs in tests against a stand-in issuer.** Against the lab's identity provider, it has run in the label expert's container in the measured evaluation runs ([evaluation.md](../docs/architecture/evaluation.md)), which send real access tokens.
-- **The message text is put between `<message>` tags.** A message that contains the closing tag has not been tried.
-- **A follow-up can replace detailed values with vaguer ones.** In one run the patient "JD, a 54-year-old man" became "JD", the dose was dropped, and the original description of the event was replaced by the new information alone. The earlier version keeps the originals.
-- **The retry without thinking has not run.** No test covers it, and in the runs made after it was added, the model answered without it.
-- **Sending a failed model request again has run in the hand-written agent's tests, and once for each agent against an address where nothing listens.** It has not run against a model server that fails some of the time. The hand-written loop does not read a `Retry-After` header.
+- **The message text is put between `<message>` tags and is not escaped.** A message that contains `</message>` ends the block early, in the intake agent's prompt and in the report check's alike.
+- **A follow-up can replace detailed values with vaguer ones.** The model writes a follow-up's values, and the case system records what it is sent as the case's next version. The earlier version keeps the originals.
+- **The hand-written loop does not read a `Retry-After` header.**
+- **A fixed seed does not make a run repeatable.** Every request carries the same seed and a temperature of 0, and the model server can still answer differently from one run to the next.
 - **All four agents run from one image,** so the hand-written agent's image also holds Strands, the OpenAI client, the AWS SDK's Bedrock client and the AgentCore SDK with Fastify, which it does not use.
-- **Not run on AgentCore Runtime.**
+- **Nothing here deploys an agent to AgentCore Runtime.** The agents run as containers on this machine.

@@ -4,6 +4,6 @@ Local stand-ins for the AgentCore services that sit around the runtime. Each has
 
 | Folder | Stands in for | What it is |
 |---|---|---|
-| [`identity/`](identity/README.md) | The identity provider behind AgentCore's JWT authorizer | Keycloak in development mode with one realm, `lab`: one client for the desk and two synthetic users. The client signs desk staff in through it and validates their ID tokens; the agents check the access token on `POST /invocations`, and the case system and the retrieval service on every request but `/ping` |
+| [`identity/`](identity/README.md) | The identity provider behind AgentCore's JWT authorizer | Keycloak in development mode with one realm, `lab`: four synthetic people, and a client each for the desk, the four agents, the evaluation harness and the knowledge gate, with the case system and the retrieval service registered as audiences. The client signs people in through it and validates their ID tokens; the agents check the access token on `POST /invocations`, and the case system and the retrieval service on every request but `/ping` |
 
 Memory, policy and tracing have no stand-in here.
