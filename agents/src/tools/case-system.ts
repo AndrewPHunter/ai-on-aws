@@ -1,7 +1,7 @@
 // What is particular to the case system, whichever implementation is calling it: the context headers
 // that say which inbound message a change comes from, the tools an intake run needs and which of them
 // change a case, how to read its answers, and what they mean for a run's record. Also the hand-written
-// agent's own connection to its three MCP tools (connectCaseTools); the Strands agent connects with
+// agent's own connection to the case system's MCP tools (connectCaseTools); the Strands agent connects with
 // Strands' MCP client and uses everything else here.
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -16,13 +16,20 @@ import type { Connected, ToolOutcome } from './tool-set.ts';
 // The tools that change a case. A lost reply from one of these leaves the outcome unknown.
 export const WRITING_TOOLS: readonly string[] = ['create_case', 'add_follow_up'];
 
-// The three tools an intake run needs.
-export const CASE_TOOLS: readonly string[] = ['create_case', 'find_case', 'add_follow_up'];
+// The two tools an intake run needs, and the only ones its model is shown: one opens a case, the other adds
+// to a case the message names by its id. Neither returns what a case holds.
+export const CASE_TOOLS: readonly string[] = ['create_case', 'add_follow_up'];
 
-// Why a run cannot go on with the tools the case system offered, or undefined when all three are there.
+// Why a run cannot go on with the tools the case system offered, or undefined when both are there.
 export function missingCaseTools(offered: readonly string[]): string | undefined {
   const missing = CASE_TOOLS.filter((name) => !offered.includes(name));
   return missing.length === 0 ? undefined : `The case system does not offer ${missing.join(', ')}.`;
+}
+
+// Whether a tool the case system offered is shown to the model. Any other tool it offers is left out, so
+// the model can neither see nor call it.
+export function isCaseTool(name: string): boolean {
+  return CASE_TOOLS.includes(name);
 }
 
 // The three headers every request to the case system carries for one run. They say which inbound

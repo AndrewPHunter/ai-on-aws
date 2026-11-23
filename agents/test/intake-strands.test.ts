@@ -20,14 +20,13 @@ import type { ModelAnswer, ModelRequest, ToolAnswer } from './support.ts';
 const LIMITS = { maxTurns: 6, runMs: 60_000, modelMs: 30_000, toolMs: 20_000 };
 const optional = z.string().optional();
 const CASE_FIELDS = { case_id: optional, patient: optional, suspect_drug: optional, event: optional };
-const exchange: TokenExchange = () => Promise.resolve({ kind: 'token', token: 'token-for-the-case-system', expiresAt: new Date('2026-03-01T10:05:00.000Z'), scopes: ['cases:write', 'cases:lookup'] });
+const exchange: TokenExchange = () => Promise.resolve({ kind: 'token', token: 'token-for-the-case-system', expiresAt: new Date('2026-03-01T10:05:00.000Z'), scopes: ['cases:write'] });
 const createdAs = (caseId: string): ToolAnswer => result({ outcome: 'created', case: { case_id: caseId, status: 'incomplete' } });
 
 async function rig(t: TestContext, script: (request: ModelRequest, nth: number) => ModelAnswer, create: (nth: number) => ToolAnswer = () => createdAs('C-7')) {
   const model = await startModel(t, script);
   const cases = await startMcp(t, {
     create_case: { shape: CASE_FIELDS, answer: (_args, nth) => create(nth) },
-    find_case: { shape: CASE_FIELDS, answer: () => result({ cases: [] }) },
     add_follow_up: { shape: CASE_FIELDS, answer: () => result({ outcome: 'recorded', case: { case_id: 'C-7', status: 'incomplete' } }) },
   });
   const run = async (limits: Partial<typeof LIMITS> = {}): Promise<InvocationResponse> =>
@@ -83,7 +82,7 @@ test('strands 3. a write with no answer is repeated once, by code, with the same
 });
 
 test('strands 4. the turn limit ends the run with an outcome inside the contract', async (t) => {
-  const { model, run } = await rig(t, (_request, nth) => (nth < 3 ? ask(['find_case', { patient: 'JD' }]) : say('Nothing to record.')));
+  const { model, run } = await rig(t, (_request, nth) => (nth < 3 ? ask(['add_follow_up', { case_id: 'C-7', event: 'rash' }]) : say('Nothing to record.')));
   const response = await run({ maxTurns: 2 });
   assert.equal(response.outcome, 'stopped');
   assert.equal(model.requests.length, 2);

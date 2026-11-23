@@ -14,10 +14,12 @@ The same agent also exists on Strands: [intake-agent-strands.md](intake-agent-st
 | Run | The handling of one message by one call to `/invocations` |
 | Turn | One answer asked of the model inside a run. Usually one request; up to three when a request fails and is sent again |
 | Tool set | A list of tool descriptions and a function that calls them. The case system's is the only one |
-| Write | A tool call that changes a case: `create_case` or `add_follow_up` |
+| Write | A tool call that changes a case: `create_case` or `add_follow_up`. These are the agent's only two tools |
+| Follow-up | A message that adds to an earlier report. When it names the case's id, the model adds it to that case with `add_follow_up`; when it names none, it is recorded as a new case with `create_case`, as any report is. The agent cannot look a case up |
+| Receipt | What the case system answers a write with: the case's id, status and version, and what it still lacks. Never what the case holds |
 | Step | One entry in the run's record: a model turn, a tool call, or an error |
 | Context headers | `x-message-id`, `x-received-at`, `x-sender`, sent on every request to the case system beside the case-system token |
-| Case-system token | The token the agent gets for the case system by exchanging the caller's access token, as itself, at the identity provider: audience `case-system`, scopes `cases:write` and `cases:lookup`. The only token the case system sees |
+| Case-system token | The token the agent gets for the case system by exchanging the caller's access token, as itself, at the identity provider: audience `case-system`, scope `cases:write` alone. The only token the case system sees |
 
 ## Modules and their boundaries
 
@@ -72,7 +74,7 @@ flowchart LR
 | `intake/prompt.ts` | What the model is told, and how the message is laid out for it | Everything else |
 | `run/record.ts` | Measuring a step and counting down the run's time | What is being timed |
 | `tools/tool-set.ts` | The shape of any tool set and of what a call can come back as | Any particular tool |
-| `tools/case-system.ts` | The MCP connection, the context headers, the three tools a run needs, which tools write, and what an answer means for the run's record | The model, the loop |
+| `tools/case-system.ts` | The MCP connection, the context headers, the two tools a run needs and is shown (`CASE_TOOLS`, `isCaseTool`), which tools write, and what an answer means for the run's record | The model, the loop |
 | `tools/tool-token.ts` (shared with the other agents) | Exchanging the caller's token for one meant for the tool server, the case system's audience and scopes, and the reason a run ends with when the exchange fails | The model, the loop, MCP |
 | `tools/mcp-answers.ts` (shared with the label expert) | Reading why a connection to an MCP service failed, and the payload of a tool result, in the words of the service named. `tools/case-system.ts` reads through it in the case system's name | Any particular service |
 | `model/chat.ts` | One request to the model server, the reading of its answer, and whether a failure could go differently if the request were sent again. It never sends twice | Tools' meaning, cases, the loop |
@@ -106,8 +108,9 @@ sequenceDiagram
     I-->>X: the case-system token
     X->>T: connectCaseTools with the case-system token
     T->>K: initialize and tools/list, with context headers and the case-system token
-    K-->>T: three tool descriptions
+    K-->>T: tool descriptions
     T-->>L: ToolSet
+    L->>L: keeps create_case and add_follow_up, drops any other tool
     loop each turn, at most 6
         L->>M: complete with conversation and tool descriptions
         M->>V: POST /chat/completions
@@ -139,7 +142,7 @@ The same flow by function:
 | 4 | Handler in `run/serve.ts` → `ready`, given the caller | On the first request, asks the model server which model it serves (`servedModelId`, `GET /models`, 10 s at most) unless `MODEL_ID` names it, then has `main-handwritten.ts` build the client (`createChatModel`) and the handler. If the model server cannot say, the request ends `failed` with an error step, and the next request asks again |
 | 5 | `handleInquiry` in `intake/handwritten.ts` → `startRun` in `intake/run.ts` | Starts the run: its `Deadline`, and empty lists of steps and case actions |
 | 5a | `connectWithToolToken` in `tools/tool-token.ts`, as `main-handwritten.ts` wires it in front of `connectCaseTools` | Exchanges the caller's token, once, as the agent, for the case-system token, within the tool limit or what the run has left, which it shares with the connection in step 6: the connection gets what the exchange left of it, measured on the agent's clock. A refused exchange ends the run `failed` with "The agent could not get a token for the case system: " and the identity provider's refusal; one that cannot be made, with "The agent could not get a token for the case system: the identity provider could not be reached or did not answer in time.", which names no address. Either way nothing is connected and the model is not asked. It is not retried |
-| 6 | `connectCaseTools` in `tools/case-system.ts` | Opens the MCP connection with the three context headers, taken from the message, and `Authorization: Bearer` with the case-system token, on every request. Connecting and listing the tools each have what the exchange left of the limit in step 5a, never more than the run has left. Each tool becomes a tool description for the model. If fewer than the three tools are offered, `handleInquiry` ends the run `failed`, naming the missing ones, before the model is asked |
+| 6 | `connectCaseTools` in `tools/case-system.ts` | Opens the MCP connection with the three context headers, taken from the message, and `Authorization: Bearer` with the case-system token, on every request. Connecting and listing the tools each have what the exchange left of the limit in step 5a, never more than the run has left. Each tool becomes a tool description. If `create_case` or `add_follow_up` is not offered, `handleInquiry` ends the run `failed`, naming what is missing, before the model is asked. Any other tool the case system offers is left out of what the model is shown, so a call to it is refused as `unknown_tool` |
 | 7 | `loop` | Starts the conversation: `SYSTEM_PROMPT`, then `userTurn(message)` |
 | 8 | `loop` → `askModel` → `ChatModel.complete` in `model/chat.ts` | Sends the conversation and the tool descriptions. The time allowed is the smaller of the model limit and what the run has left. A request that fails may be sent again (see "A failed request to the model") |
 | 9 | `loop` | Records a model step. If the model asked for no tools, the run ends here (see "How a run ends") |
@@ -205,7 +208,7 @@ The wait and the randomness are given to the loop (`sleep` and `random` in `Inta
 | `stopped` | The run's time is used up when a turn is about to start | `loop` | Empty |
 | `stopped` | The turn limit is reached | `loop` | Empty |
 | `stopped` | The model asks for no tools and writes nothing | `loop` | Empty |
-| `failed` | At the start, the caller's token cannot be exchanged for the case-system token, or the case system cannot be reached, refuses the token, cannot check it, or offers fewer than the three tools | `connectWithToolToken`, `handleInquiry` | Empty |
+| `failed` | At the start, the caller's token cannot be exchanged for the case-system token, or the case system cannot be reached, refuses the token, cannot check it, or does not offer both `create_case` and `add_follow_up` | `connectWithToolToken`, `handleInquiry` | Empty |
 | `failed` | A request to the model still fails after being sent three times, or fails in a way that sending again would not change | `askModel`, then `loop` | Empty |
 | `failed` | A write got no answer twice | `runToolCall`, then `loop` | Empty |
 | `failed` | `MODEL_ID` is unset and the model server could not say which one model it serves: not reached, not in time, another status, or not exactly one model | Handler in `run/serve.ts` | Empty |
@@ -265,12 +268,12 @@ flowchart LR
     P --> MD
     MD -->|"tool name and arguments<br/>UNTRUSTED model output"| R["runToolCall<br/>checks name, JSON, one-case rules"]
     R -->|"arguments as given"| K["Case system<br/>stores the text"]
-    K -->|"results: text from this sender's<br/>earlier messages<br/>UNTRUSTED, returned as tool output"| MD
+    K -->|"receipts: case id, status,<br/>version, what is missing<br/>returned as tool output"| MD
     MD -->|"reply<br/>UNTRUSTED model output, unchecked"| C["Caller"]
     R -->|"steps: full arguments and results"| C
 ```
 
-The agent does not act on its own reading of the text. It acts only through the three tools, and the rules in `runToolCall` and in the case system hold whatever the model was persuaded of: no tool approves, rejects or deletes; a message opens one case; a person reviews every case.
+The agent does not act on its own reading of the text. It acts only through its two tools, and the rules in `runToolCall` and in the case system hold whatever the model was persuaded of: no tool approves, rejects or deletes; a message opens one case; a person reviews every case.
 
 ## Not present
 
@@ -280,9 +283,9 @@ Each row is a control this agent does not have, where it would sit in the flow, 
 
 | Missing | Where it would sit | What follows |
 |---|---|---|
-| Proof of who sent the message | The request | `sender` is free text from the caller. The reporter recorded in a case is whatever was typed. The limit on lookups and follow-ups rests on this text: a caller that supplies another sender's exact text can find and add to that sender's cases |
+| Proof of who sent the message | The request | `sender` is free text from the caller. The reporter recorded in a case is whatever was typed. The limit on follow-ups rests on this text: a caller that supplies another sender's exact text and the id of one of that sender's cases can add to that case |
 | A check of the identifier and receipt time | `invoke` | Both are forwarded as given. A second identifier for the same message opens a second case. A receipt time in the past is accepted, so the start of the reporting clock can be set by the caller |
-| A token limited to one run | `connectWithToolToken` | The case-system token is limited to this agent and its two scopes, not to the run or the message: until it expires it is good for any run of this agent for that user |
+| A token limited to one run | `connectWithToolToken` | The case-system token is limited to this agent and its one scope, not to the run or the message: until it expires it is good for any run of this agent for that user |
 | Special handling of a token refused mid-run | `ToolSet.call` | A tool call the case system refuses (401) or cannot check (503) after the connection was accepted falls under the rules for a call that got no answer (see "One tool call") |
 | A check of the caller's roles | `invoke` | Any accepted token may submit a message; the roles are given to the handler and not used |
 | Encryption between the pieces | Every hop: the caller, the model server, the case system, the identity provider | Plain HTTP. The model server's key, the agent's client secret and both tokens cross the local network unencrypted |
@@ -296,20 +299,20 @@ Each row is a control this agent does not have, where it would sit in the flow, 
 | A limit on message length | `invoke` | Only the 1,000,000-byte body limit applies. The client limits text to 10,000 characters; a direct caller is not limited |
 | Escaping of the message block | `userTurn` | A message that contains the closing tag ends the block early, and what follows it sits outside the block |
 | Detection of instructions in the message | Before the first turn | There is none. The only defence at this level is rule 1 of the prompt |
-| Marking of tool results as untrusted | `loop`, where tool messages are appended | `find_case` returns text from the same sender's earlier messages. It enters the conversation as ordinary tool output |
+| Marking of tool results as untrusted | `loop`, where tool messages are appended | Tool results enter the conversation as ordinary tool output. They are receipts, which carry no text from any message |
 
 ### What the model may cause
 
 | Missing | Where it would sit | What follows |
 |---|---|---|
 | A check of arguments against the message | `runToolCall` | The model can record a detail the message does not contain. The case system checks that each part is present, not that it is true |
-| Recognition of one event reported by two senders | The case system | A second clinician reporting the same patient and event cannot find the first sender's case, so a second case is opened. Nothing links the two |
+| Recognition of one event reported by two senders | The case system | A second clinician reporting the same patient and event cannot name the first sender's case, so a second case is opened. Nothing links the two |
 
 ### What comes out
 
 | Missing | Where it would sit | What follows |
 |---|---|---|
-| A check of the reply | `loop`, before `completed` | The reply is the model's text as written. It can say something the tools did not say, answer a clinical question, or repeat details of the sender's own earlier cases returned by `find_case` |
+| A check of the reply | `loop`, before `completed` | The reply is the model's text as written. It can say something the tools did not say, or answer a clinical question |
 | Redaction of the steps | The record in `run/steps.ts` | Steps carry full tool arguments and results to the caller, which stores them |
 
 ### Running it
@@ -360,6 +363,6 @@ Each row is a control this agent does not have, where it would sit in the flow, 
 | The caller | The message's identifier, receipt time and sender, its access token, and keeping the response |
 | The identity provider | Who the caller is: the access token's claims and the keys that sign it. Whether the agent gets a case-system token for the caller, and with which scopes |
 | The agent | The order of work, the rules of a tool call, and the run's record |
-| The case system | Whether a case exists, whether it is complete, its versions and its audit trail, the one-case-per-message rule, and which sender may see or add to a case |
+| The case system | Whether a case exists, whether it is complete, its versions and its audit trail, the one-case-per-message rule, and which sender may add to a case |
 | The model server | Which model answers |
 | A reviewer | Whether a case is approved, rejected or sent back for information |

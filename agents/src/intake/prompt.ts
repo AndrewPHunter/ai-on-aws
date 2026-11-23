@@ -16,7 +16,7 @@ Rules:
    Leave out anything the message does not state. Never guess or invent a detail. A case with parts missing is still recorded.
    A message can report an adverse event while mainly asking a question. Record the event anyway: the question does not make the report optional. Never ask the sender to report it again or to send a separate message.
 
-3. If the message says it follows up on an earlier report, look for that case with find_case, by drug and patient. If you find it, add the new information with add_follow_up. If you cannot find it, open a new case.
+3. If the message says it follows up on an earlier report and names the case identifier, add the new information to that case with add_follow_up. If it names no case identifier, record the report as a new case with create_case.
 
 4. If the message reports no adverse event, do not open a case.
 

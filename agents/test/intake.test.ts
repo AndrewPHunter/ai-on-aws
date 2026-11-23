@@ -16,7 +16,7 @@ import type { Clock } from './support.ts';
 
 const IDENTITY = { id: 'intake-test', implementation: 'hand-written loop' };
 
-const DEFINITIONS: ToolDefinition[] = ['create_case', 'find_case', 'add_follow_up'].map((name) => ({
+const DEFINITIONS: ToolDefinition[] = ['create_case', 'add_follow_up'].map((name) => ({
   type: 'function',
   function: { name, description: `The case system's ${name}.`, parameters: { type: 'object', properties: { case_id: { type: 'string' }, event: { type: 'string' } } } },
 }));
@@ -56,10 +56,13 @@ const modelFails = (retryable: boolean): ChatResult => ({ ok: false, reason: 'Th
 const answered = (payload: unknown): ToolOutcome => ({ kind: 'answered', isError: false, payload });
 const noAnswer: ToolOutcome = { kind: 'no_answer', reason: 'Nothing came back.' };
 const created = (caseId: string): ToolOutcome => answered({ outcome: 'created', case: { case_id: caseId, status: 'incomplete' } });
+const followedUp = (caseId: string): ToolOutcome => answered({ outcome: 'recorded', case: { case_id: caseId, status: 'incomplete' } });
+// A follow-up to a case an earlier message opened, named by its id.
+const followUp = (event: string): [string, unknown] => ['add_follow_up', { case_id: 'C-9', event }];
 
 // The handler with scripted dependencies. The model's script is asked per conversation (by its user turn), so two
 // runs on the same dependencies each follow their own.
-function rig(script: Script, tools: Tools = (tool) => (tool === 'create_case' ? created('C-1') : answered({ cases: [] })), options: { connect?: 'refused' | 'short'; clock?: Clock } = {}) {
+function rig(script: Script, tools: Tools = (tool) => (tool === 'create_case' ? created('C-1') : followedUp('C-9')), options: { connect?: 'refused' | 'short'; clock?: Clock } = {}) {
   const time = options.clock ?? clock();
   const world: World = { events: [], calls: [], requests: [], connected: [] };
   const seen = new Map<string, number>();
@@ -85,7 +88,7 @@ function rig(script: Script, tools: Tools = (tool) => (tool === 'create_case' ? 
           return Promise.resolve({
             ok: true,
             tools: {
-              definitions: structuredClone(options.connect === 'short' ? DEFINITIONS.slice(0, 2) : DEFINITIONS),
+              definitions: structuredClone(options.connect === 'short' ? DEFINITIONS.slice(0, 1) : DEFINITIONS),
               call(tool, args) {
                 world.events.push(tool);
                 world.calls.push({ tool, args });
@@ -127,11 +130,11 @@ const writes = (world: World): number => world.calls.filter((c) => c.tool === 'c
 test('intake 1. once a message is accepted, whatever goes wrong, the handler returns a response inside the contract with an outcome and its steps', async () => {
   const rows: Array<{ name: string; rig: ReturnType<typeof rig>; failsBeforeModel?: true }> = [
     { name: 'tools cannot be connected', rig: rig(turns(), undefined, { connect: 'refused' }) },
-    { name: 'the case system offers fewer than three tools', rig: rig(turns(), undefined, { connect: 'short' }), failsBeforeModel: true },
+    { name: 'the case system offers one of the two tools', rig: rig(turns(), undefined, { connect: 'short' }), failsBeforeModel: true },
     { name: 'the model fails', rig: rig(() => modelFails(false)) },
-    { name: 'the model answers nonsense', rig: rig(turns(ask(['no_such_tool', {}], ['create_case', '{not json'], ['find_case', '[1, 2]']), say(''))) },
-    { name: 'a tool gives no answer', rig: rig(turns(ask(['find_case', {}])), () => noAnswer) },
-    { name: 'a limit is reached', rig: rig(() => ask(['find_case', {}])) },
+    { name: 'the model answers nonsense', rig: rig(turns(ask(['no_such_tool', {}], ['create_case', '{not json'], ['add_follow_up', '[1, 2]']), say(''))) },
+    { name: 'a tool gives no answer', rig: rig(turns(ask(followUp('a'))), () => noAnswer) },
+    { name: 'a limit is reached', rig: rig(() => ask(followUp('a'))) },
   ];
   for (const row of rows) {
     const response = await row.rig.run();
@@ -173,10 +176,11 @@ test('intake 3. the message and the caller\'s token reach the tool connection fr
   }
 });
 
-test('intake 4. a run opens or finds at most one case for its message and adds no version to it', async () => {
+test('intake 4. a run opens at most one case for its message and adds no version to that case', async () => {
   const rows: Array<{ name: string; script: Script }> = [
     { name: 'create twice in one turn', script: turns(ask(['create_case', { event: 'a' }], ['create_case', { event: 'b' }])) },
     { name: 'create, then follow up on that case', script: turns(ask(['create_case', { event: 'a' }]), ask(['add_follow_up', { case_id: 'C-1', event: 'b' }])) },
+    { name: 'follow up on the case the message names', script: turns(ask(followUp('b'))) },
   ];
   for (const row of rows) {
     const { world, run } = rig(row.script);
@@ -202,20 +206,20 @@ test('intake 7. if it is not known whether a write happened, the run fails and c
 });
 
 test('intake 8. every tool the model asks for gets exactly one tool message back, in the order asked', async () => {
-  const many = ask(['find_case', { event: 'a' }], ['no_such_tool', {}], ['find_case', { event: 'b' }], ['create_case', '{oops'], ['create_case', { event: 'c' }]);
-  const { world, run } = rig(turns(many), (tool, _args, nth) => (tool === 'find_case' && nth === 1 ? noAnswer : tool === 'create_case' ? created('C-1') : answered({ cases: [] })));
+  const many = ask(followUp('a'), ['no_such_tool', {}], followUp('b'), ['create_case', '{oops'], ['create_case', { event: 'c' }]);
+  const { world, run } = rig(turns(many), (tool, _args, nth) => (tool === 'add_follow_up' && nth === 1 ? noAnswer : tool === 'create_case' ? created('C-1') : followedUp('C-9')));
   await run();
   const next = world.requests[1]?.messages ?? [];
   assert.deepEqual(toolMessages(next).map((m) => m.id), callIdsOf(many));
 });
 
 test('intake 9. every model turn, tool call, refusal and failed request to the model is a step in the response', async () => {
-  const { run } = rig((_messages, nth) => [modelFails(true), ask(['find_case', {}], ['no_such_tool', {}])][nth] ?? say('Nothing to record.'));
+  const { run } = rig((_messages, nth) => [modelFails(true), ask(followUp('a'), ['no_such_tool', {}])][nth] ?? say('Nothing to record.'));
   const response = await run();
   const count = (predicate: (step: InvocationResponse['steps'][number]) => boolean): number => response.steps.filter(predicate).length;
   assert.equal(count((s) => s.kind === 'error'), 1, 'the failed request');
   assert.equal(count((s) => s.kind === 'model'), 2, 'the two model turns');
-  assert.equal(count((s) => s.kind === 'tool' && s.tool === 'find_case' && !s.is_error), 1, 'the tool call');
+  assert.equal(count((s) => s.kind === 'tool' && s.tool === 'add_follow_up' && !s.is_error), 1, 'the tool call');
   assert.equal(count((s) => s.kind === 'tool' && s.tool === 'no_such_tool' && s.is_error), 1, 'the refusal');
 });
 
@@ -229,15 +233,15 @@ test('intake 11. at most 6 turns with the model, at most 3 requests for each, an
   assert.deepEqual([LIMITS.maxTurns, LIMITS.runMs], [6, 150_000]);
   const time = clock();
   const rows: Array<{ name: string; rig: ReturnType<typeof rig>; requests: number }> = [
-    { name: 'a model that always asks for a tool', rig: rig(() => ask(['find_case', {}])), requests: 6 },
+    { name: 'a model that always asks for a tool', rig: rig(() => ask(followUp('a'))), requests: 6 },
     { name: 'a model whose every request fails', rig: rig(() => modelFails(true)), requests: 3 },
     {
       name: 'a tool call that ends after 150 s',
       rig: rig(
-        () => ask(['find_case', {}]),
+        () => ask(followUp('a')),
         () => {
           time.advance(150_000);
-          return answered({ cases: [] });
+          return followedUp('C-9');
         },
         { clock: time },
       ),
