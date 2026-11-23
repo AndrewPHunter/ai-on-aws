@@ -15,7 +15,7 @@ import { ORCHESTRATOR_SETTINGS } from '../src/orchestrator/settings.ts';
 import { handleInquiry } from '../src/orchestrator/strands.ts';
 import type { CallSubAgent, SubAgentAnswer, SubAgentCall } from '../src/orchestrator/sub-agents.ts';
 import type { Limits } from '../src/run/limits.ts';
-import { CALLER, ask, clock, message, say, startModel } from './support.ts';
+import { CALLER, ask, clock, cutOff, message, say, startModel } from './support.ts';
 import type { ModelAnswer, ModelRequest, ScriptedModel } from './support.ts';
 
 // Limits no busy machine reaches, except where a row passes its own: the calls' limits are kept in real time.
@@ -73,6 +73,8 @@ const SCRIPTS: Record<string, (nth: number) => ModelAnswer> = {
   'Is Examplamab safe in pregnancy?': (nth) => (nth === 0 ? ask(q('Examplamab', 'Is 40 mg safe in pregnancy?')) : say('Done.')),
   'How is Examplamab stored? The exchange is refused.': (nth) => (nth === 0 ? ask(q('Examplamab', 'How is it stored?')) : say('Done.')),
   'How is Examplamab stored? Nothing answers.': (nth) => (nth === 0 ? ask(q('Examplamab', 'How is it stored?')) : say('Done.')),
+  'How is Examplamab stored? A turn is cut off once.': (nth) => [ask(q('Examplamab', 'How is it stored?')), cutOff][nth] ?? say('Done.'),
+  'How is Examplamab stored? A turn is cut off twice.': (nth) => [ask(q('Examplamab', 'How is it stored?'))][nth] ?? cutOff,
   'How is Examplamab stored? The model keeps asking.': (nth) => ask(q('Examplamab', `How is it stored, asked again ${'once '.repeat(nth)}`)),
   'How is Examplamab stored? The run runs out of time.': (nth) => (nth === 0 ? ask(q('Examplamab', 'How is it stored?')) : say('Done.')),
   'How is Examplamab stored? Every call fails.': (nth) => (nth === 0 ? ask(q('Examplamab', 'How is it stored?')) : say('Done.')),
@@ -234,6 +236,12 @@ test('orchestrator', async (t) => {
 
     const asker = await runOne(model, 'How is Examplamab stored? The model keeps asking.');
     assert.deepEqual([asker.response.outcome, asker.response.stop_reason, requestsFor(model, 'The model keeps asking.').length], ['stopped', 'label_question_unanswered', 3]);
+
+    const once = await runOne(model, 'How is Examplamab stored? A turn is cut off once.');
+    const askedAgain = requestsFor(model, 'A turn is cut off once.');
+    assert.deepEqual([once.response.outcome, askedAgain.length, askedAgain[2]?.body.includes('"effort":"none"')], ['completed', 3, true], 'a cut-off turn was not asked again with thinking off');
+    const twice = await runOne(model, 'How is Examplamab stored? A turn is cut off twice.');
+    assert.deepEqual([twice.response.outcome, twice.response.stop_reason, requestsFor(model, 'A turn is cut off twice.').length], ['stopped', 'label_question_unanswered', 3]);
 
     const time = clock();
     const late = subAgents((call) => {
