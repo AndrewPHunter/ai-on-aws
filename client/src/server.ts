@@ -83,7 +83,7 @@ const NO_AGENT: PieceStatus = {
   id: 'agents',
   name: 'Agents',
   role: 'Handle inquiries: answer from the label and open adverse event cases.',
-  state: 'not_built',
+  state: 'not_configured',
   detail: 'No agent is configured.',
 };
 

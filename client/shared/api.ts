@@ -22,7 +22,7 @@ export type {
 export type ApiError = { error: string; detail?: string };
 
 // GET /api/status
-export type PieceState = 'up' | 'down' | 'not_built';
+export type PieceState = 'up' | 'down' | 'not_configured';
 export type PieceStatus = {
   id: string;
   name: string;
