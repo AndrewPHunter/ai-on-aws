@@ -88,12 +88,13 @@ test('case-system 3. a follow-up adds a version and never overwrites; one from t
   assert.deepEqual([after[1]?.version, after[1]?.elements.event], [2, 'muscle pain and fever']);
 });
 
-test('case-system 4. a follow-up sends the case back to review, whatever its status was', () => {
+test('case-system 4. a follow-up sends the case back to review, whatever its status was, unless it still lacks an element: then it stays incomplete', () => {
   const { store } = rig();
-  for (const status of ['approved', 'rejected', 'needs_information'] as const) {
+  const rows = [['approved', 'awaiting_review'], ['rejected', 'awaiting_review'], ['needs_information', 'awaiting_review'], ['incomplete', 'incomplete']] as const;
+  for (const [status, after] of rows) {
     const id = caseIn(store, status, `m-${status}`);
     const result = store.addFollowUp(message(`f-${status}`), id, {}, 'the reporter called back');
-    assert.equal(result.outcome === 'recorded' ? result.case.status : result.outcome, 'awaiting_review', status);
+    assert.equal(result.outcome === 'recorded' ? result.case.status : result.outcome, after, status);
   }
 });
 

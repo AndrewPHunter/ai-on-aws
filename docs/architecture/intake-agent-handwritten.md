@@ -303,9 +303,11 @@ The case system never sees this token. The agent exchanges it for the case-syste
 9. Every model turn, every tool call, every refusal and every failed request to the model is a step in the response.
 10. Case actions are built from the case system's answers, never from what the model wrote.
 11. A run has at most 6 turns with the model, makes at most 3 requests for each, and starts no turn after 150 seconds.
-12. The response contains no address and no key.
+12. The response contains no token, no address and no key.
 13. The agent stores nothing, and runs share no state. What it knows about a run is in the response; what it changed is in the case system.
 14. A run that recorded no case ends `completed` only when the report check found no adverse event. The report check is one separate request to the model, made by code, at most once in a run: it is shown the message and nothing else, it is given no tools, and only its answer of yes or no is kept, never its text. The check is a step in the response, and a request for it that failed is also an error step with the reason. When it finds an adverse event, the model is told once, in a sentence written by code, to record it, if the run has a turn left. A run in which the check found an adverse event and which then ends `stopped` with no case, for whatever reason, ends with "A separate check of the message found an adverse event, and the run recorded no case. A person must read this message." When the check cannot be made, or answers neither yes nor no, the run ends `stopped` with "The run recorded no case, and the separate check for an adverse event could not be made." A run that recorded a case makes no report check.
+
+`agents/test/intake.test.ts` has one test for each item, `intake 1` to `intake 14`, calling the handler with a scripted model and scripted tools. `intake 12` shows the token; the handler is given no address and no key, and the model client and the tool connection report a failure in a fixed sentence of their own. 3a and 3b have no test there, because the handler makes neither check. In 3a, `runtime 1` shows a request answered before its body is read and `shared 1` a token refused for having less life left than the service asks for. In 3b, `case-system 8` shows the token judged before the request is read, and a connection that fails and a case system that offers one of the two tools are rows of `intake 1`.
 
 ## Where untrusted text goes
 
