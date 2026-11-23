@@ -79,6 +79,7 @@ start_again() {
   fi
 }
 trap start_again EXIT
+trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -92,12 +93,12 @@ if [ "$part" != main ]; then
     exit 2
   fi
   say "stopping $part"
+  # Set before the stop, so an interrupt during it still starts the service again.
+  stopped=yes
   if ! stack_compose stop "$part" >&2; then
     say "stopping $part failed."
-    stopped=yes
     exit 2
   fi
-  stopped=yes
 fi
 
 mkdir -p -- "$run_dir"
