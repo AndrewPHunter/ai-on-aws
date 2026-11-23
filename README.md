@@ -102,7 +102,7 @@ Then open <http://localhost:3000> (use `localhost`, not `127.0.0.1`: sign-in ret
 | `riley.reviewer` | `safety-reviewer` | Read cases and decide them | `IDENTITY_RILEY_PASSWORD` in `platform/identity/.env` |
 | `avery.auditor` | `auditor` | Read cases and their audit trails; change nothing | `IDENTITY_AVERY_PASSWORD` in `platform/identity/.env` |
 
-`platform/identity/setup.sh` writes `platform/identity/.env`, the secrets of the lab's identity provider, with random values; run again, it keeps every value already there and adds only the variables the file lacks. `docker compose up` starts the agents, the case system they write to, the client, the identity provider, the search engine and the retrieval service, on one network. It reads `model/.env`, which model setup wrote, to find the model server, and `platform/identity/.env`; without either file it stops and says what is missing. The identity provider is described in [platform/identity/README.md](platform/identity/README.md). If the model server is on a different machine from the one you work on, run setup with `--host` from the machine you work on, as described in [model/README.md](model/README.md), so that `model/.env` is here.
+`platform/identity/setup.sh` writes `platform/identity/.env`, the secrets of the lab's identity provider, with random values; run again, it keeps every value already there and adds only the variables the file lacks. `docker compose up` starts the agents, the case system they write to, the client, the identity provider, the search engine and the retrieval service, on one network. It reads `model/.env`, which model setup wrote, to find the model server, and `platform/identity/.env`; without either file it stops and says what is missing. The identity provider is described in [platform/identity/README.md](platform/identity/README.md). If the model server is on a different machine from the one you work on, run setup from the machine you work on with `--host` and `--bind`, as described in [model/README.md](model/README.md), so that `model/.env` is here.
 
 What each screen does is in [client/README.md](client/README.md), and what each agent does is in [agents/README.md](agents/README.md).
 
@@ -113,7 +113,7 @@ platform/identity/stack-gate.sh ai-on-aws
 platform/identity/gate.sh ai-on-aws
 ```
 
-Both print a JSON report and exit 0 only if every statement holds; see [platform/identity/README.md](platform/identity/README.md). To check the retrieval path once the index is built (the token check, the index's count, both tools, their refusals):
+Both need the stack running. Both print a JSON report and exit 0 only if every statement holds; see [platform/identity/README.md](platform/identity/README.md). The stack gate enters four test inquiries from "Dr Gate" and may open three test cases in the stack it is run against. To check the retrieval path once the index is built (the token check, the index's count, both tools, their refusals):
 
 ```bash
 knowledge/gate.sh ai-on-aws
