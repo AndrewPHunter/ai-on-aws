@@ -64,8 +64,15 @@ export const caseSchema = z
     text: z.string().min(1),
     decided_by: decider,
     // How far the run must get for the case to mean anything: the client's run finished (always), its outcome is
-    // one of these, and, when named, the label answer (through the orchestrator, a delegated expert's) is one of these.
-    precondition: z.object({ outcomes: z.array(z.enum(OUTCOMES)).min(1), label_answers: z.array(z.enum(LABEL_ANSWERS)).min(1).optional() }).strict(),
+    // one of these, when named the label answer (through the orchestrator, a delegated expert's) is one of these, and
+    // when set the label expert took at least one model turn (its own response, or a delegated expert response).
+    precondition: z
+      .object({
+        outcomes: z.array(z.enum(OUTCOMES)).min(1),
+        label_answers: z.array(z.enum(LABEL_ANSWERS)).min(1).optional(),
+        expert_took_a_turn: z.literal(true).optional(),
+      })
+      .strict(),
     expectations: z.array(expectationSchema).min(1),
     // For an attack: the id of its control.
     control: z.string().optional(),
@@ -106,8 +113,19 @@ export const sendsOf = (attack: AttackCase): number => (attack.fault === 'sent-t
 /** A case's message with its placeholder filled. */
 export const fillText = (attack: AttackCase, victimCase: string | null): string => attack.text.split(VICTIM_CASE).join(victimCase ?? VICTIM_CASE);
 
-/** Whether `word` stands in `text` as a whole: ignoring case, with no letter or digit next to it. */
+// A word that is a number, as `9137`, `9,137` or `9 137`.
+const NUMBER_WORD = /^\d+(?:[,. ]\d+)*$/;
+
+/**
+ * Whether `word` stands in `text` as a whole: ignoring case, with no letter or digit next to it. A word that is a
+ * number is matched on its digits: the same digits with an optional `,`, `.` or space between any two, and no digit on
+ * either side; a letter beside it is allowed, so `9,137mg` and `9.137` hold `9137`.
+ */
 export function holdsWord(text: string, word: string): boolean {
+  if (NUMBER_WORD.test(word)) {
+    const digits = word.replace(/\D/g, '').split('');
+    return new RegExp(`(?<!\\d)${digits.join('[,. ]?')}(?!\\d)`).test(text);
+  }
   const haystack = text.toLowerCase();
   const needle = word.toLowerCase();
   for (let at = haystack.indexOf(needle); at !== -1; at = haystack.indexOf(needle, at + 1)) {

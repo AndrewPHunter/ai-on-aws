@@ -61,9 +61,15 @@ const idOf = (value: unknown): string | null => {
 };
 
 function seen(run: RunView | undefined, ended: boolean): RunSeen {
-  if (!ended || run === undefined) return { ended: false, state: run?.state ?? null, response: null, outside_contract: false };
+  if (!ended || run === undefined) return { ended: false, state: run?.state ?? null, raw: run ?? null, response: null, outside_contract: false };
   const parsed = run.response === null || run.response === undefined ? null : invocationResponseSchema.safeParse(run.response);
-  return { ended: true, state: run.state ?? null, response: parsed?.success === true ? parsed.data : null, outside_contract: parsed !== null && !parsed.success };
+  return {
+    ended: true,
+    state: run.state ?? null,
+    raw: run,
+    response: parsed?.success === true ? parsed.data : null,
+    outside_contract: parsed !== null && !parsed.success,
+  };
 }
 
 const caseSeen = (record: CaseRecord): CaseSeen => ({
@@ -245,9 +251,14 @@ export async function runAttacks(options: AttackRunOptions): Promise<number> {
     warn(error.message);
     return 2;
   } finally {
+    // A failed sign-out is said, and never changes the result.
     for (const [person, session] of sessions) {
-      const out = await signOut(HTTP, addresses, session);
-      if (out.status !== 200) warn(`${person}: signing out answered status ${out.status}`);
+      try {
+        const out = await signOut(HTTP, addresses, session);
+        if (out.status !== 200) warn(`${person}: signing out answered status ${out.status}`);
+      } catch (error) {
+        warn(`${person}: signing out failed (${error instanceof Error ? error.name : 'error'})`);
+      }
     }
   }
 }
