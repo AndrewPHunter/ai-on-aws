@@ -28,9 +28,9 @@
     { "username": "avery.auditor", "passwordVariable": "IDENTITY_AVERY_PASSWORD", "id": "6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f04", "staffRole": "auditor", "granted": ["cases:read", "traces:read"] }
   ],
   "agents": [
-    { "clientId": "intake-handwritten", "secretVariable": "IDENTITY_INTAKE_HANDWRITTEN_CLIENT_SECRET", "audience": "case-system", "scopes": ["cases:write"], "forbiddenScopes": ["cases:lookup"], "subject": { "username": "dana.desk", "scope": "agents:intake" } },
-    { "clientId": "intake-strands", "secretVariable": "IDENTITY_INTAKE_STRANDS_CLIENT_SECRET", "audience": "case-system", "scopes": ["cases:write"], "forbiddenScopes": ["cases:lookup"], "subject": { "username": "dana.desk", "scope": "agents:intake" } },
-    { "clientId": "expert", "secretVariable": "IDENTITY_EXPERT_CLIENT_SECRET", "audience": "knowledge", "scopes": ["labels:search"], "subject": { "username": "morgan.medinfo", "scope": "agents:expert" } }
+    { "clientId": "intake-handwritten", "secretVariable": "IDENTITY_INTAKE_HANDWRITTEN_CLIENT_SECRET", "audience": "case-system", "scopes": ["cases:write"], "forbiddenScopes": ["cases:lookup", "traces:read"], "subject": { "username": "dana.desk", "scope": "agents:intake" } },
+    { "clientId": "intake-strands", "secretVariable": "IDENTITY_INTAKE_STRANDS_CLIENT_SECRET", "audience": "case-system", "scopes": ["cases:write"], "forbiddenScopes": ["cases:lookup", "traces:read"], "subject": { "username": "dana.desk", "scope": "agents:intake" } },
+    { "clientId": "expert", "secretVariable": "IDENTITY_EXPERT_CLIENT_SECRET", "audience": "knowledge", "scopes": ["labels:search"], "forbiddenScopes": ["traces:read"], "subject": { "username": "morgan.medinfo", "scope": "agents:expert" } }
   ],
   "orchestrator": {
     "clientId": "orchestrator",
@@ -41,7 +41,7 @@
       { "audience": "intake-strands", "scope": "agents:intake", "onlyThisClient": false },
       { "audience": "expert", "scope": "agents:expert:delegated", "onlyThisClient": true }
     ],
-    "forbiddenScopes": ["labels:search", "agents:expert"]
+    "forbiddenScopes": ["labels:search", "agents:expert", "traces:read"]
   },
   "machines": [
     { "clientId": "evaluation", "secretVariable": "IDENTITY_EVALUATION_CLIENT_SECRET", "id": "6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f05", "role": "evaluation", "scope": "agents:expert", "forbiddenScopes": ["labels:search", "agents:expert:delegated", "traces:read"] },
