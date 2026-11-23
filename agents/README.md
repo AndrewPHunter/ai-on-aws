@@ -66,7 +66,7 @@ The flows, the rules of a tool call, and the controls neither has are in two doc
 | [`src/run/sampling.ts`](src/run/sampling.ts) | The sampling settings | Both, the label expert, which sets its own output allowance, and the orchestrator |
 | [`src/run/state.ts`](src/run/state.ts), [`src/run/limits.ts`](src/run/limits.ts) | The state every run keeps, and the shape of its limits | Both, the label expert and the orchestrator |
 | [`src/run/steps.ts`](src/run/steps.ts) | The run's record | Both, the label expert and the orchestrator |
-| [`src/run/turns.ts`](src/run/turns.ts) | The turn lost to thinking | Both |
+| [`src/run/turns.ts`](src/run/turns.ts) | The turn lost to thinking | Both, and the orchestrator |
 | [`src/run/endings.ts`](src/run/endings.ts) | The wording of every ending | Both, and the label expert |
 | [`src/run/record.ts`](src/run/record.ts) | Step timing and the run's deadline | Both, the label expert and the orchestrator (the deadline) |
 | [`src/model/served.ts`](src/model/served.ts) | The model settings, which model the server serves, the wording of a model failure | Both, the label expert and the orchestrator |

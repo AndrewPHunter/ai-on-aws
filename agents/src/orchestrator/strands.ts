@@ -11,12 +11,15 @@
 //   - The model reads back, for each question, only what toldToModel gives.
 //   - The reply, its citations and its case actions are written by code from the sub-agents' responses
 //     (decisions.ts). What the model writes stays in its model steps.
+//   - A turn that used up its output allowance having written nothing is asked again, once, with thinking off for
+//     the rest of the run, by setting retry in the AfterModelCall hook, as in the intake agent on Strands (the same
+//     rule, ../run/turns.ts). Strands does not count that request as a turn: three turns means three turns, each of
+//     which may be asked again once this way, all inside the run's time. A turn cut off again ends the loop.
 //   - The turn limit is Strands' own (limits.turns). The time limit is a cancel signal this file owns, checked
 //     before each model turn; each call to a sub-agent carries its own limit.
 //
-// A turn cut off at the output allowance is not asked again with thinking off, as it is in the other two agents
-// on Strands: Strands does not count that request as a turn, and this agent makes at most three. Nothing is
-// printed, no history is trimmed, and a new Agent is made for every message, as in the other agents on Strands.
+// Nothing is printed, no history is trimmed, and a new Agent is made for every message, as in the other agents on
+// Strands.
 
 import {
   AfterModelCallEvent,
@@ -42,6 +45,7 @@ import type { Limits } from '../run/limits.ts';
 import { startRunState } from '../run/state.ts';
 import type { RunState } from '../run/state.ts';
 import { recordError, recordNotCalled } from '../run/steps.ts';
+import { askAgainWithoutThinking } from '../run/turns.ts';
 import { howItEnds, replyWithCitations, toldToModel, whetherPut } from './decisions.ts';
 import type { LoopEnd, Question } from './decisions.ts';
 import { SYSTEM_PROMPT, userTurn } from './prompt.ts';
@@ -221,13 +225,14 @@ function takeUp(run: OrchestratorRun, deps: OrchestratorDeps, message: InboundMe
 
 async function converse(run: OrchestratorRun, deps: OrchestratorDeps, settings: ModelSettings, message: InboundMessage, callerToken: string): Promise<LoopEnd> {
   const { limits } = run;
+  const params = { seed: settings.seed };
   const model = new OpenAIModel({
     modelId: settings.modelId,
     apiKey: settings.apiKey,
     clientConfig: { baseURL: settings.baseUrl, timeout: limits.modelMs },
     temperature: settings.temperature,
     maxTokens: settings.maxTokens,
-    params: { seed: settings.seed },
+    params,
   });
   const agent = new Agent({
     model,
@@ -242,6 +247,7 @@ async function converse(run: OrchestratorRun, deps: OrchestratorDeps, settings: 
   let timeLimitReached = false;
   let modelFailed: string | undefined;
   let cutOff = false;
+  let thinking = true;
   let turnStarted = run.now();
   let turnAllowanceMs = limits.modelMs;
 
@@ -279,6 +285,13 @@ async function converse(run: OrchestratorRun, deps: OrchestratorDeps, settings: 
           input_tokens: null,
           output_tokens: null,
         });
+        if (askAgainWithoutThinking({ wroteNothing: written.trim() === '', ranOutOfOutput: true, thinking })) {
+          thinking = false;
+          // The Responses API's own setting for how much the model reasons before it answers.
+          model.updateConfig({ params: { ...params, reasoning: { effort: 'none' } } });
+          event.retry = true;
+          return;
+        }
         cutOff = true;
         return;
       }

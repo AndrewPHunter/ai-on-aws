@@ -147,7 +147,7 @@ Screening completed means the intake agent's response has outcome `completed`. A
 
 | Number | Value | Set in |
 |---|---|---|
-| Model turns in a run | 3 | `ORCHESTRATOR_LIMITS`, `orchestrator/settings.ts` |
+| Model turns in a run | 3. A turn that used up its output allowance having written nothing is asked again once with thinking off, as in the intake agent on Strands; Strands does not count that request as a turn, and the run's 280 s bounds it | `ORCHESTRATOR_LIMITS`, `orchestrator/settings.ts`; the rule in `run/turns.ts` |
 | Questions in a round | 2 | `ORCHESTRATOR_SETTINGS`, `orchestrator/settings.ts` |
 | Rounds | 2 | `ORCHESTRATOR_SETTINGS` |
 | Each model turn | 30 s, for each request Strands' OpenAI client makes | `ORCHESTRATOR_LIMITS` |
@@ -170,6 +170,5 @@ Screening completed means the intake agent's response has outcome `completed`. A
 | Asking the sender a question and waiting for the answer | The agent contract is one message in and one response out |
 | A third round | A question the first two rounds leave unanswered is named in the reply |
 | A measure of how well it splits and asks again | Not measured yet |
-| Asking a turn cut off at the output allowance again with thinking off, as the other agents on Strands do | Strands does not count that request as a turn, so the run could pass three. A cut-off turn ends the model's loop |
 | A limit on a whole model turn | The 30 s is each request's. Strands' OpenAI client sends a request that timed out or failed with 408, 409, 429 or 5xx again, up to three in all, and Strands asks again after 429; the run's 280 s stops either |
 | A test of the run when the model's name cannot be learnt | Screening still runs and the model's loop counts as failed (`orchestrator/main.ts`, `run/serve.ts`); no test calls that path |
