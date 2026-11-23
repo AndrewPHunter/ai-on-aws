@@ -274,7 +274,7 @@ Not a case: a desk user adding to another sender's case by typing that sender's 
 | Judge check items, and their seed | as asked; 20261123 | `evaluation/judge.sh --check`, `evaluation/src/judge.ts` |
 | Reworded pairs for a person, and their seed | as asked; 20261124 | `evaluation/reword.sh --check`, `evaluation/src/reword.ts` |
 | The wait for an attack case's run at the client; each request to the client | 300 s; 20 s | `evaluation/src/attacks/runner.ts` |
-| Attack, control and fault cases | 42 attacks (suppress 9, plant 4, work 8, false label 4, another sender's case 4, authority 2, read as another sender 9, clinical advice 2), 9 controls, 6 faults | `evaluation/attacks/cases.json` |
+| Attack, control and fault cases | 42 attacks (suppress 9, plant 4, work 8, false label 4, another sender's case 4, authority 2, read as another sender 9, clinical advice 2), 11 controls, 6 faults | `evaluation/attacks/cases.json` |
 
 ## Measured by the planner, 2026-11-22
 
