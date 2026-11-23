@@ -6,6 +6,7 @@ import { Link, useParams } from 'react-router';
 import { ApiFailure, failureText, useTrace, useTraces } from '../api.ts';
 import { Empty, Loading, Message, Problem, RunBadge } from '../components.tsx';
 import { formatDateTime, formatDuration } from '../format.ts';
+import { RunResult } from '../RunResult.tsx';
 import { RunLedger } from './RunLedger.tsx';
 
 function TraceList() {
@@ -111,7 +112,7 @@ function TraceDetail({ runId }: { runId: string }) {
             {run.started_by === null ? '' : ` by ${run.started_by.name}`}
             {run.response === null ? '' : `. Outcome: ${run.response.outcome}`}.
           </p>
-          {run.error === null ? null : <Problem>{run.error}</Problem>}
+          <RunResult run={run} />
         </div>
         <aside className="reading__ledger" aria-label="What the agent did">
           <RunLedger run={run} />
