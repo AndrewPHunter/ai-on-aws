@@ -114,5 +114,5 @@ test('strands 6. a report check that finds an adverse event invokes the same Age
   const declined = await rig(t, (request) => say(request.user.includes(TOLD_ONCE) ? 'Recorded.' : 'Not a report.'), undefined, 'adverse_event');
   const stopped = await declined.run();
   assert.deepEqual([stopped.outcome, stopped.stop_reason, stopped.case_actions], ['stopped', STOPPED_FOUND_NOT_RECORDED, []], 'told once and recorded nothing again');
-  assert.ok(declined.model.requests.length <= LIMITS.maxTurns, 'the model was asked more turns than the limit allows');
+  assert.equal(declined.model.requests.length, 2, 'the model was not told exactly once: the message, then one telling');
 });
