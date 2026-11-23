@@ -59,6 +59,7 @@ The four elements are an identifiable patient, an identifiable reporter, a suspe
 7. Every change is in the audit trail with who, when and which message, including replays and refused conflicts. The person and the agent are the ones the token names: the agent is the client the token was issued to, never a name the request carries.
 8. No call but `GET /ping` is accepted without knowing who is calling, and the token is judged before anything else is read.
 9. A tool or a route is reached only with a token that carries its scope: `create_case` and `add_follow_up` need `cases:write`, `find_case` needs `cases:lookup`, reading cases needs `cases:read`, deciding one needs `cases:review`. A tool whose scope the token lacks is not offered, and calling it changes nothing.
+10. A tool that changes a case answers with a receipt: the case's id, status, version and what it still lacks. It never answers with what the case holds.
 
 ## The rules it enforces
 
