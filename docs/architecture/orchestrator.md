@@ -74,7 +74,7 @@ sequenceDiagram
 | Whether the message is screened | Code | Always, at the start of the run |
 | Whether the message reports an adverse event | The intake agent's own model and rules | Unchanged |
 | Which label questions to ask, and whether to ask again | The orchestrator's model | One tool, `ask_label_expert({ drug, question, replaces })`, in Strands' default loop. Tool calls of one turn run together, which is Strands' default |
-| Whether a question is put | Code | Its arguments must be a medicine and a question in words, and any question it names as replaced must have been put; every number in the question must be in the message (the expert's number rule); at most two questions a round and two rounds; the run must have a sub-agent call's time left |
+| Whether a question is put | Code | Its arguments must be a medicine and a question in words, and any question it names as replaced must have been put; every number in the question must be in the message (the expert's number rule); at most two questions a round and two rounds; the run must have a sub-agent call's time left and a 5 s margin, 160 s in all, so no round starts later than 120 s in and every call ends, and is recorded, before the run's timer |
 | What the model reads back | Code | For each question: the expert's label answer, or that it did not complete, its stop reason and its reply |
 | The answer to a label question | The label expert | Unchanged |
 | The reply | Code | A sentence for each case action, each question named by its number only ("Label question 1") with the expert's reply word for word, and a plain sentence for anything unfinished. No text the model wrote is in it, the questions included: what the model wrote, and each question as it was put, are in the run's steps |
@@ -147,13 +147,14 @@ Screening completed means the intake agent's response has outcome `completed`. A
 
 | Number | Value | Set in |
 |---|---|---|
-| Model turns in a run | 3. A turn that used up its output allowance having written nothing is asked again once with thinking off, as in the intake agent on Strands; Strands does not count that request as a turn, and the run's 280 s bounds it | `ORCHESTRATOR_LIMITS`, `orchestrator/settings.ts`; the rule in `run/turns.ts` |
+| Model turns in a run | 3. The first turn of a run that uses up its output allowance having written nothing is asked again once, with thinking off for the rest of the run, as in the intake agent on Strands; Strands does not count that request as a turn, and the run's 280 s bounds it. Any later cut-off turn ends the model's loop | `ORCHESTRATOR_LIMITS`, `orchestrator/settings.ts`; the rule in `run/turns.ts` |
 | Questions in a round | 2 | `ORCHESTRATOR_SETTINGS`, `orchestrator/settings.ts` |
 | Rounds | 2 | `ORCHESTRATOR_SETTINGS` |
 | Each model turn | 30 s, for each request Strands' OpenAI client makes | `ORCHESTRATOR_LIMITS` |
 | Each call to a sub-agent | 155 s, its token exchange included: the sub-agent's own 150 s, and the round trip | `ORCHESTRATOR_LIMITS` |
 | The whole run | 280 s | `ORCHESTRATOR_LIMITS` |
-| A round starts no later than | 125 s into the run, so its calls end inside the run. Derived: a question is put only while the run has a call's 155 s left | The check in `orchestrator/decisions.ts` |
+| Margin beyond a call's limit for a question to be put | 5 s | `ORCHESTRATOR_SETTINGS`, `orchestrator/settings.ts` |
+| A round starts no later than | 120 s into the run. Derived: a question is put only while the run has a call's 155 s and the 5 s margin left, so a call that was started always ends, and its delegation step is recorded, before the run's own timer fires | The check in `orchestrator/decisions.ts` |
 | Token life the orchestrator requires | 280 s, the whole run. A sub-agent requires 150 s, and a call starts with at least 155 s left | `run/serve.ts`, from `ORCHESTRATOR_LIMITS` |
 | What the client waits for the orchestrator, and the token life it requires first | 295 s for both. The other agents keep 180 s | The client |
 | Temperature, seed and output allowance | shared | `run/sampling.ts` |

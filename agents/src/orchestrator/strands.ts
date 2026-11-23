@@ -11,10 +11,10 @@
 //   - The model reads back, for each question, only what toldToModel gives.
 //   - The reply, its citations and its case actions are written by code from the sub-agents' responses
 //     (decisions.ts). What the model writes stays in its model steps.
-//   - A turn that used up its output allowance having written nothing is asked again, once, with thinking off for
-//     the rest of the run, by setting retry in the AfterModelCall hook, as in the intake agent on Strands (the same
-//     rule, ../run/turns.ts). Strands does not count that request as a turn: three turns means three turns, each of
-//     which may be asked again once this way, all inside the run's time. A turn cut off again ends the loop.
+//   - The first turn of a run that uses up its output allowance having written nothing is asked again, once, with
+//     thinking off for the rest of the run, by setting retry in the AfterModelCall hook, as in the intake agent on
+//     Strands (the same rule, ../run/turns.ts). Strands does not count that request as a turn. Any later cut-off
+//     turn, that one asked again included, ends the loop, since thinking is already off.
 //   - The turn limit is Strands' own (limits.turns). The time limit is a cancel signal this file owns, checked
 //     before each model turn; each call to a sub-agent carries its own limit.
 //

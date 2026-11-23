@@ -17,8 +17,9 @@ export type Question =
   | { id: string; put: true; asked: Asked; text: string; call?: CallResult }
   | { id: string; put: false; reason: string };
 
-// The rules a question is put under: the questions of one round, the rounds, and the time one call may take.
-export type QuestionRules = { questionsPerRound: number; rounds: number; callMs: number };
+// The rules a question is put under: the questions of one round, the rounds, the time one call may take, and the
+// time the run must have left beyond that.
+export type QuestionRules = { questionsPerRound: number; rounds: number; callMs: number; callMarginMs: number };
 
 // Where the question stands when it is taken up. nthInRound counts the model's calls in its turn, from 1;
 // round counts the model's turns that asked a question, from 1.
@@ -62,8 +63,9 @@ export function whetherPut(input: unknown, at: TakenUp, rules: QuestionRules): P
   if (at.round > rules.rounds) {
     return { put: false, reason: `It is in round ${at.round}; questions are put from ${rules.rounds} rounds only.` };
   }
-  if (at.remainingMs < rules.callMs) {
-    return { put: false, reason: `The run has less than the ${Math.round(rules.callMs / 1000)} s a call to the label expert may take left.` };
+  if (at.remainingMs < rules.callMs + rules.callMarginMs) {
+    const needed = Math.round((rules.callMs + rules.callMarginMs) / 1000);
+    return { put: false, reason: `The run has less than ${needed} s left: the time a call to the label expert may take, and a margin.` };
   }
   return { put: true, asked: { drug, question, replaces }, text: `${drug}: ${question}` };
 }
@@ -121,7 +123,8 @@ export function howItEnds(run: RunResult): Pick<InvocationResponse, 'outcome' | 
     const allSettled = run.loop.finished && run.questions.every((question) => settled(question, run.questions));
     return allSettled ? { outcome: 'completed', stop_reason: null } : { outcome: 'stopped', stop_reason: LABEL_QUESTION_UNANSWERED };
   }
-  if (run.questions.some(answered)) {
+  // A label answer obtained is one the reply shows.
+  if (shownQuestions(run.questions).some(answered)) {
     return { outcome: 'stopped', stop_reason: SCREENING_INCOMPLETE };
   }
   return { outcome: 'failed', stop_reason: screeningReason(run.screening) };
