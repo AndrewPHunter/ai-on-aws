@@ -86,16 +86,30 @@ test('identity 1. every secret and password in the realm file is a placeholder t
 })
 
 test('identity 5. running set-up again changes no value that is already set, and writes a value for each variable that has none', () => {
+  const names = [...read('.env.example').matchAll(/^([A-Z_][A-Z0-9_]*)=/gm)].map((match) => match[1] ?? '')
+  // The file as compose reads it: each name's lines, the last of which gives its value.
+  const linesOf = (text: string, name: string): string[] =>
+    [...text.matchAll(new RegExp(`^${name}=(.*)$`, 'gm'))].map((match) => match[1] ?? '')
+  const runAgainOver = (before: string): string => {
+    const after = runSetup(before).env
+    assert.ok(after.startsWith(before), 'a line that was already in .env was changed or moved')
+    for (const name of names) {
+      const lines = linesOf(after, name)
+      assert.equal(lines.length, 1, `.env has ${String(lines.length)} lines for ${name}`)
+      assert.notEqual(lines.at(-1) ?? '', '', `set-up wrote no value for ${name}`)
+      const set = linesOf(before, name).at(-1)
+      if (set) assert.equal(lines.at(-1), set, `set-up changed the value of ${name}`)
+    }
+    return after
+  }
+
   const whole = runSetup(null).env
   assert.notEqual(whole, '', 'setup.sh wrote no .env')
-  assert.equal(runSetup(whole).env, whole)
+  assert.equal(runAgainOver(whole), whole)
 
   // The same file lacking two variables, as a checkout from before they were added is.
   const lacking = ['IDENTITY_DANA_PASSWORD', 'IDENTITY_ORCHESTRATOR_CLIENT_SECRET']
   const partial = lacking.reduce((text, name) => text.replace(new RegExp(`^${name}=.*\\n`, 'm'), ''), whole)
   assert.notEqual(partial, whole)
-  const completed = runSetup(partial).env
-  assert.ok(completed.startsWith(partial), 'a line that was already in .env was changed or moved')
-  const names = [...read('.env.example').matchAll(/^([A-Z_][A-Z0-9_]*)=/gm)].map((match) => match[1] ?? '')
-  for (const name of names) assert.notEqual(valueOf(completed, name), '', `set-up wrote no value for ${name}`)
+  runAgainOver(partial)
 })
