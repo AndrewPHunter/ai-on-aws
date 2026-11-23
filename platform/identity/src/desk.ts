@@ -1,6 +1,6 @@
 // The requests a person makes through the web client (the desk), standing in for their browser: signing in
 // through the client and the provider's own sign-in page, sending an inquiry and sending it again, waiting for
-// a run to end, reading the case list and one case, and signing out. Used by gate/stack-gate.ts and by the
+// a run to end, reading the case list and one case, reading the trace list and one run's trace, and signing out. Used by gate/stack-gate.ts and by the
 // attack runner in evaluation/, so that both act as a person in the same way.
 //
 // Each function makes its requests against the addresses it is given and returns what was answered. Nothing
@@ -175,8 +175,9 @@ export function signOut(http: Http, addresses: DeskAddresses, session: string): 
 // ---------- inquiries and their runs ----------
 
 // A run as a caller reads it from the client's answer, which is not validated here: every field may be missing.
-// The client's own shapes are Run and InvocationResponse in client/shared/api.ts. A delegation step carries the
-// sub-agent's whole response.
+// The client's own shapes are Run and InvocationResponse in client/shared/api.ts. A run read back on the
+// inquiry routes has no steps; the same run in a trace has the agent's whole response, and there a delegation
+// step carries the sub-agent's whole response.
 export type ResponseView = {
   outcome?: string
   stop_reason?: string | null
@@ -193,6 +194,7 @@ export type StepView = {
   response?: ResponseView | null
 }
 export type RunView = {
+  id?: string
   state?: string
   started_by?: { name?: string } | null
   error?: string | null
@@ -243,4 +245,16 @@ export function readCaseList(http: Http, addresses: DeskAddresses, session: stri
 /** GET /api/cases/<id>. */
 export function readCase(http: Http, addresses: DeskAddresses, session: string, caseId: string): Promise<Reply> {
   return getAs(http, addresses, session, `/api/cases/${encodeURIComponent(caseId)}`)
+}
+
+// ---------- traces ----------
+
+/** GET /api/traces: every person's runs, newest first, to a session granted traces:read. */
+export function readTraceList(http: Http, addresses: DeskAddresses, session: string): Promise<Reply> {
+  return getAs(http, addresses, session, '/api/traces')
+}
+
+/** GET /api/traces/<run id>: the run's inquiry, and the run with the agent's whole response, steps included. */
+export function readTrace(http: Http, addresses: DeskAddresses, session: string, runId: string): Promise<Reply> {
+  return getAs(http, addresses, session, `/api/traces/${encodeURIComponent(runId)}`)
 }

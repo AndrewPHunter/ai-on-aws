@@ -39,13 +39,13 @@ No command prints a question, an answer, a reply, a rewrite or a model's reason:
 
 | Run | What it does |
 |---|---|
-| `evaluation/attacks.sh ai-on-aws attacks-1` | Signs the four people in through the client; enters the victim's report as `dana.desk` through `intake-strands` and finds its case as `riley.reviewer`; then plays every attack and control case and the sent-twice faults, one at a time, each through the client as its person, waiting up to 300 s for its run; reads the truth as `riley.reviewer` after each; judges it; signs out |
+| `evaluation/attacks.sh ai-on-aws attacks-1` | Signs the four people in through the client; enters the victim's report as `dana.desk` through `intake-strands` and finds its case as `riley.reviewer`; then plays every attack and control case and the sent-twice faults, one at a time, each through the client as its person, waiting up to 300 s for its run; reads each ended run's trace as `avery.auditor` and the truth as `riley.reviewer` after each; judges it, searching the run as the person received it as the record and reading the steps, delegated responses and claims from the trace; signs out |
 | `evaluation/attacks.sh ai-on-aws attacks-1-cases --fault case-system` | Stops the case system with Compose, plays the two cases run without it, and starts it again whatever happened |
 | `evaluation/attacks.sh ai-on-aws attacks-1-knowledge --fault knowledge` | The same with the retrieval service |
 
 Each run has its own name: started again with a name that exists, it refuses, since an attack run changes the stack. A `--fault` run refuses when its service is not running to begin with.
 
-It writes `evaluation/data/attacks/<run-name>/results.jsonl`, one line per case (the case's id, class, target, person, verdict, the expectations that failed, why a case was inconclusive or not run, the claim findings, and what was observed, replies and steps included), and `victim.json`. It prints one line per case (its id and verdict), then a table: for each class and target, how many cases held, failed, were inconclusive or not run, with cases decided by code and by a model counted apart, and the reply and record scopes of work in the reply apart; then the ids of the cases decided by code, and of the controls, that did not hold; then the claim findings (each case id, the kind, and the case id it names). Counts, never rates.
+It writes `evaluation/data/attacks/<run-name>/results.jsonl`, one line per case (the case's id, class, target, person, verdict, the expectations that failed, why a case was inconclusive or not run, the claim findings, and what was observed: each run as the person received it, without steps, and each run's trace as `avery.auditor` read it, steps included), and `victim.json`. A case with a run that ended but whose trace could not be read is not run. It prints one line per case (its id and verdict), then a table: for each class and target, how many cases held, failed, were inconclusive or not run, with cases decided by code and by a model counted apart, and the reply and record scopes of work in the reply apart; then the ids of the cases decided by code, and of the controls, that did not hold; then the claim findings (each case id, the kind, and the case id it names). Counts, never rates.
 
 | Exit code | `attacks.sh` |
 |---|---|
@@ -101,7 +101,7 @@ evaluation/
     ├── reword-check.csv          original and reworded pairs for a person to read
     ├── attacks/<run-name>/
     │   ├── results.jsonl         one line per attack, control or fault case: the verdict, the failed expectations, the
-    │   │                         claim findings and what was observed, replies and steps included
+    │   │                         claim findings, each run as the person received it, and each run's trace
     │   └── victim.json           the victim's inquiry, its run and the case it opened
     └── runs/<run-name>/
         ├── responses.jsonl       one line per call: qid, time, duration, status, whether it kept to the contract,
