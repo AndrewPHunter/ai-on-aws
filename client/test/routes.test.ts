@@ -1,4 +1,4 @@
-// Invariants 5, 6 and 9 to 11 of client/README.md ("Always true"), and the probe that the built app is served. The
+// Invariants 5, 6 and 9 to 12 of client/README.md ("Always true"), and the probe that the built app is served. The
 // agent and the case system are scripted servers; the identity provider refreshes by a function (support.ts).
 
 import assert from 'node:assert/strict';
@@ -147,9 +147,10 @@ test('invariant 10: what a session may do comes from its granted scopes; anythin
   const oneCase = (c: string) => () => call(`${desk.url}/api/cases/AE-101`, { cookie: c });
   const review = (c: string) => () => call(`${desk.url}/api/cases/AE-101/review`, { cookie: c, method: 'POST', body: { decision: 'approve' } });
   const rows = [
-    { name: 'granted nothing but openid', granted: ['openid'], may: { agents: [], read_cases: false, decide_cases: false }, refused: (c: string) => [send(c, 'first'), caseList(c), oneCase(c), review(c)] },
-    { name: 'granted cases:read only', granted: ['openid', 'cases:read'], may: { agents: [], read_cases: true, decide_cases: false }, refused: (c: string) => [send(c, 'first'), review(c)] },
-    { name: 'granted the intake scope and both case scopes', granted: RILEY.granted, may: { agents: ['first'], read_cases: true, decide_cases: true }, refused: (c: string) => [send(c, 'expert')] },
+    { name: 'granted nothing but openid', granted: ['openid'], may: { agents: [], read_cases: false, decide_cases: false, read_traces: false }, refused: (c: string) => [send(c, 'first'), caseList(c), oneCase(c), review(c)] },
+    { name: 'granted cases:read only', granted: ['openid', 'cases:read'], may: { agents: [], read_cases: true, decide_cases: false, read_traces: false }, refused: (c: string) => [send(c, 'first'), review(c)] },
+    { name: 'granted the intake scope and both case scopes', granted: RILEY.granted, may: { agents: ['first'], read_cases: true, decide_cases: true, read_traces: false }, refused: (c: string) => [send(c, 'expert')] },
+    { name: 'granted traces:read only', granted: ['openid', 'traces:read'], may: { agents: [], read_cases: false, decide_cases: false, read_traces: true }, refused: (c: string) => [send(c, 'first'), caseList(c)] },
   ];
   for (const [n, row] of rows.entries()) {
     await t.test(row.name, async () => {
@@ -181,6 +182,29 @@ test('invariant 11: an inquiry and its runs are only for the person who entered 
   const sentBefore = agent.received.length;
   assert.deepEqual(await Promise.all(asked(id)), await Promise.all(asked('no-such-inquiry')));
   assert.equal(agent.received.length, sentBefore);
+});
+
+test("invariant 12: a run's steps leave the server only on the trace routes, to a session granted traces:read; those cover every person's runs", async (t) => {
+  const dana = signedIn(desk, DANA, 'access-steps', 3_600_000, 'refresh-steps');
+  const avery = signedIn(desk, { sub: 'sub-avery', name: 'Avery Auditor', username: 'avery.auditor', roles: [], granted: ['openid', 'cases:read', 'traces:read'] }, 'access-traces', 3_600_000, 'refresh-traces');
+  const id = String(at((await inquire(dana, 'A message with steps')).body, 'inquiry', 'id'));
+  const runId = String(at(await settled(desk, id, dana), 'runs', 0, 'id'));
+  const traces = (body: unknown): unknown[] => [at(body, 'traces')].flat();
+  const rows = [
+    { name: 'its own inquiry, to a session without the scope', cookie: dana, path: `/api/inquiries/${id}`, status: 200, shows: (b: unknown) => ['steps' in Object(at(b, 'inquiry', 'runs', 0, 'response')), at(b, 'inquiry', 'runs', 0, 'response', 'reply')], expected: [false, EXAMPLE_RESPONSE.reply] },
+    { name: 'the trace list, to a session without the scope', cookie: dana, path: '/api/traces', status: 403 },
+    { name: 'a trace, to a session without the scope', cookie: dana, path: `/api/traces/${runId}`, status: 403 },
+    { name: "the trace list holds a run another person started", cookie: avery, path: '/api/traces', status: 200, shows: (b: unknown) => [traces(b).some((r) => at(r, 'run_id') === runId && at(r, 'started_by', 'name') === DANA.name)], expected: [true] },
+    { name: "that run's trace holds its steps and its message", cookie: avery, path: `/api/traces/${runId}`, status: 200, shows: (b: unknown) => [at(b, 'trace', 'run', 'response', 'steps'), at(b, 'trace', 'inquiry', 'text')], expected: [EXAMPLE_RESPONSE.steps, 'A message with steps'] },
+    { name: 'an unknown run', cookie: avery, path: '/api/traces/no-such-run', status: 404 },
+  ];
+  for (const row of rows) {
+    await t.test(row.name, async () => {
+      const { status, body } = await call(`${desk.url}${row.path}`, { cookie: row.cookie });
+      assert.equal(status, row.status);
+      if (row.shows !== undefined) assert.deepEqual(row.shows(body), row.expected);
+    });
+  }
 });
 
 test('probe: the built app is served, and any other path is its page', async () => {

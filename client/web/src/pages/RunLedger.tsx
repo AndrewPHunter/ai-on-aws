@@ -1,7 +1,7 @@
 import { ArrowRightLeft, Brain, CircleAlert, Search, Wrench } from 'lucide-react';
 import type { ReactNode } from 'react';
 
-import type { Run, Step } from '../../../shared/api.ts';
+import type { Step, TracedRun } from '../../../shared/api.ts';
 import { formatDuration, pretty, stepTitle } from '../format.ts';
 
 const ICON: Record<Step['kind'], ReactNode> = {
@@ -173,7 +173,7 @@ function StepList({ steps, nested = false }: { steps: readonly Step[]; nested?: 
   );
 }
 
-export function RunLedger({ run }: { run: Run }) {
+export function RunLedger({ run }: { run: TracedRun }) {
   if (run.state === 'running') {
     return (
       <div className="ledger">

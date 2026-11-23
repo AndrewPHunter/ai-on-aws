@@ -3,9 +3,8 @@ import { Link } from 'react-router';
 
 import type { AgentInfo, Inquiry, Run } from '../../../shared/api.ts';
 import { ApiFailure, failureText, useAgents, useInquiry, useSendAgain } from '../api.ts';
-import { Boxed, Loading, Problem, RunBadge } from '../components.tsx';
+import { Boxed, Loading, Message, Problem, RunBadge } from '../components.tsx';
 import { formatDateTime, formatDuration, labelAnswerText, labelDate, labelLinkText } from '../format.ts';
-import { RunLedger } from './RunLedger.tsx';
 
 const ACTION_TEXT = {
   case_opened: 'opened',
@@ -15,10 +14,6 @@ const ACTION_TEXT = {
 
 function agentName(agents: readonly AgentInfo[], id: string): string {
   return agents.find((agent) => agent.id === id)?.name ?? id;
-}
-
-function toolCalls(run: Run): number {
-  return run.response?.steps.filter((step) => step.kind === 'tool').length ?? 0;
 }
 
 function Comparison({
@@ -41,12 +36,6 @@ function Comparison({
             <tr>
               <th scope="col">Agent</th>
               <th scope="col">Result</th>
-              <th scope="col" className="num">
-                Steps
-              </th>
-              <th scope="col" className="num">
-                Tool calls
-              </th>
               <th scope="col">Cases</th>
               <th scope="col" className="num">
                 Time
@@ -64,8 +53,6 @@ function Comparison({
                 <td>
                   <RunBadge state={run.state} />
                 </td>
-                <td className="num">{run.response?.steps.length ?? '—'}</td>
-                <td className="num">{run.response === null ? '—' : toolCalls(run)}</td>
                 <td>{run.response?.case_actions.map((action) => action.case_id).join(', ') || '—'}</td>
                 <td className="num">{run.duration_ms === null ? '—' : formatDuration(run.duration_ms)}</td>
               </tr>
@@ -214,46 +201,27 @@ export function InquiryDetail({ inquiryId }: { inquiryId: string }) {
   const run = found.runs.find((candidate) => candidate.id === chosenRun) ?? latest;
 
   return (
-    <div className="reading">
-      <div className="reading__thread">
-        <article className="message" aria-label="The inquiry">
-          <header className="message__head">
-            <p className="message__from">{found.sender}</p>
-            <p className="message__when">
-              Received {formatDateTime(found.received_at)}
-              {found.entered_by === null ? '' : `, entered by ${found.entered_by.name}`}
-            </p>
+    <div className="reading__thread">
+      <Message inquiry={found} />
+
+      {run === undefined ? (
+        <Problem>This inquiry was received but never handed to an agent.</Problem>
+      ) : (
+        <>
+          <header className="runhead">
+            <h2>{agentName(known, run.agent_id)}</h2>
+            <RunBadge state={run.state} />
           </header>
-          {found.text.split(/\n{2,}/).map((paragraph, index) => (
-            <p key={index} className="document">
-              {paragraph}
-            </p>
-          ))}
-        </article>
+          {run.started_by === null ? null : <p className="message__when">Started by {run.started_by.name}</p>}
+          <RunResult run={run} />
+        </>
+      )}
 
-        {run === undefined ? (
-          <Problem>This inquiry was received but never handed to an agent.</Problem>
-        ) : (
-          <>
-            <header className="runhead">
-              <h2>{agentName(known, run.agent_id)}</h2>
-              <RunBadge state={run.state} />
-            </header>
-            {run.started_by === null ? null : <p className="message__when">Started by {run.started_by.name}</p>}
-            <RunResult run={run} />
-          </>
-        )}
+      {found.runs.length > 1 && run !== undefined ? (
+        <Comparison inquiry={found} agents={known} selected={run.id} onSelect={setChosenRun} />
+      ) : null}
 
-        {found.runs.length > 1 && run !== undefined ? (
-          <Comparison inquiry={found} agents={known} selected={run.id} onSelect={setChosenRun} />
-        ) : null}
-
-        <SendAgain inquiry={found} agents={known} />
-      </div>
-
-      <aside className="reading__ledger" aria-label="What the agent did">
-        {run === undefined ? null : <RunLedger run={run} />}
-      </aside>
+      <SendAgain inquiry={found} agents={known} />
     </div>
   );
 }

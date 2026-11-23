@@ -54,9 +54,10 @@ export type SampleList = { samples: SampleInquiry[] };
 export type Author = { name: string };
 
 // GET /api/session: who is signed in, and what the scopes granted at sign-in let them do: the ids of the
-// agents they may run, whether they may read cases, whether they may decide one. Holds no token of any kind.
+// agents they may run, whether they may read cases, whether they may decide one, whether they may read traces.
+// Holds no token of any kind.
 export type SessionUser = { name: string; username: string; roles: string[] };
-export type SessionMay = { agents: string[]; read_cases: boolean; decide_cases: boolean };
+export type SessionMay = { agents: string[]; read_cases: boolean; decide_cases: boolean; read_traces: boolean };
 export type SessionView = { user: SessionUser; may: SessionMay };
 
 // POST /auth/logout: where to send the browser to end the session at the identity provider too.
@@ -68,7 +69,11 @@ export type ReviewDecisionRequest = { decision: ReviewDecision; note?: string };
 
 // One attempt by one agent to handle an inquiry.
 export type RunState = 'running' | 'completed' | 'failed';
-export type Run = {
+
+// What the agent returned, without its steps: how a run's result is given on every route but the trace routes.
+export type RunResult = Omit<InvocationResponse, 'steps'>;
+
+type RunOf<Result> = {
   id: string;
   inquiry_id: string;
   agent_id: string;
@@ -80,8 +85,13 @@ export type Run = {
   // Why the run failed: the agent could not be reached, timed out, or answered outside the contract.
   error: string | null;
   // What the agent returned. Present only when the run completed.
-  response: InvocationResponse | null;
+  response: Result | null;
 };
+
+// A run as every route but the trace routes gives it: the agent's response without its steps.
+export type Run = RunOf<RunResult>;
+// A run with the agent's whole response, steps included: given only on the trace routes.
+export type TracedRun = RunOf<InvocationResponse>;
 
 export type RunSummary = {
   id: string;
@@ -118,3 +128,22 @@ export type InquiryResponse = { inquiry: Inquiry };
 // POST /api/inquiries/<id>/runs: sends the same message, unchanged, to an agent again. Answers 202.
 export type NewRunRequest = { agent_id: string };
 export type RunResponse = { run: Run };
+
+// GET /api/traces: every person's runs, newest first, to a session granted traces:read.
+export type TraceSummary = {
+  run_id: string;
+  inquiry_id: string;
+  agent_id: string;
+  state: RunState;
+  started_at: string;
+  started_by: Author | null;
+  duration_ms: number | null;
+  // The agent's outcome, or null when it did not answer.
+  outcome: InvocationResponse['outcome'] | null;
+};
+export type TraceList = { traces: TraceSummary[]; truncated: boolean };
+
+// GET /api/traces/<run_id>: the message as it was received, and the run with its steps.
+export type TraceInquiry = Omit<Inquiry, 'runs'>;
+export type Trace = { inquiry: TraceInquiry; run: TracedRun };
+export type TraceResponse = { trace: Trace };

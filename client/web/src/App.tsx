@@ -1,4 +1,4 @@
-import { Inbox, ClipboardCheck, Activity } from 'lucide-react';
+import { Inbox, ClipboardCheck, Activity, ScrollText } from 'lucide-react';
 import { NavLink, Navigate, Route, Routes } from 'react-router';
 
 import type { SessionMay, SessionUser } from '../../shared/api.ts';
@@ -8,6 +8,7 @@ import { CasePage } from './pages/CasePage.tsx';
 import { CasesPage } from './pages/CasesPage.tsx';
 import { InquiriesPage } from './pages/InquiriesPage.tsx';
 import { SystemPage } from './pages/SystemPage.tsx';
+import { TracesPage } from './pages/TracesPage.tsx';
 import { SignedInProvider } from './session.tsx';
 
 // Rendered only for a session that may read cases, so nobody else asks for them.
@@ -53,6 +54,12 @@ function Rail({ user, may }: { user: SessionUser; may: SessionMay }) {
           </NavLink>
         ) : null}
         {may.read_cases ? <CasesLink /> : null}
+        {may.read_traces ? (
+          <NavLink to="/traces" className="rail__link">
+            <ScrollText size={18} aria-hidden="true" />
+            <span>Traces</span>
+          </NavLink>
+        ) : null}
         <NavLink to="/system" className="rail__link">
           <Activity size={18} aria-hidden="true" />
           <span>System</span>
@@ -88,7 +95,7 @@ function NothingToDo() {
   return (
     <div className="column">
       <Empty title="Nothing to do here">
-        <p>Your account has nothing to do at this desk: it may not send inquiries to an agent or read cases.</p>
+        <p>Your account has nothing to do at this desk: it may not send inquiries to an agent, read cases or read traces.</p>
       </Empty>
     </div>
   );
@@ -141,9 +148,9 @@ export function App() {
 
   const { user, may } = session.data;
   const inquiries = may.agents.length > 0;
-  // Where a path the session has no page for leads. With neither inquiries nor cases, every such path
+  // Where a path the session has no page for leads. With no inquiries, cases or traces, every such path
   // shows that the account has nothing to do here.
-  const home = inquiries ? '/inquiries' : may.read_cases ? '/cases' : undefined;
+  const home = inquiries ? '/inquiries' : may.read_cases ? '/cases' : may.read_traces ? '/traces' : undefined;
   const elsewhere = home === undefined ? <NothingToDo /> : <Navigate to={home} replace />;
   return (
     <SignedInProvider session={session.data}>
@@ -156,6 +163,8 @@ export function App() {
             {inquiries ? <Route path="/inquiries/:inquiryId" element={<InquiriesPage />} /> : null}
             {may.read_cases ? <Route path="/cases" element={<CasesPage />} /> : null}
             {may.read_cases ? <Route path="/cases/:caseId" element={<CasePage />} /> : null}
+            {may.read_traces ? <Route path="/traces" element={<TracesPage />} /> : null}
+            {may.read_traces ? <Route path="/traces/:runId" element={<TracesPage />} /> : null}
             <Route path="/system" element={<SystemPage />} />
             <Route path="*" element={elsewhere} />
           </Routes>

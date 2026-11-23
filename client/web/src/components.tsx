@@ -3,8 +3,8 @@
 import { AlertTriangle } from 'lucide-react';
 import type { ReactNode } from 'react';
 
-import type { CaseStatus, PieceState, RunState } from '../../shared/api.ts';
-import { RUN_STATE_LABEL, STATUS_LABEL } from './format.ts';
+import type { CaseStatus, PieceState, RunState, TraceInquiry } from '../../shared/api.ts';
+import { RUN_STATE_LABEL, STATUS_LABEL, formatDateTime } from './format.ts';
 
 export function StatusBadge({ status }: { status: CaseStatus }) {
   return <span className={`badge badge--${status}`}>{STATUS_LABEL[status]}</span>;
@@ -23,6 +23,26 @@ const PIECE_LABEL: Record<PieceState, string> = { up: 'Running', down: 'Not reac
 
 export function PieceBadge({ state }: { state: PieceState }) {
   return <span className={`badge badge--piece-${state}`}>{PIECE_LABEL[state]}</span>;
+}
+
+// An inquiry's message as it was received.
+export function Message({ inquiry }: { inquiry: TraceInquiry }) {
+  return (
+    <article className="message" aria-label="The inquiry">
+      <header className="message__head">
+        <p className="message__from">{inquiry.sender}</p>
+        <p className="message__when">
+          Received {formatDateTime(inquiry.received_at)}
+          {inquiry.entered_by === null ? '' : `, entered by ${inquiry.entered_by.name}`}
+        </p>
+      </header>
+      {inquiry.text.split(/\n{2,}/).map((paragraph, index) => (
+        <p key={index} className="document">
+          {paragraph}
+        </p>
+      ))}
+    </article>
+  );
 }
 
 // The heavy frame is used for one thing only: something a person has to look at or decide.
