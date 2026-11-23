@@ -40,11 +40,15 @@ stops it and keeps the cases. Add `-v` to delete them.
 
 Three tools, and no others. The MCP server offers each only to a token holding its scope; a call to one not offered is answered with the MCP library's unknown-tool error and changes nothing.
 
-| Tool | What it does |
-|---|---|
-| `create_case` | Opens a case from the message being handled, with whichever of the four elements the message gives |
-| `find_case` | Looks cases up: by identifier, by part of the drug or patient, or "from the message being handled". Newest first, at most 50, and it says when more matched than it lists |
-| `add_follow_up` | Adds information to an existing case as a new version |
+| Tool | What it does | What it answers with |
+|---|---|---|
+| `create_case` | Opens a case from the message being handled, with whichever of the four elements the message gives | `{ outcome, case: <receipt> }`, `outcome` being `created` or `replayed` |
+| `add_follow_up` | Adds information to an existing case as a new version | `{ outcome, case: <receipt> }`, `outcome` being `recorded` or `replayed` |
+| `find_case` | Looks cases up: by identifier, by part of the drug or patient, or "from the message being handled". Newest first, at most 50, and it says when more matched than it lists | `{ cases, truncated }`, each case whole |
+
+A receipt is `{ case_id, status, version, missing }`: which case, where it stands, and the elements it still lacks. A tool that changes a case never answers with what the case holds. A refused conflict (`case_already_opened_for_this_message`, `follow_up_already_recorded_for_this_message`) names the case as it stands by the same receipt.
+
+`find_case` is offered only to a token holding `cases:lookup`, and the lab's realm grants that scope to nobody, so no agent has a lookup. Whole cases are read by people, on the review server.
 
 The four elements are an identifiable patient, an identifiable reporter, a suspect drug and an adverse event.
 
@@ -64,7 +68,7 @@ The four elements are an identifiable patient, an identifiable reporter, a suspe
 ## The rules it enforces
 
 - **Complete or not is decided here, by code.** A case with all four elements is `awaiting_review`. A case missing any is `incomplete` and lists what is missing. The check is that each element is present; whether it is good enough is the reviewer's judgement.
-- **One case per inbound message.** A second `create_case` for the same message with the same content returns the case already opened. With different content it is refused, names the existing case, and changes nothing.
+- **One case per inbound message.** A second `create_case` for the same message with the same content answers with the receipt of the case already opened. With different content it is refused, names the existing case, and changes nothing.
 - **Follow-ups add, they never overwrite.** Each one is a new version; earlier versions stay readable. A follow-up from the same message is recorded once.
 - **A follow-up sends the case back to review**, or leaves it incomplete, whatever its status was, including approved.
 - **Only a person changes a case to approved, rejected or needs information.** Those are not MCP tools. They are a request to the review server, which takes the reviewer's name from the access token and refuses a body that names one.
@@ -131,7 +135,7 @@ curl -s -X POST http://127.0.0.1:8001/cases/AE-000001/review -H "authorization: 
 
 ## What was measured
 
-- The repository check runs 12 tests for this piece, named `case-system` and a number: one for each invariant under "Always true", numbered as they are, and three probes of the wiring, P1 to P3. Invariants 1 to 7 are shown on the store over an in-memory database (for invariant 5, the statuses a decision is allowed from). Invariant 9 is shown on the function that decides a route and on the MCP server built for one request, reached through the MCP SDK's in-memory transport, one row per scope. Invariant 8 and the probes drive the real servers over loopback, P1 and P3 with the MCP SDK's own client: P1, the three tools offered to a token holding both agent scopes and a create recorded against the context headers and the token's client and user, with an `x-agent-id` header naming another agent; P2, a decision through the review route recorded under the token's user, and refused for a body naming a reviewer or a token without `cases:review`; P3, another sender's case answered over MCP as one that does not exist. Their token check is a function that names a caller, refuses or is unavailable; verifying a token is tested in [`shared/`](../../shared/README.md).
+- The repository check runs 13 tests for this piece, named `case-system` and a number: one for each invariant under "Always true", numbered as they are, and three probes of the wiring, P1 to P3. Invariants 1 to 7 are shown on the store over an in-memory database (for invariant 5, the statuses a decision is allowed from). Invariant 9 is shown on the function that decides a route and on the MCP server built for one request, reached through the MCP SDK's in-memory transport, one row per scope. Invariant 10 is shown on that same server, one row each for a create, a replayed create, a conflicting create, a follow-up and a conflicting follow-up. Invariant 8 and the probes drive the real servers over loopback, P1 and P3 with the MCP SDK's own client: P1, the three tools offered to a token holding both agent scopes and a create recorded against the context headers and the token's client and user, with an `x-agent-id` header naming another agent; P2, a decision through the review route recorded under the token's user, and refused for a body naming a reviewer or a token without `cases:review`; P3, another sender's case answered over MCP as one that does not exist. Their token check is a function that names a caller, refuses or is unavailable; verifying a token is tested in [`shared/`](../../shared/README.md).
 - By hand against the running container, on an arm64 Mac: a case created, the same call repeated, the container removed and started again on the same volume, and the same call repeated a third time. One case existed throughout, and the audit trail showed one creation and two replays.
 
 ## Known limits
