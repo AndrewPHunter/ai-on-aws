@@ -136,7 +136,7 @@ The rule is one function in `intake/run.ts` or `run/turns.ts` in both agents. Th
 
 ## What Strands does differently
 
-The rules are tested once, on the hand-written agent, in [`agents/test/intake.test.ts`](../../agents/test/intake.test.ts). [`agents/test/intake-strands.test.ts`](../../agents/test/intake-strands.test.ts) has five tests that this agent's hooks are wired to them: a case action from the tool's answer (with the exchanged token, and only that one, on every request to the case system), a refused call that does not reach the case system, a write repeated once by code, the turn limit, and a model server that fails. The differences below are read from the code and from the source of Strands; no test asserts them.
+The rules are tested once, on the hand-written agent, in [`agents/test/intake.test.ts`](../../agents/test/intake.test.ts). [`agents/test/intake-strands.test.ts`](../../agents/test/intake-strands.test.ts) has five tests that this agent's hooks are wired to them: a case action from the tool's answer (with the exchanged token, and only that one, on every request to the case system, and only `create_case` and `add_follow_up` shown to the model when the case system offers a lookup as well), a refused call that does not reach the case system, a write repeated once by code, the turn limit, and a model server that fails. The differences below are read from the code and from the source of Strands; no test asserts them.
 
 | Situation | Hand-written loop | Strands | What this file does about it |
 |---|---|---|---|

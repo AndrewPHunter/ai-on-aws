@@ -16,10 +16,13 @@ import type { Clock } from './support.ts';
 
 const IDENTITY = { id: 'intake-test', implementation: 'hand-written loop' };
 
-const DEFINITIONS: ToolDefinition[] = ['create_case', 'add_follow_up'].map((name) => ({
+const definition = (name: string): ToolDefinition => ({
   type: 'function',
   function: { name, description: `The case system's ${name}.`, parameters: { type: 'object', properties: { case_id: { type: 'string' }, event: { type: 'string' } } } },
-}));
+});
+const DEFINITIONS: ToolDefinition[] = ['create_case', 'add_follow_up'].map(definition);
+// A case system configured to offer a lookup as well.
+const WITH_LOOKUP: ToolDefinition[] = ['create_case', 'find_case', 'add_follow_up'].map(definition);
 
 type Script = (messages: ChatMessage[], nth: number) => ChatResult;
 type Tools = (tool: string, args: Record<string, unknown>, nth: number) => ToolOutcome;
@@ -62,7 +65,7 @@ const followUp = (event: string): [string, unknown] => ['add_follow_up', { case_
 
 // The handler with scripted dependencies. The model's script is asked per conversation (by its user turn), so two
 // runs on the same dependencies each follow their own.
-function rig(script: Script, tools: Tools = (tool) => (tool === 'create_case' ? created('C-1') : followedUp('C-9')), options: { connect?: 'refused' | 'short'; clock?: Clock } = {}) {
+function rig(script: Script, tools: Tools = (tool) => (tool === 'create_case' ? created('C-1') : followedUp('C-9')), options: { connect?: 'refused' | 'short' | 'lookup'; clock?: Clock } = {}) {
   const time = options.clock ?? clock();
   const world: World = { events: [], calls: [], requests: [], connected: [] };
   const seen = new Map<string, number>();
@@ -88,7 +91,7 @@ function rig(script: Script, tools: Tools = (tool) => (tool === 'create_case' ? 
           return Promise.resolve({
             ok: true,
             tools: {
-              definitions: structuredClone(options.connect === 'short' ? DEFINITIONS.slice(0, 1) : DEFINITIONS),
+              definitions: structuredClone(options.connect === 'short' ? DEFINITIONS.slice(0, 1) : options.connect === 'lookup' ? WITH_LOOKUP : DEFINITIONS),
               call(tool, args) {
                 world.events.push(tool);
                 world.calls.push({ tool, args });
@@ -188,6 +191,19 @@ test('intake 4. a run opens at most one case for its message and adds no version
     assert.equal(writes(world), 1, `${row.name}: more than one write reached the case system`);
     assert.equal(response.case_actions.length, 1, row.name);
   }
+});
+
+test('intake 5. the agent has no lookup: a lookup the case system offers is not shown to the model, and a call to it is refused and never reaches the case system', async () => {
+  const lookup = ask(['find_case', { patient: 'JD' }]);
+  const { world, run } = rig(turns(lookup), undefined, { connect: 'lookup' });
+  await run();
+  assert.ok(world.requests.length > 1, 'the model was not asked again after the lookup');
+  for (const request of world.requests) assert.deepEqual(request.tools, DEFINITIONS, 'the model was shown a tool other than the two');
+  assert.deepEqual(world.calls, [], 'the lookup reached the case system');
+  const [lookupId] = callIdsOf(lookup);
+  const told = toolMessages(world.requests[1]?.messages ?? []).find((m) => m.id === lookupId);
+  assert.ok(told, 'the model was not told');
+  assert.equal(typeof prop(JSON.parse(told.content), 'error'), 'string', 'what the model was told is not a refusal');
 });
 
 test('intake 6. a write that got no answer is repeated once, by code, with identical content, and the model is not asked to repeat it', async () => {

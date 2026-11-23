@@ -59,7 +59,7 @@ flowchart LR
     Loop -->|"ChatModel.complete"| Chat
     Loop -->|"ToolSet.call"| ToolSet
     CaseTools -. "is a" .-> ToolSet
-    Run -->|"WRITING_TOOLS, caseActionFrom"| CaseTools
+    Run -->|"caseActionFrom"| CaseTools
     Server -->|"validates with"| Contract
     Chat -->|"HTTP, bearer key"| Model
     CaseTools -->|"MCP over HTTP,<br/>context headers"| Cases
@@ -82,7 +82,7 @@ flowchart LR
 | `model/served.ts` (shared) | The model settings, the question "which model do you serve", and the wording of a model failure | Chat requests |
 | `intake/main-handwritten.ts` | Connecting this implementation's modules, the exchange before the tool connection among them | The rules of a run |
 
-The loop receives the model, the tool connection, its clock, its way of waiting and its source of randomness as arguments (`IntakeDeps`). It knows nothing about the case system. The shared rules in `intake/run.ts` do: they import `WRITING_TOOLS` and `caseActionFrom` from `tools/case-system.ts`, and they name `create_case` and `add_follow_up`.
+The loop receives the model, the tool connection, its clock, its way of waiting and its source of randomness as arguments (`IntakeDeps`). It knows nothing about the case system. The shared rules in `intake/run.ts` do: they import `caseActionFrom` from `tools/case-system.ts`, and they name `create_case` and `add_follow_up`.
 
 ## One request, end to end
 
@@ -171,9 +171,7 @@ flowchart TD
     E -- no --> F["callOnce, requested by the model"]
     F --> G{"Did the case system answer?"}
     G -- yes --> OK["Its answer goes to the model"]
-    G -- no --> H{"Is the tool a write?"}
-    H -- no --> NA["no_answer goes to the model"]
-    H -- yes --> I["callOnce again, same content,<br/>requested by the agent"]
+    G -- no --> I["callOnce again, same content,<br/>requested by the agent"]
     I --> J{"Did it answer?"}
     J -- yes --> OK
     J -- no --> U["Run is unsettled:<br/>it ends as failed"]

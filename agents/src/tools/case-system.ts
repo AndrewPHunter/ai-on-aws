@@ -1,5 +1,5 @@
 // What is particular to the case system, whichever implementation is calling it: the context headers
-// that say which inbound message a change comes from, the tools an intake run needs and which of them
+// that say which inbound message a change comes from, the two tools an intake run needs, which both
 // change a case, how to read its answers, and what they mean for a run's record. Also the hand-written
 // agent's own connection to the case system's MCP tools (connectCaseTools); the Strands agent connects with
 // Strands' MCP client and uses everything else here.
@@ -13,11 +13,9 @@ import type { ToolDefinition } from '../model/chat.ts';
 import { connectionFailure as readConnectionFailure, payloadOf as readPayload, serviceSentences } from './mcp-answers.ts';
 import type { Connected, ToolOutcome } from './tool-set.ts';
 
-// The tools that change a case. A lost reply from one of these leaves the outcome unknown.
-export const WRITING_TOOLS: readonly string[] = ['create_case', 'add_follow_up'];
-
 // The two tools an intake run needs, and the only ones its model is shown: one opens a case, the other adds
-// to a case the message names by its id. Neither returns what a case holds.
+// to a case the message names by its id. Neither returns what a case holds. Both change a case, so a lost
+// reply from either leaves the outcome unknown.
 export const CASE_TOOLS: readonly string[] = ['create_case', 'add_follow_up'];
 
 // Why a run cannot go on with the tools the case system offered, or undefined when both are there.

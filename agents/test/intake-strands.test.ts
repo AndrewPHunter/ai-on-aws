@@ -27,6 +27,8 @@ async function rig(t: TestContext, script: (request: ModelRequest, nth: number) 
   const model = await startModel(t, script);
   const cases = await startMcp(t, {
     create_case: { shape: CASE_FIELDS, answer: (_args, nth) => create(nth) },
+    // A lookup as well, which the agent must not show the model.
+    find_case: { shape: CASE_FIELDS, answer: () => result({ cases: [] }) },
     add_follow_up: { shape: CASE_FIELDS, answer: () => result({ outcome: 'recorded', case: { case_id: 'C-7', status: 'incomplete' } }) },
   });
   const run = async (limits: Partial<typeof LIMITS> = {}): Promise<InvocationResponse> =>
@@ -43,9 +45,10 @@ async function rig(t: TestContext, script: (request: ModelRequest, nth: number) 
 const creates = (calls: Array<{ tool: string }>): number => calls.filter((c) => c.tool === 'create_case').length;
 
 test('strands 1. an inquiry through the Strands loop and its MCP client: a case action from the tool\'s answer, and its steps', async (t) => {
-  const { cases, run } = await rig(t, (_request, nth) => (nth === 0 ? ask(['create_case', { event: 'rash' }]) : say('Recorded as case C-MODEL.')));
+  const { model, cases, run } = await rig(t, (_request, nth) => (nth === 0 ? ask(['create_case', { event: 'rash' }]) : say('Recorded as case C-MODEL.')));
   const response = await run();
   assert.equal(response.outcome, 'completed');
+  assert.deepEqual(model.requests[0]?.tools, ['create_case', 'add_follow_up'], 'the model was shown a tool other than the two');
   assert.deepEqual(response.case_actions, [{ kind: 'case_opened', case_id: 'C-7', status: 'incomplete' }]);
   assert.deepEqual(
     response.steps.map((s) => s.kind),
