@@ -133,10 +133,11 @@ The rule is one function in `intake/run.ts` or `run/turns.ts` in both agents. Th
 | Time limit | Checked at the top of each turn | Checked in `BeforeModelCallEvent`, plus a timer on the cancel signal for a request in flight |
 | Time limit on one tool call | `ToolSet.call` takes a timeout | `CaseTool` passes `timeoutMs` to `McpClient.callTool` |
 | How the run ends | Returned where it is decided | Decided after `invoke` returns, from the run's own state. Strands' stop reason is read last |
+| At the model's reply, with no case recorded: the report check, then `afterReply` (`atReply` in `intake/report-check.ts`) | Made in `loop`; told once is one more turn of the same loop | Made after `invoke` returns, outside Strands, with the chat client. Told once is a second `invoke` of the same `Agent`: the same hooks, the same cancel signal (so the same deadline), and as turns what the first left, counted as model turns answered |
 
 ## What Strands does differently
 
-The rules are tested once, on the hand-written agent, in [`agents/test/intake.test.ts`](../../agents/test/intake.test.ts). [`agents/test/intake-strands.test.ts`](../../agents/test/intake-strands.test.ts) has five tests that this agent's hooks are wired to them: a case action from the tool's answer (with the exchanged token, and only that one, on every request to the case system, and only `create_case` and `add_follow_up` shown to the model when the case system offers a lookup as well), a refused call that does not reach the case system, a write repeated once by code, the turn limit, and a model server that fails. The differences below are read from the code and from the source of Strands; no test asserts them.
+The rules are tested once, on the hand-written agent, in [`agents/test/intake.test.ts`](../../agents/test/intake.test.ts). [`agents/test/intake-strands.test.ts`](../../agents/test/intake-strands.test.ts) has six tests that this agent's hooks are wired to them: a case action from the tool's answer (with the exchanged token, and only that one, on every request to the case system, and only `create_case` and `add_follow_up` shown to the model when the case system offers a lookup as well), a refused call that does not reach the case system, a write repeated once by code, the turn limit, a model server that fails, and a report check that finds an adverse event, after which the same `Agent` is invoked again with the turn that tells it to record. The differences below are read from the code and from the source of Strands; no test asserts them.
 
 | Situation | Hand-written loop | Strands | What this file does about it |
 |---|---|---|---|
@@ -204,7 +205,7 @@ Everything in the hand-written agent's "Not present" list is also absent here, i
 
 ## What was checked
 
-- Five tests (strands 1 to 5 in `agents/test/intake-strands.test.ts`) show this agent's hooks are wired to the shared rules, which are tested on the hand-written agent.
+- Six tests (strands 1 to 6 in `agents/test/intake-strands.test.ts`) show this agent's hooks are wired to the shared rules, which are tested on the hand-written agent.
 - Against the 9B model, before the retries were turned on, the Strands agent was sent the seven prepared inquiries on an empty store. It gave the expected result for all seven and left three cases: one awaiting review at version 2, one incomplete, one awaiting review. The prompt was tuned on these seven with the hand-written agent, so this is not a held-out set.
 - With the retries on, each agent answered one inquiry against the 9B model, and each was run once with a model address where nothing listens. Both failed the run with "The model could not be reached." after about 1.4 s. The hand-written agent recorded three error steps, the Strands agent one.
 - With a bare Strands `Agent` against the 9B model, before this agent was written this way: a turn with a sentence and two tool calls came through whole; a turn cut off by its output allowance raised `MaxTokensError` carrying what had been written; asking again with `reasoning.effort: 'none'` gave an answer with no thinking; a tool result marked as an error was understood by the model.

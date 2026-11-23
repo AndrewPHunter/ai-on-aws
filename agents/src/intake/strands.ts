@@ -10,6 +10,10 @@
 //   - A turn that used up its output allowance is asked again, once, with thinking off, by setting
 //     retry in the AfterModelCall hook.
 //   - The turn limit is Strands' own (limits.turns). The time limit is the same cancel signal.
+//   - When the model replies and the run has recorded no case, the report check is made (report-check.ts)
+//     outside Strands, and the rule afterReply in run.ts decides. When the model is to be told once to
+//     record, that is a second invoke of the same Agent: the same hooks, the same cancel signal, and the
+//     turns the first invoke left.
 //
 // Strands is used the way it comes: its OpenAI model on its default API (the Responses API), its own
 // loop, its own MCP client. The model server is the local stand-in for Bedrock, which is Strands'
@@ -66,13 +70,15 @@ import type { ModelSettings } from '../model/served.ts';
 import { caseSystemHeaders, connectionFailure, isCaseTool, missingCaseTools, noAnswerWithin, payloadOf } from '../tools/case-system.ts';
 import type { ToolOutcome } from '../tools/tool-set.ts';
 import { CASE_SYSTEM, toolToken } from '../tools/tool-token.ts';
-import { completed, failed, stoppedAtTimeLimit, stoppedAtTurnLimit, stoppedCutOff, stoppedWithoutReply } from '../run/endings.ts';
+import { completed, failed, stopped, stoppedAtTimeLimit, stoppedAtTurnLimit, stoppedCutOff, stoppedWithoutReply } from '../run/endings.ts';
 import type { Limits } from '../run/limits.ts';
 import { recordError, recordNotCalled, recordToolCall, toldAbout } from '../run/steps.ts';
 import type { Refusal } from '../run/steps.ts';
 import { askAgainWithoutThinking } from '../run/turns.ts';
 import { SYSTEM_PROMPT, userTurn } from './prompt.ts';
-import { afterCall, refusalBeforeCall, startRun, unsettledWithoutRepeat } from './run.ts';
+import { atReply } from './report-check.ts';
+import type { ReportCheck } from './report-check.ts';
+import { TOLD_ONCE, afterCall, refusalBeforeCall, startRun, unsettledWithoutRepeat } from './run.ts';
 import type { IntakeRun } from './run.ts';
 
 export type StrandsDeps = {
@@ -83,6 +89,8 @@ export type StrandsDeps = {
   exchange: TokenExchange;
   now: () => Date;
   limits: Limits;
+  // The report check, a separate chat request made by this file's code and not by Strands (report-check.ts).
+  reportCheck: ReportCheck;
 };
 
 type ListedTool = Awaited<ReturnType<McpClient['listTools']>>[number];
@@ -254,6 +262,8 @@ async function converse(
   let turnStarted = run.now();
   let turnAllowanceMs = limits.modelMs;
   let lastReply = '';
+  // Model turns answered so far in the run, over both invokes, so the second gets only the turns left.
+  let turnsAnswered = 0;
   const refused = new Map<string, Refusal>();
   const attempts = new Map<string, number>();
   const callStarted = new Map<string, Date>();
@@ -322,6 +332,7 @@ async function converse(
       return;
     }
     const { message: said, stopReason } = event.stopData;
+    turnsAnswered += 1;
     const text = textOf(said);
     run.steps.push({
       kind: 'model',
@@ -411,39 +422,64 @@ async function converse(
     }
   });
 
-  let result: AgentResult | undefined;
-  let threw: unknown;
-  try {
-    result = await agent.invoke(userTurn(message), {
-      cancelSignal: AbortSignal.any([stopper.signal, timer]),
-      limits: { turns: limits.maxTurns },
-    });
-  } catch (error) {
-    threw = error;
+  // How the run ends after an invoke, from the run's own state, with Strands' stop reason read last. Undefined
+  // when the model ended its turn with a reply, which is for the rule at the reply to decide.
+  function endingAfter(result: AgentResult | undefined, threw: unknown): InvocationResponse | undefined {
+    if (run.unsettled !== undefined) {
+      return failed(run, run.unsettled);
+    }
+    if (modelFailed !== undefined) {
+      return failed(run, modelFailed);
+    }
+    if (timeLimitReached || timer.aborted) {
+      return stoppedAtTimeLimit(run);
+    }
+    if (ranOutOfOutput) {
+      return cutOff ? stoppedCutOff(run) : stoppedWithoutReply(run, 'maxTokens');
+    }
+    if (result === undefined) {
+      const reason = `Strands stopped the run with ${threw instanceof Error ? threw.name : 'an error'}.`;
+      recordError(run, reason);
+      return failed(run, reason);
+    }
+    if (result.stopReason === 'limitTurns') {
+      return stoppedAtTurnLimit(run);
+    }
+    if (result.stopReason === 'endTurn' && lastReply !== '') {
+      return undefined;
+    }
+    return stoppedWithoutReply(run, result.stopReason);
   }
 
-  if (run.unsettled !== undefined) {
-    return failed(run, run.unsettled);
+  const cancelSignal = AbortSignal.any([stopper.signal, timer]);
+  // The first invoke carries the message. A second is made only when the rule says the model is to be told once,
+  // and afterReply says that at most once in a run, so there are at most two.
+  let turn = userTurn(message);
+  for (;;) {
+    const turnsLeft = limits.maxTurns - turnsAnswered;
+    if (turnsLeft <= 0) {
+      return stoppedAtTurnLimit(run);
+    }
+    let result: AgentResult | undefined;
+    let threw: unknown;
+    try {
+      result = await agent.invoke(turn, { cancelSignal, limits: { turns: turnsLeft } });
+    } catch (error) {
+      threw = error;
+    }
+    const ended = endingAfter(result, threw);
+    if (ended !== undefined) {
+      return ended;
+    }
+    const next = await atReply(run, deps.reportCheck, message, deps.model.modelId);
+    if (next === 'complete') {
+      return completed(run, lastReply);
+    }
+    if (next !== 'tell_once') {
+      return stopped(run, next.stop);
+    }
+    run.told = true;
+    lastReply = '';
+    turn = TOLD_ONCE;
   }
-  if (modelFailed !== undefined) {
-    return failed(run, modelFailed);
-  }
-  if (timeLimitReached || timer.aborted) {
-    return stoppedAtTimeLimit(run);
-  }
-  if (ranOutOfOutput) {
-    return cutOff ? stoppedCutOff(run) : stoppedWithoutReply(run, 'maxTokens');
-  }
-  if (result === undefined) {
-    const reason = `Strands stopped the run with ${threw instanceof Error ? threw.name : 'an error'}.`;
-    recordError(run, reason);
-    return failed(run, reason);
-  }
-  if (result.stopReason === 'limitTurns') {
-    return stoppedAtTurnLimit(run);
-  }
-  if (result.stopReason === 'endTurn' && lastReply !== '') {
-    return completed(run, lastReply);
-  }
-  return stoppedWithoutReply(run, result.stopReason);
 }

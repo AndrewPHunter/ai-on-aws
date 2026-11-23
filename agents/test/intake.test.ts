@@ -8,6 +8,9 @@ import { test } from 'node:test';
 import { invocationResponseSchema } from '../../shared/agent-contract.ts';
 import type { InboundMessage, InvocationResponse } from '../../shared/agent-contract.ts';
 import { handleInquiry } from '../src/intake/handwritten.ts';
+import { createReportCheck } from '../src/intake/report-check.ts';
+import type { Finding } from '../src/intake/report-check.ts';
+import { STOPPED_CHECK_NOT_MADE, STOPPED_FOUND_NOT_RECORDED, TOLD_ONCE } from '../src/intake/run.ts';
 import { LIMITS } from '../src/intake/settings.ts';
 import type { ChatMessage, ChatResult, ToolDefinition } from '../src/model/chat.ts';
 import type { ToolOutcome } from '../src/tools/tool-set.ts';
@@ -33,6 +36,7 @@ type World = {
   calls: Array<{ tool: string; args: Record<string, unknown> }>;
   requests: Array<{ messages: ChatMessage[]; tools: ToolDefinition[] }>;
   connected: Array<{ message: InboundMessage; token: string }>;
+  checks: number;
 };
 
 let callIds = 0;
@@ -65,9 +69,9 @@ const followUp = (event: string): [string, unknown] => ['add_follow_up', { case_
 
 // The handler with scripted dependencies. The model's script is asked per conversation (by its user turn), so two
 // runs on the same dependencies each follow their own.
-function rig(script: Script, tools: Tools = (tool) => (tool === 'create_case' ? created('C-1') : followedUp('C-9')), options: { connect?: 'refused' | 'short' | 'lookup'; clock?: Clock } = {}) {
+function rig(script: Script, tools: Tools = (tool) => (tool === 'create_case' ? created('C-1') : followedUp('C-9')), options: { connect?: 'refused' | 'short' | 'lookup'; clock?: Clock; check?: Finding } = {}) {
   const time = options.clock ?? clock();
-  const world: World = { events: [], calls: [], requests: [], connected: [] };
+  const world: World = { events: [], calls: [], requests: [], connected: [], checks: 0 };
   const seen = new Map<string, number>();
   const counts = new Map<string, number>();
   const run = (inbound: InboundMessage = message('msg-1', 'Patient JD had a rash after Examplamab.')): Promise<InvocationResponse> =>
@@ -109,6 +113,7 @@ function rig(script: Script, tools: Tools = (tool) => (tool === 'create_case' ? 
           return Promise.resolve();
         },
         random: () => 0.5,
+        reportCheck: () => Promise.resolve((world.checks++, options.check ?? 'none')),
         limits: LIMITS,
       },
       inbound,
@@ -298,4 +303,27 @@ test('intake 13. runs share no state', async () => {
   const b = JSON.stringify(second);
   assert.deepEqual([a.includes('C-ONE'), a.includes('C-TWO'), a.includes(two.text)], [true, false, false]);
   assert.deepEqual([b.includes('C-TWO'), b.includes('C-ONE'), b.includes(one.text)], [true, false, false]);
+});
+
+test('intake 14. a run that recorded no case ends completed only when the report check found no adverse event', async () => {
+  const create = ask(['create_case', { event: 'rash' }]);
+  const declined = say('Not a report, as the sender asks.');
+  const rows: Array<{ name: string; script: Script; check: Finding; outcome: string; reason: string | null; checks: number; cases: number; told: boolean }> = [
+    { name: 'found nothing', script: turns(declined), check: 'none', outcome: 'completed', reason: null, checks: 1, cases: 0, told: false },
+    { name: 'found one, then recorded', script: turns(declined, create), check: 'adverse_event', outcome: 'completed', reason: null, checks: 1, cases: 1, told: true },
+    { name: 'found one, recorded nothing again', script: () => declined, check: 'adverse_event', outcome: 'stopped', reason: STOPPED_FOUND_NOT_RECORDED, checks: 1, cases: 0, told: true },
+    { name: 'could not be made', script: turns(declined), check: 'unknown', outcome: 'stopped', reason: STOPPED_CHECK_NOT_MADE, checks: 1, cases: 0, told: false },
+    { name: 'a case recorded', script: turns(create), check: 'adverse_event', outcome: 'completed', reason: null, checks: 0, cases: 1, told: false },
+  ];
+  for (const row of rows) {
+    const { world, run } = rig(row.script, undefined, { check: row.check });
+    const response = await run();
+    const told = world.requests.some((r) => r.messages.some((m) => m.role === 'user' && m.content === TOLD_ONCE));
+    const steps = response.steps.filter((s) => s.kind === 'report_check').length;
+    assert.deepEqual([response.outcome, response.stop_reason, world.checks, steps, response.case_actions.length, told], [row.outcome, row.reason, row.checks, row.checks, row.cases, row.told], row.name);
+  }
+  // The check itself: two messages, no tools, and an answer that is neither yes nor no is unknown.
+  const sent: Array<{ messages: ChatMessage[]; tools: ToolDefinition[] }> = [];
+  const check = createReportCheck({ id: 'scripted', complete: (messages, tools) => (sent.push({ messages, tools }), Promise.resolve(say('Maybe so.'))) });
+  assert.deepEqual([await check(message('msg-1', 'Patient JD had a rash.'), 1_000), sent[0]?.messages.length, sent[0]?.tools], ['unknown', 2, []]);
 });

@@ -23,12 +23,15 @@
 //     one would get less time than the first and hold the caller for the rest of the run. Every
 //     failed request is in the run's record.
 //   - The run has a turn limit and a time limit, and says which one stopped it.
+//   - When the model replies and the run has recorded no case, the report check is made (report-check.ts)
+//     and the rule afterReply in run.ts says whether the run completes, the model is told once to
+//     record, or the run stops. Being told is one more turn of this loop, inside both limits.
 
 import type { Caller } from '../../../shared/access-token.ts';
 import type { InboundMessage, InvocationResponse } from '../../../shared/agent-contract.ts';
 import type { AgentIdentity } from '../contract/server.ts';
 import type { ChatMessage, ChatModel, ChatResult, ToolCall } from '../model/chat.ts';
-import { completed, failed, stoppedAtTimeLimit, stoppedAtTurnLimit, stoppedWithoutReply } from '../run/endings.ts';
+import { completed, failed, stopped, stoppedAtTimeLimit, stoppedAtTurnLimit, stoppedWithoutReply } from '../run/endings.ts';
 import type { Limits } from '../run/limits.ts';
 import { timed } from '../run/record.ts';
 import type { Timed } from '../run/record.ts';
@@ -37,7 +40,9 @@ import { askAgainWithoutThinking } from '../run/turns.ts';
 import { isCaseTool, missingCaseTools } from '../tools/case-system.ts';
 import type { Connected, ToolOutcome, ToolSet } from '../tools/tool-set.ts';
 import { SYSTEM_PROMPT, userTurn } from './prompt.ts';
-import { afterCall, refusalBeforeCall, startRun } from './run.ts';
+import { atReply } from './report-check.ts';
+import type { ReportCheck } from './report-check.ts';
+import { TOLD_ONCE, afterCall, refusalBeforeCall, startRun } from './run.ts';
 import type { IntakeRun } from './run.ts';
 
 export type IntakeDeps = {
@@ -51,6 +56,8 @@ export type IntakeDeps = {
   sleep: (ms: number) => Promise<void>;
   // A number from 0 up to 1, for the length of that wait.
   random: () => number;
+  // The report check, a separate request to the model (createReportCheck in report-check.ts).
+  reportCheck: ReportCheck;
   limits: Limits;
 };
 
@@ -234,7 +241,16 @@ async function loop(run: IntakeRun, deps: IntakeDeps, tools: ToolSet, message: I
       if (reply === '') {
         return stoppedWithoutReply(run, completion.finishReason);
       }
-      return completed(run, reply);
+      const next = await atReply(run, deps.reportCheck, message, model.id);
+      if (next === 'complete') {
+        return completed(run, reply);
+      }
+      if (next === 'tell_once') {
+        run.told = true;
+        conversation.push({ role: 'assistant', content: completion.content }, { role: 'user', content: TOLD_ONCE });
+        continue;
+      }
+      return stopped(run, next.stop);
     }
 
     // Every call the model made gets an answer, in order, before the model is asked again.

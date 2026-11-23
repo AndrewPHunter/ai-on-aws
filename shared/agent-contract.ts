@@ -72,6 +72,18 @@ const errorStepSchema = z.object({
   message: z.string(),
 });
 
+// What an intake agent's report check found: a separate request, made by the agent's code, asking whether the
+// message describes an adverse event. `unknown`: the check could not be made, or answered neither yes nor no.
+export const REPORT_FINDINGS = ['adverse_event', 'none', 'unknown'] as const;
+
+// The step holds the finding and no text from the model.
+const reportCheckStepSchema = z.object({
+  kind: z.literal('report_check'),
+  ...timing,
+  model: z.string(),
+  finding: z.enum(REPORT_FINDINGS),
+});
+
 // The steps of an agent that calls no other agent. A delegated response holds only these, so the schema
 // never refers to itself.
 export const subAgentStepSchema = z.discriminatedUnion('kind', [
@@ -79,6 +91,7 @@ export const subAgentStepSchema = z.discriminatedUnion('kind', [
   toolStepSchema,
   retrievalStepSchema,
   errorStepSchema,
+  reportCheckStepSchema,
 ]);
 
 // A passage of an approved label that the reply relies on, with what a reviewer needs to check it: which
@@ -153,6 +166,7 @@ export const stepSchema = z.discriminatedUnion('kind', [
   toolStepSchema,
   retrievalStepSchema,
   errorStepSchema,
+  reportCheckStepSchema,
   delegationStepSchema,
 ]);
 
@@ -166,5 +180,6 @@ export type DelegationStep = z.infer<typeof delegationStepSchema>;
 export type DelegatedResponse = z.infer<typeof delegatedResponseSchema>;
 export type Citation = z.infer<typeof citationSchema>;
 export type LabelAnswer = z.infer<typeof labelAnswerSchema>;
+export type ReportFinding = (typeof REPORT_FINDINGS)[number];
 export type CaseAction = z.infer<typeof caseActionSchema>;
 export type InvocationResponse = z.infer<typeof invocationResponseSchema>;

@@ -1,8 +1,8 @@
-import { ArrowRightLeft, Brain, CircleAlert, Search, Wrench } from 'lucide-react';
+import { ArrowRightLeft, Brain, CircleAlert, Search, ShieldCheck, Wrench } from 'lucide-react';
 import type { ReactNode } from 'react';
 
 import type { Run, Step } from '../../../shared/api.ts';
-import { formatDuration, pretty, stepTitle } from '../format.ts';
+import { REPORT_FINDING_TEXT, formatDuration, pretty, stepTitle } from '../format.ts';
 
 const ICON: Record<Step['kind'], ReactNode> = {
   model: <Brain size={16} aria-hidden="true" />,
@@ -10,6 +10,7 @@ const ICON: Record<Step['kind'], ReactNode> = {
   retrieval: <Search size={16} aria-hidden="true" />,
   delegation: <ArrowRightLeft size={16} aria-hidden="true" />,
   error: <CircleAlert size={16} aria-hidden="true" />,
+  report_check: <ShieldCheck size={16} aria-hidden="true" />,
 };
 
 function Payload({ label, value }: { label: string; value: unknown }) {
@@ -139,6 +140,25 @@ function StepDetail({ step }: { step: Step }) {
           )}
         </>
       );
+    case 'report_check':
+      return (
+        <>
+          <p className="stepnote">
+            Made by the agent’s own code, not asked for by the model: a separate request that showed the model only the
+            message and kept only its yes or no.
+          </p>
+          <dl className="stepfacts">
+            <div>
+              <dt>Model</dt>
+              <dd>{step.model}</dd>
+            </div>
+            <div>
+              <dt>Finding</dt>
+              <dd>{REPORT_FINDING_TEXT[step.finding]}</dd>
+            </div>
+          </dl>
+        </>
+      );
     case 'error':
       return <Payload label="What went wrong" value={step.message} />;
   }
@@ -152,7 +172,7 @@ function StepList({ steps, nested = false }: { steps: readonly Step[]; nested?: 
       {steps.map((step, index) => (
         <li
           key={index}
-          className={`step step--${step.kind}${(step.kind === 'tool' && step.is_error) || (step.kind === 'delegation' && step.response === null) ? ' step--failed' : ''}`}
+          className={`step step--${step.kind}${(step.kind === 'tool' && step.is_error) || (step.kind === 'delegation' && step.response === null) || (step.kind === 'report_check' && step.finding === 'unknown') ? ' step--failed' : ''}`}
         >
           <details>
             <summary>
