@@ -21,7 +21,7 @@ Strands is used the way it comes. Its default model is Amazon Bedrock; here the 
 | Exchanging the caller's token for the case-system token | `tools/tool-token.ts` (`connectWithToolToken`, wired in `intake/main-handwritten.ts`) | `tools/tool-token.ts` (`toolToken`), called in `handleInquiry`, with the exchange given in `StrandsDeps` |
 | Context headers and the case-system token on requests to the case system, the two tools a run needs and is shown, reading a case system answer | `tools/case-system.ts` (`caseSystemHeaders`, `missingCaseTools`, `isCaseTool`), which reads answers through `tools/mcp-answers.ts` | The same functions |
 | The loop | `intake/handwritten.ts` | Strands' `Agent` |
-| Request to the model | `model/chat.ts`: chat completions, one JSON response | Strands' `OpenAIModel` on its default: the Responses API, streamed |
+| Request to the model | `model/chat.ts`: chat completions, one JSON response | Strands' `OpenAIModel` on its default: the Responses API, streamed. The report check alone goes through `model/chat.ts`, as in the hand-written agent, outside Strands |
 | Connection to the case system | `@modelcontextprotocol/sdk` 1.32.2 client | Strands' `McpClient`, on `@modelcontextprotocol/client` 2.4.0 |
 | Where the rules are applied | Inline in the loop | In four hooks Strands calls |
 
@@ -115,6 +115,16 @@ sequenceDiagram
     end
     A-->>O: AgentResult, or an error
     O->>R: completed, stopped or failed, from the run's own state
+    opt Strands ended its turn with a reply, and the run has recorded no case
+        O->>V: report check, POST /chat/completions through model/chat.ts, outside Strands: the message alone, no tools
+        V-->>O: yes, no, or anything else; only the finding is kept
+        O->>R: afterReply: complete, tell once, or stop
+        opt told once, with turns left
+            O->>A: invoke again, the same Agent, with TOLD_ONCE, the same cancel signal and the turns left
+            A-->>O: AgentResult, or an error, ended as above
+        end
+    end
+    O->>R: holdingToFinding: a stopped run with no case after an adverse event found says so
     O-->>S: InvocationResponse
 ```
 
@@ -133,10 +143,11 @@ The rule is one function in `intake/run.ts` or `run/turns.ts` in both agents. Th
 | Time limit | Checked at the top of each turn | Checked in `BeforeModelCallEvent`, plus a timer on the cancel signal for a request in flight |
 | Time limit on one tool call | `ToolSet.call` takes a timeout | `CaseTool` passes `timeoutMs` to `McpClient.callTool` |
 | How the run ends | Returned where it is decided | Decided after `invoke` returns, from the run's own state. Strands' stop reason is read last |
+| At the model's reply, with no case recorded: the report check, then `afterReply` (`atReply` in `intake/report-check.ts`) | Made in `loop`; told once is one more turn of the same loop | Made after `invoke` returns, outside Strands, with the chat client. Told once is a second `invoke` of the same `Agent`: the same hooks, the same cancel signal (so the same deadline), and as turns what the first left, counted as model turns answered |
 
 ## What Strands does differently
 
-The rules are tested once, on the hand-written agent, in [`agents/test/intake.test.ts`](../../agents/test/intake.test.ts). [`agents/test/intake-strands.test.ts`](../../agents/test/intake-strands.test.ts) has five tests that this agent's hooks are wired to them: a case action from the tool's answer (with the exchanged token, and only that one, on every request to the case system, and only `create_case` and `add_follow_up` shown to the model when the case system offers a lookup as well), a refused call that does not reach the case system, a write repeated once by code, the turn limit, and a model server that fails. The differences below are read from the code and from the source of Strands; no test asserts them.
+The rules are tested once, on the hand-written agent, in [`agents/test/intake.test.ts`](../../agents/test/intake.test.ts). [`agents/test/intake-strands.test.ts`](../../agents/test/intake-strands.test.ts) has six tests that this agent's hooks are wired to them: a case action from the tool's answer (with the exchanged token, and only that one, on every request to the case system, and only `create_case` and `add_follow_up` shown to the model when the case system offers a lookup as well), a refused call that does not reach the case system, a write repeated once by code, the turn limit, a model server that fails, and a report check that finds an adverse event, after which the same `Agent` is invoked again with the turn that tells it to record. The differences below are read from the code and from the source of Strands; no test asserts them.
 
 | Situation | Hand-written loop | Strands | What this file does about it |
 |---|---|---|---|
@@ -204,7 +215,7 @@ Everything in the hand-written agent's "Not present" list is also absent here, i
 
 ## What was checked
 
-- Five tests (strands 1 to 5 in `agents/test/intake-strands.test.ts`) show this agent's hooks are wired to the shared rules, which are tested on the hand-written agent.
+- Six tests (strands 1 to 6 in `agents/test/intake-strands.test.ts`) show this agent's hooks are wired to the shared rules, which are tested on the hand-written agent.
 - Against the 9B model, before the retries were turned on, the Strands agent was sent the seven prepared inquiries on an empty store. It gave the expected result for all seven and left three cases: one awaiting review at version 2, one incomplete, one awaiting review. The prompt was tuned on these seven with the hand-written agent, so this is not a held-out set.
 - With the retries on, each agent answered one inquiry against the 9B model, and each was run once with a model address where nothing listens. Both failed the run with "The model could not be reached." after about 1.4 s. The hand-written agent recorded three error steps, the Strands agent one.
 - With a bare Strands `Agent` against the 9B model, before this agent was written this way: a turn with a sentence and two tool calls came through whole; a turn cut off by its output allowance raised `MaxTokensError` carrying what had been written; asking again with `reasoning.effort: 'none'` gave an answer with no thinking; a tool result marked as an error was understood by the model.

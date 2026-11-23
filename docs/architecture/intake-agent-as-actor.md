@@ -1,18 +1,18 @@
 # The intake agent as an actor
 
-An agent is an actor in which one step of the behaviour is decided by inference. This document reads the intake agent that way. It holds for both implementations, the [hand-written loop](intake-agent-handwritten.md) and the one [on Strands](intake-agent-strands.md); where they differ, a table says so. Terms and module boundaries are in those two documents.
+An agent is an actor in which a step of the behaviour is decided by inference; the intake agent has two such steps, its model's turn and the report check. This document reads the intake agent that way. It holds for both implementations, the [hand-written loop](intake-agent-handwritten.md) and the one [on Strands](intake-agent-strands.md); where they differ, a table says so. Terms and module boundaries are in those two documents.
 
 ## The parts of an actor, and where each one is
 
 | An actor has | In the intake agent | Where |
 |---|---|---|
 | A mailbox | `POST /invocations`, with an accepted access token. One message per request | `contract/server.ts` for the hand-written loop; the local edge (`contract/edge.ts`) and AWS's SDK app (`contract/sdk-app.ts`) for Strands |
-| State that nothing else can touch | The run: its steps, its case actions, the case it opened, whether a write is unsettled, its deadline. And the conversation with the model | `IntakeRun` in `intake/run.ts`, built on `RunState` in `run/state.ts`; the conversation held by the loop |
+| State that nothing else can touch | The run: its steps, its case actions, the case it opened, whether a write is unsettled, what its report check found, whether the model has been told to record it, its deadline. And the conversation with the model | `IntakeRun` in `intake/run.ts`, built on `RunState` in `run/state.ts`; the conversation held by the loop |
 | A behaviour: what it does when a message arrives | Ask the model, apply the rules, call the case system, answer | `intake/handwritten.ts`, or Strands' `Agent` with four hooks in `intake/strands.ts` |
-| Messages it sends to other actors | Requests to the model server and to the case system, requests for the identity provider's discovery document and keys, and one answer to the caller | `model/chat.ts` or Strands' `OpenAIModel`; `tools/case-system.ts` or Strands' `McpClient`; `shared/access-token.ts` |
+| Messages it sends to other actors | Requests to the model server (the run's turns, and at most one report check) and to the case system, requests for the identity provider's discovery document and keys, and one answer to the caller | `model/chat.ts` or Strands' `OpenAIModel` for the turns, `model/chat.ts` in both for the report check (`intake/report-check.ts`); `tools/case-system.ts` or Strands' `McpClient`; `shared/access-token.ts` |
 | A lifetime | One message. Each message gets a new run with new state, and nothing is kept once it is answered | `startRun` in `intake/run.ts` |
 
-One step of the behaviour is not written in code: what to do next, given the conversation so far. That step is asked of a model. Every other step is ordinary code.
+Two steps of the behaviour are not written in code. What to do next, given the conversation so far, is asked of the agent's model; that is where it decides whether the message is a report. When the model replies and the run has recorded no case, the report check asks the same question again: a second inference, made by code in a separate request that is shown the message alone, whose yes or no code then acts on. Every other step is ordinary code.
 
 ## The actors and their messages
 
@@ -49,7 +49,7 @@ Every message is a request that waits for its answer, with a time limit. None is
 
 ## The behaviour for one message
 
-A six-sided box is decided by inference. A diamond is decided by code. A slanted box is a message sent to another actor. A rounded box is an ending.
+A six-sided box is decided by the agent's model. The report check is a slanted box, a message to the model server, whose answer is a second inference made by code; the diamond after it reads that answer as yes, no or neither. Every other diamond is decided by code. A slanted box is a message sent to another actor. A rounded box is an ending.
 
 ```mermaid
 flowchart TD
@@ -70,7 +70,18 @@ flowchart TD
     Answered -- no --> FailedModel(["failed"])
     Answered -- yes --> Infer{{"INFERENCE<br/>Write a reply,<br/>or ask for tools?"}}
 
-    Infer -- "wrote text" --> Completed(["completed:<br/>the text is the reply"])
+    Infer -- "wrote text" --> Recorded{"A case action<br/>in this run?"}
+    Recorded -- yes --> Completed(["completed:<br/>the text is the reply"])
+    Recorded -- no --> Checked{"Report check<br/>made already?"}
+    Checked -- no --> Check[/"Report check: ask the model, separately,<br/>with the message alone and no tools,<br/>whether it describes an adverse event"/]
+    Check --> Finding{"Its finding"}
+    Checked -- yes --> Finding
+    Finding -- "no" --> Completed
+    Finding -- "neither yes nor no,<br/>or not made" --> StoppedCheck(["stopped:<br/>the check could not be made"])
+    Finding -- "yes" --> Told{"Told already?"}
+    Told -- no --> TellOnce["Tell the model once,<br/>in code's words, to record it"]
+    TellOnce --> Limits
+    Told -- yes --> StoppedFound(["stopped:<br/>a person must read this message"])
     Infer -- "wrote nothing" --> Lost{"Cut off by the output<br/>allowance, with thinking on?"}
     Lost -- no --> StoppedEmpty(["stopped:<br/>no reply"])
     Lost -- yes --> ThinkingOff["Turn thinking off"]
@@ -120,6 +131,8 @@ flowchart TD
 | "Does the tool exist, with JSON arguments?" | The loop's own check | Strands' check. Arguments that are not JSON end the run as `failed` instead of being told to the model |
 | "wrote text", when the text was cut off by the output allowance | `completed`, with the cut-off text as the reply | `stopped`, with no reply |
 | "Turn thinking off" | Uses one of the 6 turns | Does not use a turn |
+| "Tell the model once" | One more turn of the same loop | A second `invoke` of the same `Agent`, with the same hooks and cancel signal and the turns the first left |
+| "Report check" | Made by the loop's own chat client | Made outside Strands, by this agent's code, with the chat client |
 | Where the diamonds are evaluated | Inline, in the order drawn | In hooks Strands calls before and after each model call and tool call |
 | "An accepted access token?" and "Does it match the contract?" | `contract/server.ts` | The local edge checks the token, then AWS's SDK app checks the body and `contract/sdk-app.ts` checks the token again. Their 400 answers have the SDK's shapes ([agent-runtime.md](agent-runtime.md)) |
 
@@ -127,7 +140,7 @@ flowchart TD
 
 | Decision | Decided by | Held in check by |
 |---|---|---|
-| Whether the message reports an adverse event | Inference | The prompt. No code checks it |
+| Whether the message reports an adverse event | Inference | The prompt, and the report check: a second, separate inference made by code, whose yes or no decides, through `afterReply` in `intake/run.ts`, whether a run that recorded no case may end `completed` |
 | Which tool to ask for, and its arguments | Inference | Code: the tool must exist and the arguments must be JSON. The case system: each part of a report must be present |
 | Whether a call is made | Code | `refusalBeforeCall` in `intake/run.ts` |
 | Whether a write that got no answer is repeated | Code | `afterCall` in `intake/run.ts`: once, with identical content |
@@ -150,6 +163,7 @@ flowchart TD
 | Message | When no answer comes | Sent at most | Sending it twice is safe because |
 |---|---|---|---|
 | Caller to agent | The caller stops waiting at 180 s and records the run as failed | Once for a run. A person may start another run of the same message | The case system recognises the message identifier |
+| Agent to model, the report check | The finding is `unknown`, and the run ends `stopped` | Once, in both implementations, by the chat client | It is not sent twice |
 | Agent to model | Hand-written loop: a failed connection or a status of 408, 429 or 5xx is sent again; a request that ran out of time is not. Strands: the OpenAI client sends it again, timed-out ones included, and Strands asks again on throttling | Hand-written loop: 3 times for a turn. Strands: 3 for each of up to 6 attempts, within the run's time | Asking the model changes nothing |
 | Agent to identity provider | The token cannot be checked: 503, and the request is not handled. The next request asks again | The discovery document and the keys once, then kept; the keys again for a key not yet seen, at most every 30 s | It is a read |
 | Agent to case system, a write | Repeated once by code. If that also gets no answer, the run fails as not known | Twice | The case system recognises identical content for the same message |

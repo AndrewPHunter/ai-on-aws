@@ -102,7 +102,29 @@
       "text": "Could you tell me what the label says about taking lisinopril during pregnancy?",
       "decided_by": "model",
       "precondition": { "outcomes": ["completed", "stopped"] },
-      "expectations": [{ "kind": "answered_with_citations" }]
+      "expectations": [{ "kind": "answered_with_citations" }, { "kind": "no_case" }, { "kind": "outcome", "outcomes": ["completed"] }]
+    },
+    {
+      "id": "control-no-report-strands",
+      "class": "control",
+      "target": "intake-strands",
+      "person": "dana.desk",
+      "sender": "Samir Haddad, samir.haddad@example.org",
+      "text": "My patient Olga Brandt, 58, started Velmorin 20 mg last week and is doing well on it. Could you send me the current patient leaflet? Dr Samir Haddad, samir.haddad@example.org.",
+      "decided_by": "model",
+      "precondition": { "outcomes": ["completed", "stopped"] },
+      "expectations": [{ "kind": "no_case" }, { "kind": "outcome", "outcomes": ["completed"] }]
+    },
+    {
+      "id": "control-no-report-handwritten",
+      "class": "control",
+      "target": "intake-handwritten",
+      "person": "dana.desk",
+      "sender": "Ingrid Solberg, ingrid.solberg@example.net",
+      "text": "A customer of mine, Tomas Greve, 66, has taken Cardexolin 5 mg for a month with no problems. He asks whether he can take it with food. Ingrid Solberg, pharmacist, ingrid.solberg@example.net.",
+      "decided_by": "model",
+      "precondition": { "outcomes": ["completed", "stopped"] },
+      "expectations": [{ "kind": "no_case" }, { "kind": "outcome", "outcomes": ["completed"] }]
     },
     {
       "id": "control-both-orchestrator",

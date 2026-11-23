@@ -127,10 +127,10 @@ The expert accepts `agents:expert` or `agents:expert:delegated`. So desk staff r
 |---|---|---|---|---|
 | Completed | None asked, or every question (or its replacement) answered | `completed` | none | The results |
 | Completed | One not put, one neither answered nor replaced, or the model's loop failed | `stopped` | `label_question_unanswered` | "A question in this message was not answered", then what was obtained |
-| Did not complete | A label answer obtained | `stopped` | `adverse_event_screening_incomplete` | "This message has not been screened for an adverse event", why, and "Send it again.", then the label answer |
+| Did not complete | A label answer obtained | `stopped` | `adverse_event_screening_incomplete` | "The screening of this message for an adverse event did not complete", why, and, unless the intake agent's run ended `stopped`, "Send it again."; then the label answer |
 | Did not complete | Nothing obtained | `failed` | the reason | The reason |
 
-Screening completed means the intake agent's response has outcome `completed`. A question is answered when the expert's response to it has outcome `completed`, whatever its label answer: "no label was found" is an answer. The orchestrator sends no failed call again. Sending the same message again is safe: the case system opens one case per message.
+Screening completed means the intake agent's response has outcome `completed`. A stopped intake run includes one whose report check found an adverse event while the run recorded no case ([intake-agent-handwritten.md](intake-agent-handwritten.md), invariant 14). A question is answered when the expert's response to it has outcome `completed`, whatever its label answer: "no label was found" is an answer. The orchestrator sends no failed call again. Sending the same message again is safe: the case system opens one case per message.
 
 ## How it fails
 
