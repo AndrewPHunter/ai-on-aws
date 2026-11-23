@@ -137,7 +137,7 @@ const writes = (world: World): number => world.calls.filter((c) => c.tool === 'c
 
 test('intake 1. once a message is accepted, whatever goes wrong, the handler returns a response inside the contract with an outcome and its steps', async () => {
   const rows: Array<{ name: string; rig: ReturnType<typeof rig>; failsBeforeModel?: true }> = [
-    { name: 'tools cannot be connected', rig: rig(turns(), undefined, { connect: 'refused' }) },
+    { name: 'tools cannot be connected', rig: rig(turns(), undefined, { connect: 'refused' }), failsBeforeModel: true },
     { name: 'the case system offers one of the two tools', rig: rig(turns(), undefined, { connect: 'short' }), failsBeforeModel: true },
     { name: 'the model fails', rig: rig(() => modelFails(false)) },
     { name: 'the model answers nonsense', rig: rig(turns(ask(['no_such_tool', {}], ['create_case', '{not json'], ['add_follow_up', '[1, 2]']), say(''))) },

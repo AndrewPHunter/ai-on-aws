@@ -18,7 +18,7 @@ export function queryText(query: string): string {
 }
 
 // A vector as the embedding server returns it for encoding_format base64: little-endian float32. Null when the
-// bytes are not a whole number of float32 values; each caller treats that as it treats a vector of the wrong length.
+// bytes are not a whole number of float32 values.
 export function decodeVector(base64: string): Float32Array | null {
   const bytes = Buffer.from(base64, 'base64');
   if (bytes.length % 4 !== 0) return null;
