@@ -557,7 +557,8 @@ The realm file holds a `${NAME}` placeholder where each secret goes, and no secr
 |---|---|
 | `platform/identity/.env` missing | `docker compose up` stops before starting anything and names the missing variable |
 | `setup.sh` without Docker | Exits 2 and says so |
-| `platform/identity/.env` lacks a variable | `setup.sh` exits 1, names it, and adds nothing |
+| `platform/identity/.env` lacks a variable `setup.sh` knows | `setup.sh` adds it with a new value and keeps every other value |
+| `.env.example` names a variable `setup.sh` cannot make a value for | `setup.sh` exits 1, names it, and changes nothing |
 | The realm does not import | The service never becomes healthy; `docker compose up --wait` fails |
 | The realm file was edited and the provider not restarted | The provider keeps serving the realm it imported at start |
 | The provider restarted | Tokens issued before are refused as `bad_signature`; client sessions end at their next refresh |
@@ -579,7 +580,7 @@ On a trial stack built from this repository, run under Docker on an Apple-silico
 | Identity gate | `platform/identity/gate.sh` | 222 statements held, none failed |
 | Stack gate | `platform/identity/stack-gate.sh` | 119 statements held, none failed, none in `not_checked`. Its run through the orchestrator ended `completed` in 29 s: a case opened by the intake agent, one label question put to the label expert |
 | Knowledge gate, with its token as its own client `knowledge-gate` | `knowledge/gate.sh` | 20 statements held |
-| The same three gates, on a stack started from the earlier realm with an inquiry store and a label index, then moved by the steps under [Changing the realm file](#changing-the-realm-file) with its volumes kept | as above | 151, 102 and 20 statements held, none failed. Measured before the gates had their statements about the orchestrator |
+| The same three gates, on a stack started from the earlier realm with an inquiry store and a label index, then moved to the new realm with its volumes kept, by removing `platform/identity/.env`, running set-up, and stopping and starting the stack with `--build` | as above | 151, 102 and 20 statements held, none failed. Measured before the gates had their statements about the orchestrator |
 
 ## Not present
 

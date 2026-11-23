@@ -71,10 +71,10 @@ How the pieces share code and stay separate:
 You need a machine with one NVIDIA GPU, Docker with Compose, and the NVIDIA Container Toolkit. On that machine, from a clone of this repository:
 
 ```bash
-model/setup.sh --cache-dir <directory>
+model/setup.sh --bind <address> --cache-dir <directory>
 ```
 
-`<directory>` is an existing directory, given as an absolute path, where the model weights are kept.
+`<address>` is an IPv4 address of that machine that the lab's containers can reach: not `127.0.0.1`, which inside a container is the container itself. `<directory>` is an existing directory, given as an absolute path, where the model weights are kept.
 
 Setup selects the largest model that fits the GPU's free memory, starts the server, and reports success only if the server passes the lab's gate. The memory and disk it needs, the flags, running the server on a different machine from the one you work on, and what has been measured are in [model/README.md](model/README.md).
 
