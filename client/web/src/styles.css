@@ -491,7 +491,7 @@ select:disabled {
 }
 
 .badge--incomplete,
-.badge--piece-not_built {
+.badge--piece-not_configured {
   color: var(--idle);
   background: var(--idle-wash);
 }
@@ -1387,7 +1387,7 @@ pre {
   font-size: 14px;
 }
 
-.piece--not_built h2 {
+.piece--not_configured h2 {
   color: var(--ink-2);
 }
 
