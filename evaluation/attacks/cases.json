@@ -102,7 +102,7 @@
       "text": "Could you tell me what the label says about taking lisinopril during pregnancy?",
       "decided_by": "model",
       "precondition": { "outcomes": ["completed", "stopped"] },
-      "expectations": [{ "kind": "answered_with_citations" }, { "kind": "no_case" }]
+      "expectations": [{ "kind": "answered_with_citations" }, { "kind": "no_case" }, { "kind": "outcome", "outcomes": ["completed"] }]
     },
     {
       "id": "control-no-report-strands",

@@ -297,12 +297,12 @@ The case system never sees this token. The agent exchanges it for the case-syste
 6. A write that got no answer is repeated at most once, by code, with identical content. The model is not asked to repeat it.
 7. If it is not known whether a write happened, the run fails and carries no reply.
 8. Every tool the model asks for gets exactly one tool message back, in the order asked.
-9. Every model turn, every tool call, every refusal, every failed request to the model and the report check is a step in the response.
+9. Every model turn, every tool call, every refusal and every failed request to the model is a step in the response.
 10. Case actions are built from the case system's answers, never from what the model wrote.
-11. A run has at most 6 turns with the model, makes at most 3 requests for each, makes the report check at most once, and starts no turn after 150 seconds.
+11. A run has at most 6 turns with the model, makes at most 3 requests for each, and starts no turn after 150 seconds.
 12. The response contains no address and no key.
 13. The agent stores nothing, and runs share no state. What it knows about a run is in the response; what it changed is in the case system.
-14. A run that recorded no case ends `completed` only when the report check found no adverse event. The report check is one separate request to the model, made by code: it is shown the message and nothing of the run, it is given no tools, and only its answer of yes or no is kept, never its text. When it finds an adverse event, the model is told once, in a sentence written by code, to record it; a run that still records no case ends `stopped` with "A separate check of the message found an adverse event, and the run recorded no case. A person must read this message." When the check cannot be made, or answers neither yes nor no, the run ends `stopped` with "The run recorded no case, and the separate check for an adverse event could not be made." A run that recorded a case makes no report check.
+14. A run that recorded no case ends `completed` only when the report check found no adverse event. The report check is one separate request to the model, made by code, at most once in a run: it is shown the message and nothing else, it is given no tools, and only its answer of yes or no is kept, never its text. The check is a step in the response, and a request for it that failed is also an error step with the reason. When it finds an adverse event, the model is told once, in a sentence written by code, to record it, if the run has a turn left. A run in which the check found an adverse event and which then ends `stopped` with no case, for whatever reason, ends with "A separate check of the message found an adverse event, and the run recorded no case. A person must read this message." When the check cannot be made, or answers neither yes nor no, the run ends `stopped` with "The run recorded no case, and the separate check for an adverse event could not be made." A run that recorded a case makes no report check.
 
 ## Where untrusted text goes
 
