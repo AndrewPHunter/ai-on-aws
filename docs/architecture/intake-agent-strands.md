@@ -200,7 +200,7 @@ Everything in the hand-written agent's "Not present" list is also absent here, i
 |---|---|
 | The model's reasoning text in the record | Strands reads it into the message, but this agent records only the reply text, so as in the hand-written agent only its cost appears in `output_tokens`. Strands does not send reasoning back to the model on later turns over the Responses API, and logs a warning each time it leaves it out |
 | Control of what Strands writes to the log | Strands logs its own warnings and errors to the container's output, including a stack trace when tool arguments cannot be parsed |
-| A smaller image | Strands requires the AWS SDK's Bedrock client and the OpenAI client, and the AgentCore SDK brings Fastify and more AWS SDK clients. All three agents run from one image, `ai-on-aws-agents:local`, so the hand-written agent's container carries them too |
+| A smaller image | Strands requires the AWS SDK's Bedrock client and the OpenAI client, and the AgentCore SDK brings Fastify and more AWS SDK clients. All four agents run from one image, `ai-on-aws-agents:local`, so the hand-written agent's container carries them too |
 
 ## What was checked
 

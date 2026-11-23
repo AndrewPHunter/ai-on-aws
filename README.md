@@ -6,7 +6,7 @@ A reproducible lab for exploring Amazon Bedrock AgentCore and a local stand-in f
 
 The lab is for looking closely at a few things, on hardware you control:
 
-- how agents are built and hosted for AgentCore, with more than one agent working together;
+- how agents are built and hosted for AgentCore, with more than one agent working together: an orchestrator that calls two other agents over the same contract, each with a token exchanged for that agent;
 - tool calling, and how reliable it is under load;
 - retrieval over your own documents, in the shape of Bedrock Knowledge Bases;
 - evaluation and security of the above.
@@ -47,8 +47,8 @@ ai-on-aws/
 | [`toolchain/`](toolchain/README.md) | The image stages and commands that typecheck, lint and test every TypeScript file in the repository, whichever piece it belongs to | Works |
 | [`model/`](model/README.md) | One vLLM server for the chat model, its one-command setup, and the gate that decides whether a running server is fit for the lab | Works, measured on one GPU |
 | [`client/`](client/README.md) | A medical information desk: a React app and its server. Receives inquiries, hands them to agents, shows what each agent did, and is where people review cases | Works with the intake agent. No screen yet for label search or evaluation |
-| [`shared/`](shared/README.md) | The contracts between pieces | Two contracts: what an agent is sent and returns, and what the case system sends. Both intake agents and the label expert implement the first |
-| [`agents/`](agents/README.md) | The agents, each its own container, each serving the AgentCore Runtime contract | Two agents. Intake, built twice: with its loop written by hand, and on Strands; both work against the local model. The label expert, on Strands, answers from a drug's approved label with checked citations; tested against stand-ins, not measured against the local model |
+| [`shared/`](shared/README.md) | The contracts between pieces | Two contracts: what an agent is sent and returns, and what the case system sends. Both intake agents, the label expert and the orchestrator implement the first |
+| [`agents/`](agents/README.md) | The agents, each its own container, each serving the AgentCore Runtime contract | Four agents. Intake, built twice: with its loop written by hand, and on Strands; both work against the local model. The label expert, on Strands, answers from a drug's approved label with checked citations; tested against stand-ins, not measured against the local model. The orchestrator, on Strands, has every message screened for an adverse event by the intake agent on Strands and the label questions in it answered by the label expert, calling each with a token exchanged for that agent; tested with scripted sub-agents and a scripted model server, not measured against the local model ([docs/architecture/orchestrator.md](docs/architecture/orchestrator.md)) |
 | [`tools/`](tools/README.md) | The agents' tools: MCP servers and APIs. Not developer tooling, which is `toolchain/` | One tool: the case system, used by both intake agents |
 | [`knowledge/`](knowledge/README.md) | Documents in, search, retrieval for agents. The documents are US drug labels from DailyMed, prescription and over-the-counter | The corpus: the labels of the FDARxBench benchmark that DailyMed serves, pinned by set id and version, fetched and checked by checksum, counted, parsed into structured documents, and split into citable chunks, each step checked for lost text. The chunks are indexed in OpenSearch and served to agents as two MCP tools behind the token check: find a drug's label, then search inside it. The search is keyword (BM25) by default; a setting of the service chooses vector search, keyword and vectors fused by rank, or fused and then reranked instead, with vectors from an embedding model and a reranker served on the GPU machine. The label expert calls it |
 | [`platform/`](platform/README.md) | Local stand-ins for the AgentCore services around the runtime | One stand-in: an OpenID Connect provider (Keycloak) with one realm, started with the lab. The client signs desk staff in through it and validates their ID tokens; the agents and the case system each check the access token on every request. No stand-in yet for memory, policy or tracing |
@@ -97,7 +97,7 @@ Then open <http://localhost:3000> (use `localhost`, not `127.0.0.1`: sign-in ret
 
 | Username | Role | May | Password |
 |---|---|---|---|
-| `dana.desk` | `desk` | Enter inquiries and run the intake agents | `IDENTITY_DANA_PASSWORD` in `platform/identity/.env` |
+| `dana.desk` | `desk` | Enter inquiries and run the intake agents and the orchestrator | `IDENTITY_DANA_PASSWORD` in `platform/identity/.env` |
 | `morgan.medinfo` | `medical-information` | Do what the desk does, and run the label expert | `IDENTITY_MORGAN_PASSWORD` in `platform/identity/.env` |
 | `riley.reviewer` | `safety-reviewer` | Read cases and decide them | `IDENTITY_RILEY_PASSWORD` in `platform/identity/.env` |
 | `avery.auditor` | `auditor` | Read cases and their audit trails; change nothing | `IDENTITY_AVERY_PASSWORD` in `platform/identity/.env` |
@@ -106,7 +106,7 @@ Then open <http://localhost:3000> (use `localhost`, not `127.0.0.1`: sign-in ret
 
 What each screen does is in [client/README.md](client/README.md), and what each agent does is in [agents/README.md](agents/README.md).
 
-To check sign-in end to end on the running lab (the four people signed in through Keycloak, what each may and may not do, each agent's and each tool server's refusal of a request without a token, an inquiry through each intake agent and a question to the label expert, each run followed to its end, tokens presented straight to each service, sign-out), run the stack gate beside the identity provider's own gate:
+To check sign-in end to end on the running lab (the four people signed in through Keycloak, what each may and may not do, each agent's and each tool server's refusal of a request without a token, an inquiry through each intake agent, a question to the label expert and an inquiry through the orchestrator to both of the agents it calls, each run followed to its end, tokens presented straight to each service, sign-out), run the stack gate beside the identity provider's own gate:
 
 ```bash
 platform/identity/stack-gate.sh ai-on-aws
