@@ -14,7 +14,7 @@ How it is put together: [docs/architecture/identity.md](../../docs/architecture/
 2. A role that lets someone run an agent also grants every scope that agent's client may ask for.
 3. Only an agent's client can exchange a token, and no client takes a password in place of a sign-in.
 4. Every person and every machine account has a fixed identifier, so the subject in their tokens does not change when the provider starts again.
-5. Running set-up again changes no value that is already set.
+5. Running set-up again changes no value that is already set, and writes a value for each variable that has none.
 
 The repository check runs one test for each, `identity 1` to `identity 5`, on the tracked files; `setup.sh` runs from a copy in a temporary directory. What the running provider issues and refuses is shown by the gate.
 
