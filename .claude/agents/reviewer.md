@@ -34,9 +34,12 @@ One line per finding:
 
 - contract: behaviour differs from what the contract states
 - failure: a failure path is missing, silent, or shaped like success
-- test: a test asserts something other than a contract, needs a network, a
-  GPU, a server or a fixed order, mocks away the failure it exists to catch,
-  or is not on the test list; equally a promise of the contract with no test
+- test: a test asserts something other than a stated invariant (an internal,
+  a wording, a setting), needs a network, a GPU, a model server or a fixed
+  order, mocks away the failure it exists to catch, or is not on the test
+  list; equally an invariant in an "Always true" list whose test does not
+  show it. A promise of the contract that is not a stated invariant has no
+  test by the Testing rules, and that is not a finding
 - facade: a stub, placeholder, simulated step or log-and-continue path on a
   real path; a claim in a document that the files do not bear out
 - exposure: a secret, key, network address, home path or host name in a

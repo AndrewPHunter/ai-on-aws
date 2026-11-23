@@ -28,7 +28,7 @@ Four agents in [`agents/`](../agents/README.md) implement the agent contract: th
 ## Always true
 
 1. The token check returns a caller only for a token signed by the provider's published key, from the right issuer, for this audience, issued to an allowed client, with the required life left; each failure names which.
-2. A provider that cannot be reached is "unavailable", never a refusal, and it recovers.
+2. A provider that cannot be reached, that names another issuer, or whose keys cannot be used is "unavailable", never a refusal, and it recovers.
 3. Keys are fetched once, and again only for an unknown key, at most once per wait.
 4. No refusal sentence contains the token.
 5. A request or a response outside the agent contract's schema is refused, and one inside it is returned unchanged.

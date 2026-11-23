@@ -71,10 +71,10 @@ How the pieces share code and stay separate:
 You need a machine with one NVIDIA GPU, Docker with Compose, and the NVIDIA Container Toolkit. On that machine, from a clone of this repository:
 
 ```bash
-model/setup.sh --cache-dir <directory>
+model/setup.sh --bind <address> --cache-dir <directory>
 ```
 
-`<directory>` is an existing directory, given as an absolute path, where the model weights are kept.
+`<address>` is an IPv4 address of that machine that the lab's containers can reach: not `127.0.0.1`, which inside a container is the container itself. `<directory>` is an existing directory, given as an absolute path, where the model weights are kept.
 
 Setup selects the largest model that fits the GPU's free memory, starts the server, and reports success only if the server passes the lab's gate. The memory and disk it needs, the flags, running the server on a different machine from the one you work on, and what has been measured are in [model/README.md](model/README.md).
 
@@ -102,7 +102,7 @@ Then open <http://localhost:3000> (use `localhost`, not `127.0.0.1`: sign-in ret
 | `riley.reviewer` | `safety-reviewer` | Read cases and decide them | `IDENTITY_RILEY_PASSWORD` in `platform/identity/.env` |
 | `avery.auditor` | `auditor` | Read cases and their audit trails; change nothing | `IDENTITY_AVERY_PASSWORD` in `platform/identity/.env` |
 
-`platform/identity/setup.sh` writes `platform/identity/.env`, the secrets of the lab's identity provider, with random values; run again, it changes nothing. `docker compose up` starts the agents, the case system they write to, the client, the identity provider, the search engine and the retrieval service, on one network. It reads `model/.env`, which model setup wrote, to find the model server, and `platform/identity/.env`; without either file it stops and says what is missing. The identity provider is described in [platform/identity/README.md](platform/identity/README.md). If the model server is on a different machine from the one you work on, run setup with `--host` from the machine you work on, as described in [model/README.md](model/README.md), so that `model/.env` is here.
+`platform/identity/setup.sh` writes `platform/identity/.env`, the secrets of the lab's identity provider, with random values; run again, it keeps every value already there and adds only the variables the file lacks. `docker compose up` starts the agents, the case system they write to, the client, the identity provider, the search engine and the retrieval service, on one network. It reads `model/.env`, which model setup wrote, to find the model server, and `platform/identity/.env`; without either file it stops and says what is missing. The identity provider is described in [platform/identity/README.md](platform/identity/README.md). If the model server is on a different machine from the one you work on, run setup from the machine you work on with `--host` and `--bind`, as described in [model/README.md](model/README.md), so that `model/.env` is here.
 
 What each screen does is in [client/README.md](client/README.md), and what each agent does is in [agents/README.md](agents/README.md).
 
@@ -113,7 +113,7 @@ platform/identity/stack-gate.sh ai-on-aws
 platform/identity/gate.sh ai-on-aws
 ```
 
-Both print a JSON report and exit 0 only if every statement holds; see [platform/identity/README.md](platform/identity/README.md). To check the retrieval path once the index is built (the token check, the index's count, both tools, their refusals):
+Both need the stack running. Both print a JSON report and exit 0 only if every statement holds; see [platform/identity/README.md](platform/identity/README.md). The stack gate enters four test inquiries from "Dr Gate" and may open three test cases in the stack it is run against. To check the retrieval path once the index is built (the token check, the index's count, both tools, their refusals):
 
 ```bash
 knowledge/gate.sh ai-on-aws
@@ -134,3 +134,7 @@ It typechecks, lints and tests all the TypeScript in the repository and builds t
 - To run the model server: [model/README.md](model/README.md).
 - To understand how a piece is put together: [docs/architecture/](docs/architecture/).
 - To change anything here: [AGENTS.md](AGENTS.md).
+
+## Licence
+
+MIT: see [LICENSE](LICENSE). The drug labels and the benchmark the lab fetches are not part of this repository and carry their own terms.

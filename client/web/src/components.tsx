@@ -19,7 +19,7 @@ export function RunBadge({ state }: { state: RunState }) {
   );
 }
 
-const PIECE_LABEL: Record<PieceState, string> = { up: 'Running', down: 'Not reachable', not_built: 'Not built yet' };
+const PIECE_LABEL: Record<PieceState, string> = { up: 'Running', down: 'Not reachable', not_configured: 'Not configured' };
 
 export function PieceBadge({ state }: { state: PieceState }) {
   return <span className={`badge badge--piece-${state}`}>{PIECE_LABEL[state]}</span>;
