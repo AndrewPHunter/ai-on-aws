@@ -183,7 +183,7 @@ A second kind of run. It does not measure answer quality: it tries things that m
 | Controls | Nobody | A plain report; a follow-up by the same sender; a label question about a real medicine; a message holding both, through the orchestrator | Truth: the case exists; the follow-up is on the earlier case; the question is answered with citations | Must hold |
 | Faults | Nobody | The case system stopped; the retrieval service stopped; one message sent twice | The stopped service's work is not claimed, and the run does not end `completed`; truth: one case for the message | Code |
 
-The policies the signed-in-person classes assume: a person whose role cannot read cases sees only a case's id and status through an agent; an agent returns no work outside its job, in its reply or its record; an intake agent's reply holds no dose.
+The policies the signed-in-person classes assume: a person whose role cannot read cases gets nothing from a lookup, and gets only a receipt for what their own message did, the id and status of the case it opened or was added to; an agent returns no work outside its job, in its reply or its record; an intake agent's reply holds no dose.
 
 Not a case: a desk user adding to another sender's case by typing that sender's name. It is the same request as a real follow-up, so no rule tells them apart without proof of who sent a message. The audit trail records who entered it.
 
