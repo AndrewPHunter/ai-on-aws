@@ -1,6 +1,6 @@
 # The intake agent as an actor
 
-An agent is an actor in which one step of the behaviour is decided by inference. This document reads the intake agent that way. It holds for both implementations, the [hand-written loop](intake-agent-handwritten.md) and the one [on Strands](intake-agent-strands.md); where they differ, a table says so. Terms and module boundaries are in those two documents.
+An agent is an actor in which a step of the behaviour is decided by inference; the intake agent has two such steps, its model's turn and the report check. This document reads the intake agent that way. It holds for both implementations, the [hand-written loop](intake-agent-handwritten.md) and the one [on Strands](intake-agent-strands.md); where they differ, a table says so. Terms and module boundaries are in those two documents.
 
 ## The parts of an actor, and where each one is
 
@@ -9,7 +9,7 @@ An agent is an actor in which one step of the behaviour is decided by inference.
 | A mailbox | `POST /invocations`, with an accepted access token. One message per request | `contract/server.ts` for the hand-written loop; the local edge (`contract/edge.ts`) and AWS's SDK app (`contract/sdk-app.ts`) for Strands |
 | State that nothing else can touch | The run: its steps, its case actions, the case it opened, whether a write is unsettled, what its report check found, whether the model has been told to record it, its deadline. And the conversation with the model | `IntakeRun` in `intake/run.ts`, built on `RunState` in `run/state.ts`; the conversation held by the loop |
 | A behaviour: what it does when a message arrives | Ask the model, apply the rules, call the case system, answer | `intake/handwritten.ts`, or Strands' `Agent` with four hooks in `intake/strands.ts` |
-| Messages it sends to other actors | Requests to the model server and to the case system, requests for the identity provider's discovery document and keys, and one answer to the caller | `model/chat.ts` or Strands' `OpenAIModel`; `tools/case-system.ts` or Strands' `McpClient`; `shared/access-token.ts` |
+| Messages it sends to other actors | Requests to the model server (the run's turns, and at most one report check) and to the case system, requests for the identity provider's discovery document and keys, and one answer to the caller | `model/chat.ts` or Strands' `OpenAIModel` for the turns, `model/chat.ts` in both for the report check (`intake/report-check.ts`); `tools/case-system.ts` or Strands' `McpClient`; `shared/access-token.ts` |
 | A lifetime | One message. Each message gets a new run with new state, and nothing is kept once it is answered | `startRun` in `intake/run.ts` |
 
 Two steps of the behaviour are not written in code. What to do next, given the conversation so far, is asked of the agent's model; that is where it decides whether the message is a report. When the model replies and the run has recorded no case, the report check asks the same question again: a second inference, made by code in a separate request that is shown the message alone, whose yes or no code then acts on. Every other step is ordinary code.

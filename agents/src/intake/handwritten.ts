@@ -42,7 +42,7 @@ import type { Connected, ToolOutcome, ToolSet } from '../tools/tool-set.ts';
 import { SYSTEM_PROMPT, userTurn } from './prompt.ts';
 import { atReply } from './report-check.ts';
 import type { ReportCheck } from './report-check.ts';
-import { TOLD_ONCE, afterCall, refusalBeforeCall, startRun } from './run.ts';
+import { TOLD_ONCE, afterCall, holdingToFinding, refusalBeforeCall, startRun } from './run.ts';
 import type { IntakeRun } from './run.ts';
 
 export type IntakeDeps = {
@@ -189,7 +189,7 @@ export async function handleInquiry(deps: IntakeDeps, message: InboundMessage, c
   };
 
   try {
-    return await loop(run, deps, tools, message);
+    return holdingToFinding(run, await loop(run, deps, tools, message));
   } finally {
     await connected.tools.close();
   }
@@ -245,12 +245,16 @@ async function loop(run: IntakeRun, deps: IntakeDeps, tools: ToolSet, message: I
       if (next === 'complete') {
         return completed(run, reply);
       }
-      if (next === 'tell_once') {
-        run.told = true;
-        conversation.push({ role: 'assistant', content: completion.content }, { role: 'user', content: TOLD_ONCE });
-        continue;
+      if (next !== 'tell_once') {
+        return stopped(run, next.stop);
       }
-      return stopped(run, next.stop);
+      // Told once only if the run has a turn left. Otherwise it ends at the turn limit, which holdingToFinding words.
+      if (turn === limits.maxTurns) {
+        return stoppedAtTurnLimit(run);
+      }
+      run.told = true;
+      conversation.push({ role: 'assistant', content: completion.content }, { role: 'user', content: TOLD_ONCE });
+      continue;
     }
 
     // Every call the model made gets an answer, in order, before the model is asked again.

@@ -69,7 +69,7 @@ const followUp = (event: string): [string, unknown] => ['add_follow_up', { case_
 
 // The handler with scripted dependencies. The model's script is asked per conversation (by its user turn), so two
 // runs on the same dependencies each follow their own.
-function rig(script: Script, tools: Tools = (tool) => (tool === 'create_case' ? created('C-1') : followedUp('C-9')), options: { connect?: 'refused' | 'short' | 'lookup'; clock?: Clock; check?: Finding } = {}) {
+function rig(script: Script, tools: Tools = (tool) => (tool === 'create_case' ? created('C-1') : followedUp('C-9')), options: { connect?: 'refused' | 'short' | 'lookup'; clock?: Clock; check?: Finding; failure?: string } = {}) {
   const time = options.clock ?? clock();
   const world: World = { events: [], calls: [], requests: [], connected: [], checks: 0 };
   const seen = new Map<string, number>();
@@ -113,7 +113,7 @@ function rig(script: Script, tools: Tools = (tool) => (tool === 'create_case' ? 
           return Promise.resolve();
         },
         random: () => 0.5,
-        reportCheck: () => Promise.resolve((world.checks++, options.check ?? 'none')),
+        reportCheck: () => Promise.resolve((world.checks++, { finding: options.check ?? 'none', failure: options.failure })),
         limits: LIMITS,
       },
       inbound,
@@ -308,25 +308,30 @@ test('intake 13. runs share no state', async () => {
 test('intake 14. a run that recorded no case ends completed only when the report check found no adverse event', async () => {
   const create = ask(['create_case', { event: 'rash' }]);
   const declined = say('Not a report, as the sender asks.');
-  const rows: Array<{ name: string; script: Script; check: Finding; outcome: string; reason: string | null; checks: number; cases: number; told: boolean }> = [
+  const rows: Array<{ name: string; script: Script; check: Finding; failure?: string; outcome: string; reason: string | null; checks: number; cases: number; told: boolean }> = [
     { name: 'found nothing', script: turns(declined), check: 'none', outcome: 'completed', reason: null, checks: 1, cases: 0, told: false },
     { name: 'found one, then recorded', script: turns(declined, create), check: 'adverse_event', outcome: 'completed', reason: null, checks: 1, cases: 1, told: true },
     { name: 'found one, recorded nothing again', script: () => declined, check: 'adverse_event', outcome: 'stopped', reason: STOPPED_FOUND_NOT_RECORDED, checks: 1, cases: 0, told: true },
     { name: 'could not be made', script: turns(declined), check: 'unknown', outcome: 'stopped', reason: STOPPED_CHECK_NOT_MADE, checks: 1, cases: 0, told: false },
+    { name: 'its request failed', script: turns(declined), check: 'unknown', failure: 'The model could not be reached.', outcome: 'stopped', reason: STOPPED_CHECK_NOT_MADE, checks: 1, cases: 0, told: false },
+    { name: 'found one on the last turn', script: (_m, nth) => (nth < 5 ? ask(['no_such_tool', {}]) : declined), check: 'adverse_event', outcome: 'stopped', reason: STOPPED_FOUND_NOT_RECORDED, checks: 1, cases: 0, told: false },
     { name: 'a case recorded', script: turns(create), check: 'adverse_event', outcome: 'completed', reason: null, checks: 0, cases: 1, told: false },
   ];
   for (const row of rows) {
-    const { world, run } = rig(row.script, undefined, { check: row.check });
+    const { world, run } = rig(row.script, undefined, { check: row.check, failure: row.failure });
     const response = await run();
     const told = world.requests.some((r) => r.messages.some((m) => m.role === 'user' && m.content === TOLD_ONCE));
     const steps = response.steps.filter((s) => s.kind === 'report_check').length;
-    assert.deepEqual([response.outcome, response.stop_reason, world.checks, steps, response.case_actions.length, told], [row.outcome, row.reason, row.checks, row.checks, row.cases, row.told], row.name);
+    const errors = response.steps.filter((s) => s.kind === 'error' && s.message === row.failure).length;
+    assert.deepEqual([response.outcome, response.stop_reason, world.checks, steps, response.case_actions.length, told, errors], [row.outcome, row.reason, row.checks, row.checks, row.cases, row.told, row.failure ? 1 : 0], row.name);
   }
-  // The check itself: two messages, no tools; yes is an adverse event, no is none, anything else unknown.
+  // The check itself: two messages, the message's text alone in its tags, no tools; yes, no, anything else; a failure.
   const sent: Array<{ messages: ChatMessage[]; tools: ToolDefinition[] }> = [];
   const answers = ['Yes.', ' no ', 'Maybe so.'];
   const check = createReportCheck({ id: 'scripted', complete: (messages, tools) => (sent.push({ messages, tools }), Promise.resolve(say(answers[sent.length - 1] ?? ''))) });
   const asked = message('msg-1', 'Patient JD had a rash.');
-  const findings = [await check(asked, 1_000), await check(asked, 1_000), await check(asked, 1_000)];
-  assert.deepEqual([findings, sent[0]?.messages.length, sent[0]?.tools], [['adverse_event', 'none', 'unknown'], 2, []]);
+  const findings = [await check(asked, 1_000), await check(asked, 1_000), await check(asked, 1_000)].map((made) => made.finding);
+  assert.deepEqual([findings, sent[0]?.messages.length, sent[0]?.messages[1]?.content, sent[0]?.tools], [['adverse_event', 'none', 'unknown'], 2, `<message>\n${asked.text}\n</message>`, []]);
+  const failing = createReportCheck({ id: 'scripted', complete: () => Promise.resolve(modelFails(true)) });
+  assert.deepEqual(await failing(asked, 1_000), { finding: 'unknown', failure: 'The model could not be asked.' });
 });

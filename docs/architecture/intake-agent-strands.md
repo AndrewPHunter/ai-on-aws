@@ -21,7 +21,7 @@ Strands is used the way it comes. Its default model is Amazon Bedrock; here the 
 | Exchanging the caller's token for the case-system token | `tools/tool-token.ts` (`connectWithToolToken`, wired in `intake/main-handwritten.ts`) | `tools/tool-token.ts` (`toolToken`), called in `handleInquiry`, with the exchange given in `StrandsDeps` |
 | Context headers and the case-system token on requests to the case system, the two tools a run needs and is shown, reading a case system answer | `tools/case-system.ts` (`caseSystemHeaders`, `missingCaseTools`, `isCaseTool`), which reads answers through `tools/mcp-answers.ts` | The same functions |
 | The loop | `intake/handwritten.ts` | Strands' `Agent` |
-| Request to the model | `model/chat.ts`: chat completions, one JSON response | Strands' `OpenAIModel` on its default: the Responses API, streamed |
+| Request to the model | `model/chat.ts`: chat completions, one JSON response | Strands' `OpenAIModel` on its default: the Responses API, streamed. The report check alone goes through `model/chat.ts`, as in the hand-written agent, outside Strands |
 | Connection to the case system | `@modelcontextprotocol/sdk` 1.32.2 client | Strands' `McpClient`, on `@modelcontextprotocol/client` 2.4.0 |
 | Where the rules are applied | Inline in the loop | In four hooks Strands calls |
 
@@ -115,6 +115,16 @@ sequenceDiagram
     end
     A-->>O: AgentResult, or an error
     O->>R: completed, stopped or failed, from the run's own state
+    opt Strands ended its turn with a reply, and the run has recorded no case
+        O->>V: report check, POST /chat/completions through model/chat.ts, outside Strands: the message alone, no tools
+        V-->>O: yes, no, or anything else; only the finding is kept
+        O->>R: afterReply: complete, tell once, or stop
+        opt told once, with turns left
+            O->>A: invoke again, the same Agent, with TOLD_ONCE, the same cancel signal and the turns left
+            A-->>O: AgentResult, or an error, ended as above
+        end
+    end
+    O->>R: holdingToFinding: a stopped run with no case after an adverse event found says so
     O-->>S: InvocationResponse
 ```
 

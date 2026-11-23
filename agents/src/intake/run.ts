@@ -9,7 +9,7 @@
 // What every agent records, how a turn is asked again, and how a run ends are in ../run/: steps.ts,
 // turns.ts and endings.ts. Nothing here calls a model or a tool.
 
-import type { CaseAction, Citation, ReportFinding } from '../../../shared/agent-contract.ts';
+import type { CaseAction, Citation, InvocationResponse, ReportFinding } from '../../../shared/agent-contract.ts';
 import type { AgentIdentity } from '../contract/server.ts';
 import type { Limits } from '../run/limits.ts';
 import { startRunState } from '../run/state.ts';
@@ -146,4 +146,12 @@ export function afterReply(run: Pick<IntakeRun, 'caseActions' | 'finding' | 'tol
     case 'adverse_event':
       return run.told ? { stop: STOPPED_FOUND_NOT_RECORDED } : 'tell_once';
   }
+}
+
+// Applied where each handler returns its ending. A run whose report check found an adverse event and that ends
+// stopped with no case, whatever stopped it (the turn limit, the time limit, a reply written after being told),
+// ends with the sentence that says a person must read the message. A failed run is left as it is.
+export function holdingToFinding(run: IntakeRun, ending: InvocationResponse): InvocationResponse {
+  const found = run.finding === 'adverse_event' && run.caseActions.length === 0;
+  return found && ending.outcome === 'stopped' ? { ...ending, stop_reason: STOPPED_FOUND_NOT_RECORDED } : ending;
 }
