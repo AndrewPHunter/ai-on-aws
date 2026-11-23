@@ -580,8 +580,8 @@ On a trial stack built from this repository, run under Docker on an Apple-silico
 
 | Gate | Command | Result |
 |---|---|---|
-| Identity gate | `platform/identity/gate.sh` | 222 statements held, none failed |
-| Stack gate | `platform/identity/stack-gate.sh` | 119 statements held, none failed, none in `not_checked`. Its run through the orchestrator ended `completed` in 29 s: a case opened by the intake agent, one label question put to the label expert |
+| Identity gate | `platform/identity/gate.sh` | 251 statements held, none failed (2026-11-23, with the scope `traces:read`) |
+| Stack gate | `platform/identity/stack-gate.sh` | 132 statements held, none failed, none in `not_checked` (2026-11-23, with the trace routes): each person's run read back holds no steps, the trace routes are 403 to everyone but the auditor, and the statements about delegations and retrieval are taken from the trace |
 | Knowledge gate, with its token as its own client `knowledge-gate` | `knowledge/gate.sh` | 20 statements held |
 | The same three gates, on a stack started from the earlier realm with an inquiry store and a label index, then moved to the new realm with its volumes kept, by removing `platform/identity/.env`, running set-up, and stopping and starting the stack with `--build` | as above | 151, 102 and 20 statements held, none failed. Measured before the gates had their statements about the orchestrator |
 
