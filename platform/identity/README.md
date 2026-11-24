@@ -146,6 +146,21 @@ The issuer is `http://localhost:8090/realms/lab` on both. Keycloak does this thr
 | `token_endpoint` | `http://localhost:8090/realms/lab/protocol/openid-connect/token` | `http://identity:8080/realms/lab/protocol/openid-connect/token` |
 | `jwks_uri` | `http://localhost:8090/realms/lab/protocol/openid-connect/certs` | `http://identity:8080/realms/lab/protocol/openid-connect/certs` |
 
+## Sign-in page
+
+The realm's sign-in page is headed with its display name, **Medical Information Desk**, and drawn by a login theme of the lab's own, [`themes/medical-information-desk/login/`](themes/medical-information-desk/login/), so it looks like the desk's own sign-in page: white card on `#F1F3F4`, dark ink, square inputs, the violet primary button, links in the same violet. It is light whatever the browser prefers.
+
+| File | What it does |
+|---|---|
+| [`theme.properties`](themes/medical-information-desk/login/theme.properties) | Extends Keycloak's stock login theme (`parent=keycloak.v2`), loads the parent's stylesheet and then the theme's own, and turns the dark variant off (`darkMode=false`) |
+| [`resources/css/desk.css`](themes/medical-information-desk/login/resources/css/desk.css) | The desk's colours, borders, corners, sizes, focus outline and font stack (`'Helvetica Neue', Arial, sans-serif`, from the machine's own fonts) |
+
+`compose.yaml` mounts the theme's directory read-only at `/opt/keycloak/themes/medical-information-desk`, and the realm file names it as the realm's `loginTheme`.
+
+The theme changes styles only. It overrides no template, message or `kc*Class` property, so the form, its field names, ids and action are what the stock theme renders. The gate, the stack gate and the attack runner sign people in by reading that form: the one with id `kc-form-login`, its `action`, and the fields `username`, `password` and `credentialId` ([`src/login-form.ts`](src/login-form.ts), [`src/provider.ts`](src/provider.ts)).
+
+The mount is of the directory in the checkout, so the provider reads the theme's files as they are on disk.
+
 ## The gate
 
 `gate.sh` checks a running service for real, from inside the stack's network, and exits 0 only if every statement below holds:
