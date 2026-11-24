@@ -1,4 +1,4 @@
-// Which inquiries the inbox lists, and the one status each shows there.
+// Which inquiries the inbox lists, which of them a search finds, and the one status each shows there.
 
 import type { Inquiry, InquirySummary, RunSummary } from '../../shared/api.ts';
 
@@ -14,6 +14,23 @@ export function latestRun<Run>(inquiry: { runs: readonly Run[] }): Run | undefin
 // A label lookup: every run of it was by the label expert. An inquiry with no run is not one.
 export function isLabelLookup(inquiry: { runs: readonly Pick<RunSummary, 'agent_id'>[] }): boolean {
   return inquiry.runs.length > 0 && inquiry.runs.every((run) => run.agent_id === LABEL_AGENT);
+}
+
+// The words of a search, lowercased. Whitespace separates them; an empty search has none.
+export function searchWords(search: string): string[] {
+  return search
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((word) => word !== '');
+}
+
+// Whether every word is found, ignoring case, in the inquiry's sender, its message or the number of a case one of
+// its runs touched. A search with no words finds every inquiry.
+export function matchesSearch(inquiry: Pick<InquirySummary, 'sender' | 'text' | 'runs'>, words: readonly string[]): boolean {
+  const fields = [inquiry.sender, inquiry.text, ...inquiry.runs.flatMap((run) => run.case_ids)].map((field) =>
+    field.toLowerCase(),
+  );
+  return words.every((word) => fields.some((field) => field.includes(word)));
 }
 
 export type Tone = 'working' | 'attention' | 'case' | 'answered' | 'quiet';
