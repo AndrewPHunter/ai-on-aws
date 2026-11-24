@@ -13,6 +13,7 @@ import type {
   LabInquiryResponse,
   LabRunRequest,
   LabRunResponse,
+  RunSpansResponse,
   SampleList,
   SystemStatus,
   TraceList,
@@ -134,6 +135,31 @@ export function useLabRun(runId: string) {
     queryKey: ['lab', 'run', runId],
     queryFn: () => get<TraceResponse>(`/lab/api/runs/${encodeURIComponent(runId)}`),
     refetchInterval: (query) => (query.state.data?.trace.run.state === 'running' ? RUN_REFRESH_MS : false),
+  });
+}
+
+// How long after a run finished its spans are still asked for: the client exports its root span within a second or so
+// of the run's end, and the other pieces' spans come on their own schedule.
+export const EVIDENCE_GRACE_MS = 30_000;
+
+// Whether evidence read at `readAt` (milliseconds) was read within EVIDENCE_GRACE_MS of the run's end, when what
+// was exported may not all have reached the trace store yet.
+export function readWhileSettling(readAt: number, finishedAt: string | null): boolean {
+  const finished = finishedAt === null ? Number.NaN : Date.parse(finishedAt);
+  return readAt - finished < EVIDENCE_GRACE_MS;
+}
+
+// The spans the trace store holds for a run, asked for again while the run is running and for EVIDENCE_GRACE_MS after
+// it finished.
+export function useLabRunSpans(runId: string, running: boolean, finishedAt: string | null) {
+  return useQuery({
+    queryKey: ['lab', 'run', runId, 'spans'],
+    queryFn: () => get<RunSpansResponse>(`/lab/api/runs/${encodeURIComponent(runId)}/spans`),
+    refetchInterval: (query) => {
+      if (running) return RUN_REFRESH_MS;
+      const settling = query.state.data?.evidence !== 'not_configured' && readWhileSettling(query.state.dataUpdatedAt, finishedAt);
+      return settling ? RUN_REFRESH_MS : false;
+    },
   });
 }
 

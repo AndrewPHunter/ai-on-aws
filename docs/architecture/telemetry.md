@@ -2,14 +2,23 @@
 
 Execution evidence is a record of the work a piece did, exported by that piece as each operation ends. It does not wait for an agent's final response. Spans from different pieces are joined into one trace by the trace context that each call carries. The evidence holds metadata only. The `steps` of the agent contract carry content, and they are a separate record.
 
-Two parts make it up: [`shared/telemetry.ts`](../../shared/telemetry.ts), the module a piece uses to record and export spans, and the [trace store](../../platform/telemetry/README.md), the lab's own destination for them.
+Two parts make it up: [`shared/telemetry.ts`](../../shared/telemetry.ts), the module a piece uses to record and export spans, and the [trace store](../../platform/telemetry/README.md), the lab's own destination for them. The pieces below send spans through the module.
 
 ## Pieces that send spans
 
 | Piece | Service name | Spans | Described in |
 |---|---|---|---|
-| Case system | `case-system` | `case.tool` (server) for each tool call, a child of the request's `traceparent`; `case.commit` (internal) around each create or follow-up, saying `created`, `replayed` or `conflict`, ended before the answer is sent; `case.review` (server) for each review decision | [its README](../../tools/case-system/README.md#telemetry) |
+| Client | `client` | `desk.run` (`internal`, the root of a new trace for every run, ended with `completed`, `stopped` or `failed`); `desk.run.accepted` (`internal`, child of `desk.run`, ended as the run is recorded); `agent.invoke` (`client`, child of `desk.run`, `lab.operation.id` the run's id, `lab.attempt` 1, ended with `executed`, `response_lost` or `failed`) Starts the trace. Injects `traceparent` from `agent.invoke` on the request to the agent | [its README](../../client/README.md#execution-evidence) |
 | The hand-written intake agent | `intake-handwritten` | `agent.run` (server), `model.call` and `tool.call` (client), with `traceparent` on each request to the case system | [Intake agent, hand-written loop](intake-agent-handwritten.md#what-the-agent-exports) |
+| Case system | `case-system` | `case.tool` (server) for each tool call, a child of the request's `traceparent`; `case.commit` (internal) around each create or follow-up, saying `created`, `replayed` or `conflict`, ended before the answer is sent; `case.review` (server) for each review decision | [its README](../../tools/case-system/README.md#telemetry) |
+
+A run whose trace holds `desk.run.accepted` and no `desk.run` has not finished, or did not finish while the client ran. Nothing exports an ending for it.
+
+## Who reads the evidence
+
+| Reader | Asks the store | Shows |
+|---|---|---|
+| The client's lab explorer, `GET /lab/api/runs/<run_id>/spans` | `GET /traces?run_id=<run_id>`, then `GET /traces/<trace_id>` for each trace found | Every span of those traces, of every piece, on the run page's "Exported evidence", beside the steps from the agent's answer |
 
 ## Terms
 
@@ -47,11 +56,11 @@ The module uses the OpenTelemetry JavaScript SDK by hand, at the boundaries the 
 
 | Attribute | Identifies | Changes when |
 |---|---|---|
-| `lab.operation.id` | The business operation, such as one case write for one message | Never between repeats of the same operation: a retry carries the same value |
+| `lab.operation.id` | One intended operation of the piece that makes the span, such as the client's call to the agent, one model turn or one tool call | Never between repeats of the same operation: a retry carries the same value. It is the caller's own name for the operation and does not cross a boundary |
 | `lab.run.id` | One execution: one run of an agent for one inquiry | Every new run, even of the same message |
 | `lab.attempt` | One delivery attempt of an operation, counted from 1 | Every repeat of the operation |
 
-`lab.inquiry.id` names the inquiry a run serves. The trace and span ids are the telemetry's own, and none of these identifiers is used as one. A caller's span and the service's span for one attempt carry the same `lab.operation.id` and `lab.attempt`. The caller's outcome (`executed`, `response_lost`, `refused`, `failed`) and the service's (`created`, `replayed`, `conflict`) are recorded separately, so a write that was committed but whose answer was lost shows as both.
+`lab.inquiry.id` names the inquiry a run serves. The trace and span ids are the telemetry's own, and none of these identifiers is used as one. Only `traceparent` crosses a boundary, so a service's span for an attempt is joined to the caller's by being its child, not by carrying its `lab.operation.id` or `lab.attempt`. The case system names the business operation by `lab.inquiry.id` and the tool, which are the same for a repeat. The caller's outcome (`executed`, `response_lost`, `refused`, `failed`) and the service's (`created`, `replayed`, `conflict`) are recorded separately, so a write that was committed but whose answer was lost shows as both.
 
 ## Declared attributes
 

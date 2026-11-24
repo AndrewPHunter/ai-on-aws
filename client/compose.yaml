@@ -78,6 +78,11 @@ services:
       MODEL_RERANK_BASE_URL: ${MODEL_RERANK_BASE_URL:-}
       # Where the lab explorer reads the evaluation harness's runs: the harness's data folder, mounted read-only below.
       EVALUATION_DATA_DIR: /evaluation-data
+      # The trace store, by its service name on the shared network: where the client exports a span for each operation
+      # of a run as it ends (OTLP/HTTP JSON), and where the lab explorer reads a run's spans back, with no token. Both
+      # are optional: without the first telemetry is off, without the second the run page cannot show the evidence.
+      TELEMETRY_ENDPOINT: http://telemetry:4318/v1/traces
+      TELEMETRY_STORE_URL: http://telemetry:4318
     ports:
       # Published on this machine only.
       - "127.0.0.1:3000:3000"

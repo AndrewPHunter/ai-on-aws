@@ -29,6 +29,7 @@ const FIXED_GROUP: Readonly<Record<string, Group>> = {
   'model-chat': 'stores',
   'model-embedding': 'stores',
   'model-reranker': 'stores',
+  'trace-store': 'stores',
 };
 
 function groupOf(piece: PieceStatus, agentIds: ReadonlySet<string>): Group {

@@ -3,6 +3,7 @@
 
 import { invocationResponseSchema } from '../../shared/agent-contract.ts';
 import type { InvocationRequest, InvocationResponse } from '../../shared/agent-contract.ts';
+import type { Outcome, Telemetry } from '../../shared/telemetry.ts';
 
 export type InvokeResult = { outcome: 'ok'; response: InvocationResponse } | { outcome: 'failed'; reason: string };
 
@@ -28,18 +29,44 @@ export function describe(error: unknown): string {
 // The fetch and the reading of the body share one timeout, so an agent that sends headers and then
 // stalls is treated the same as one that never answers. The call carries the access token got for the agent's
 // scope: the signed-in user's, or the contact form's or the lab explorer's own.
+//
+// The call is one span, agent.invoke, of kind client, a child of the current span (the run's), with the run's id as
+// its operation and attempt 1. The request carries traceparent naming that span. Its outcome tells an answer inside
+// the contract (executed, whatever outcome the answer reports) from no answer (response_lost: none in time, or the
+// connection failed) and from an answer outside the contract or a refusal (failed).
 export async function invokeAgent(
+  telemetry: Telemetry,
+  operationId: string,
   url: string,
   request: InvocationRequest,
   timeoutMs: number,
   accessToken: string,
 ): Promise<InvokeResult> {
+  const attributes = { 'lab.operation.id': operationId, 'lab.attempt': 1 };
+  return telemetry.span('agent.invoke', { kind: 'client', attributes }, async (span) => {
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+      accept: 'application/json',
+      authorization: `Bearer ${accessToken}`,
+    };
+    telemetry.inject(headers);
+    const called = await callAgent(url, request, timeoutMs, headers);
+    span.set({ 'lab.outcome': called.outcome });
+    return called.result;
+  });
+}
+
+type Called = { outcome: Extract<Outcome, 'executed' | 'response_lost' | 'failed'>; result: InvokeResult };
+
+const failedWith = (outcome: Called['outcome'], reason: string): Called => ({ outcome, result: { outcome: 'failed', reason } });
+
+async function callAgent(url: string, request: InvocationRequest, timeoutMs: number, headers: Record<string, string>): Promise<Called> {
   let status: number;
   let body: string;
   try {
     const response = await fetch(`${url}/invocations`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', accept: 'application/json', authorization: `Bearer ${accessToken}` },
+      headers,
       body: JSON.stringify(request),
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -47,31 +74,28 @@ export async function invokeAgent(
     body = await response.text();
   } catch (error) {
     if (isTimeout(error)) {
-      return { outcome: 'failed', reason: `The agent did not answer within ${seconds(timeoutMs)}.` };
+      return failedWith('response_lost', `The agent did not answer within ${seconds(timeoutMs)}.`);
     }
-    return { outcome: 'failed', reason: `Could not reach the agent: ${describe(error)}.` };
+    return failedWith('response_lost', `Could not reach the agent: ${describe(error)}.`);
   }
 
   if (status < 200 || status > 299) {
-    return { outcome: 'failed', reason: `The agent answered with status ${status}.` };
+    return failedWith('failed', `The agent answered with status ${status}.`);
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);
   } catch {
-    return { outcome: 'failed', reason: "The agent's answer did not match the contract: it is not JSON." };
+    return failedWith('failed', "The agent's answer did not match the contract: it is not JSON.");
   }
   const result = invocationResponseSchema.safeParse(parsed);
   if (!result.success) {
     const first = result.error.issues[0];
     const where = first === undefined || first.path.length === 0 ? '(the whole answer)' : first.path.join('.');
-    return {
-      outcome: 'failed',
-      reason: `The agent's answer did not match the contract: ${where}: ${first?.message ?? 'unknown problem'}.`,
-    };
+    return failedWith('failed', `The agent's answer did not match the contract: ${where}: ${first?.message ?? 'unknown problem'}.`);
   }
-  return { outcome: 'ok', response: result.data };
+  return { outcome: 'executed', result: { outcome: 'ok', response: result.data } };
 }
 
 export async function pingAgent(url: string, timeoutMs: number): Promise<PingResult> {

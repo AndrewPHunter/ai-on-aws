@@ -2,15 +2,18 @@
 // each is a scripted server on loopback that records what it was sent. The client runs with an in-memory store, a
 // clock that moves only when a test moves it, and seeded randomness. Outside auth.test.ts the identity provider is
 // an IdentityProvider whose refresh is a function of the refresh token and the scope: no token is signed, nothing is
-// fetched. A machine client's token is a function too (machineTokens), and the search engine and the retrieval service
-// are values a test passes in (none unless given).
+// fetched. A machine client's token is a function too (machineTokens), and the search engine, the retrieval service and
+// the trace store are values a test passes in (none unless given). Telemetry is off unless a test passes in a handle.
 
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import type { IncomingMessage, Server } from 'node:http';
 
 import type { InvocationResponse } from '../../shared/agent-contract.ts';
+import { LAB_QUEUE, startTelemetry } from '../../shared/telemetry.ts';
+import type { Telemetry } from '../../shared/telemetry.ts';
 import type { AgentConfig, AgentScope, Config, MachineClient } from '../src/config.ts';
+import type { TraceStore } from '../src/evidence.ts';
 import { IdentityProvider, SignInRefused } from '../src/identity.ts';
 import type { KnowledgeServices } from '../src/knowledge.ts';
 import type { MachineTokenResult, Refreshed, SignedInUser } from '../src/identity.ts';
@@ -30,7 +33,7 @@ export async function listen(server: Server): Promise<string> {
 // What a test registers teardown with: its TestContext, or node:test's file-level hooks.
 export type Hooks = { after: (fn: () => void) => void };
 
-export type Received = { method: string; path: string; authorization: string | undefined; body: unknown };
+export type Received = { method: string; path: string; authorization: string | undefined; traceparent: string | undefined; body: unknown };
 // What a scripted server answers: a status and a body (JSON unless it is a string), or 'close' to drop the connection.
 export type Answer = { status: number; body: unknown } | 'close';
 
@@ -48,7 +51,8 @@ export async function scripted(t: Hooks, answer: (r: Received) => Answer | Promi
   const waiting: { match: (r: Received) => boolean; resolve: (r: Received) => void }[] = [];
   const server = createServer((request, response) => {
     void (async () => {
-      const r: Received = { method: request.method ?? '', path: request.url ?? '', authorization: request.headers.authorization, body: await bodyOf(request) };
+      const { authorization, traceparent } = request.headers;
+      const r: Received = { method: request.method ?? '', path: request.url ?? '', authorization, traceparent: typeof traceparent === 'string' ? traceparent : undefined, body: await bodyOf(request) };
       received.push(r);
       for (const w of waiting.filter((candidate) => candidate.match(r))) w.resolve(r);
       const a = await answer(r);
@@ -150,12 +154,15 @@ export function deskConfig(options: { agents: TestAgent[]; caseReviewUrl: string
     appOrigin: APP_ORIGIN,
     rolesClaim: 'roles',
     evaluationDataDir: options.evaluationDataDir ?? null,
+    telemetryEndpoint: null,
   };
 }
 
 export type Desk = { url: string; store: InquiryStore; sessions: SessionStore; clock: Clock };
 
-export async function startDesk(t: Hooks, config: Config, time: Clock, identity?: IdentityProvider, machine?: MachineTokens, knowledge?: KnowledgeServices): Promise<Desk> {
+export type Evidence = { telemetry?: Telemetry; traceStore?: TraceStore };
+
+export async function startDesk(t: Hooks, config: Config, time: Clock, identity?: IdentityProvider, machine?: MachineTokens, knowledge?: KnowledgeServices, evidence?: Evidence): Promise<Desk> {
   const store = new InquiryStore(':memory:', time.now);
   const sessions = new SessionStore(time.now, seeded('desk'));
   let n = 0;
@@ -168,6 +175,8 @@ export async function startDesk(t: Hooks, config: Config, time: Clock, identity?
     sessions,
     machineToken: (machine ?? machineTokens(time.now)).get,
     knowledge: knowledge ?? { engine: null, retrieval: null },
+    telemetry: evidence?.telemetry ?? startTelemetry({ service: 'client', endpoint: null, queue: LAB_QUEUE }, { now: () => time.now().getTime(), log: () => undefined }),
+    traceStore: evidence?.traceStore ?? null,
   });
   const url = await listen(server);
   t.after(() => {

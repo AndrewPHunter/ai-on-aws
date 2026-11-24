@@ -1,6 +1,6 @@
-// The client's settings, read from the environment by name. Every one is required except the five the status
-// checks by health and EVALUATION_DATA_DIR, which are optional; nothing falls back to a default of the machine. Pure, so it is
-// tested with plain objects.
+// The client's settings, read from the environment by name. Every one is required except the six the status
+// checks by health, EVALUATION_DATA_DIR and TELEMETRY_ENDPOINT, which are optional; nothing falls back to a default of the
+// machine. Pure, so it is tested with plain objects.
 
 import { z } from 'zod';
 
@@ -18,6 +18,7 @@ const RESERVED_IDS: readonly string[] = [
   'model-chat',
   'model-embedding',
   'model-reranker',
+  'trace-store',
 ];
 
 // The scopes an agent can require of the token it is sent.
@@ -73,13 +74,14 @@ export type MachineClient = (typeof MACHINE_CLIENTS)[number];
 
 // The pieces the status checks by their health route, with no key or token, and the setting each is read from. Each
 // setting is optional. The lab explorer also reads the label index from the search engine and searches through the
-// retrieval service at the same addresses (knowledge.ts).
+// retrieval service at the same addresses (knowledge.ts), and reads a run's spans from the trace store (evidence.ts).
 export const HEALTH_SETTINGS = {
   retrieval: 'RETRIEVAL_URL',
   search: 'SEARCH_URL',
   'model-chat': 'MODEL_BASE_URL',
   'model-embedding': 'MODEL_EMBED_BASE_URL',
   'model-reranker': 'MODEL_RERANK_BASE_URL',
+  'trace-store': 'TELEMETRY_STORE_URL',
 } as const;
 export type HealthChecked = keyof typeof HEALTH_SETTINGS;
 // The three model servers are given by their base URL, which ends in /v1; their health route is at the root.
@@ -103,6 +105,9 @@ export type Config = {
   // The folder the evaluation harness writes its runs to, mounted read-only, which the lab explorer reads; null
   // when EVALUATION_DATA_DIR is not set.
   evaluationDataDir: string | null;
+  // The OTLP/HTTP traces URL the client exports its spans to; null when TELEMETRY_ENDPOINT is not set, and telemetry
+  // is off.
+  telemetryEndpoint: string | null;
 };
 
 function required(env: NodeJS.ProcessEnv, name: string, meaning: string): string {
@@ -175,6 +180,20 @@ function healthUrlsFrom(env: NodeJS.ProcessEnv): Partial<Record<HealthChecked, s
   return urls;
 }
 
+// TELEMETRY_ENDPOINT, kept as given, or null when it is absent or empty. One that is not an http(s) URL stops the
+// server, naming the setting but not its value.
+function telemetryEndpointFrom(env: NodeJS.ProcessEnv): string | null {
+  const value = env.TELEMETRY_ENDPOINT?.trim();
+  if (value === undefined || value === '') {
+    return null;
+  }
+  try {
+    return exactHttpUrl('TELEMETRY_ENDPOINT', value);
+  } catch {
+    throw new Error('TELEMETRY_ENDPOINT is not an http or https URL.');
+  }
+}
+
 function agentsFrom(value: string): AgentConfig[] {
   let parsed: unknown;
   try {
@@ -236,5 +255,6 @@ export function configFrom(env: NodeJS.ProcessEnv): Config {
     rolesClaim: required(env, 'ROLES_CLAIM', 'the ID-token claim holding a flat list of role names'),
     healthUrls: healthUrlsFrom(env),
     evaluationDataDir: env.EVALUATION_DATA_DIR?.trim() || null,
+    telemetryEndpoint: telemetryEndpointFrom(env),
   };
 }

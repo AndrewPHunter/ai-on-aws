@@ -9,8 +9,10 @@
 // client: POST /contact/api/messages, where a clinician writes in and the message goes to the orchestrator,
 // and, under /lab/api, the lab explorer, which reads what the status, agent, sample and trace routes give,
 // reads an inquiry with its runs' steps, runs a message through any agent, reads what the label index holds, and
-// runs a label search through the retrieval service, and reads the evaluation harness's runs. The server is published
-// on its own machine only. /ping and the built web app need no session.
+// runs a label search through the retrieval service, reads the evaluation harness's runs, and reads the spans the trace
+// store holds for a run. The server is published on its own machine only. /ping and the built web app need no session.
+//
+// Every run is recorded as spans of its own trace as it goes (startRun), whatever route starts it.
 //
 // Tokens stay here: the browser holds only a session cookie.
 
@@ -20,6 +22,8 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { extname, resolve, sep } from 'node:path';
 
 import type { InvocationRequest } from '../../shared/agent-contract.ts';
+import { AttributeRefused } from '../../shared/telemetry.ts';
+import type { Outcome, SpanAttributes, Telemetry } from '../../shared/telemetry.ts';
 import type {
   AgentList,
   ApiError,
@@ -36,6 +40,7 @@ import type {
   PieceStatus,
   Run,
   RunResponse,
+  RunSpansResponse,
   SampleList,
   SessionMay,
   SessionView,
@@ -51,6 +56,8 @@ import { getCase, listCases, postReview } from './cases.ts';
 import type { Forwarded } from './cases.ts';
 import { HEALTH_SETTINGS } from './config.ts';
 import type { AgentConfig, Config, HealthChecked, MachineClient } from './config.ts';
+import { readRunSpans } from './evidence.ts';
+import type { TraceStore } from './evidence.ts';
 import { IdentityUnreachable, SignInRefused } from './identity.ts';
 import type { IdentityProvider, MachineTokenResult } from './identity.ts';
 import { findRuns, runFigures, runList } from './evaluation.ts';
@@ -76,10 +83,19 @@ export type ClientDeps = {
   // The search engine the lab explorer reads the label index from, and the retrieval service it searches; each null
   // when its setting is not set.
   knowledge: KnowledgeServices;
+  // Records the spans of every run (agents.ts makes the call's). Off, a working no-op, when TELEMETRY_ENDPOINT is
+  // not set.
+  telemetry: Telemetry;
+  // The trace store the lab explorer reads a run's spans from; null when TELEMETRY_STORE_URL is not set.
+  traceStore: TraceStore | null;
 };
 
-// The token a run is sent with, or why there is none.
-type Access = { outcome: 'token'; token: string } | { outcome: 'failed'; reason: string };
+// The agent a run is sent to and the token it is sent with, or why it is not sent.
+type Access = { outcome: 'call'; agent: AgentConfig; token: string } | { outcome: 'failed'; reason: string };
+
+// The spans a run is recorded under (README, "Execution evidence"). agent.invoke is made in agents.ts.
+export const RUN_SPAN = 'desk.run';
+export const ACCEPTED_SPAN = 'desk.run.accepted';
 
 // Who enters an inquiry and starts a run when nobody is signed in: the machine client, by its client id.
 export const MACHINE_ACTORS: Record<MachineClient, Actor> = {
@@ -163,6 +179,12 @@ const HEALTH_PIECES: readonly { id: HealthChecked; name: string; role: string; c
     name: 'Reranker',
     role: 'Puts the passages found in order.',
     check: (url, timeoutMs) => answersHealth(`${url}/health`, timeoutMs),
+  },
+  {
+    id: 'trace-store',
+    name: 'Trace store',
+    role: 'Keeps the spans each piece exports as it works.',
+    check: (url, timeoutMs) => answersHealth(`${url}/ping`, timeoutMs),
   },
 ];
 
@@ -411,7 +433,7 @@ function segment(raw: string): string | undefined {
 }
 
 export function createClientServer(deps: ClientDeps): Server {
-  const { config, store, now, newId, identity, sessions, machineToken, knowledge } = deps;
+  const { config, store, now, newId, identity, sessions, machineToken, knowledge, telemetry, traceStore } = deps;
 
   // Asked for at sign-in: each distinct agent scope configured, the case system's two and traces:read. The
   // provider leaves out any the person's role does not grant.
@@ -522,24 +544,26 @@ export function createClientServer(deps: ClientDeps): Server {
         reason: `The token the client ${client} got for ${agent.scope} lives less than the ${agent.wait_seconds} seconds the client waits for this agent, so it was not sent.`,
       };
     }
-    return { outcome: 'token', token: got.token };
+    return { outcome: 'call', agent, token: got.token };
   }
 
   // Runs in the background after the 202 has been sent: gets the token, if it is not already got, and calls the
-  // agent. A run always ends: anything that throws fails it with a reason, and the cause is logged.
-  async function settleRun(runId: string, agent: AgentConfig, request: InvocationRequest, access: () => Promise<Access>): Promise<void> {
+  // agent. A run always ends: anything that throws fails it with a reason, and the cause is logged. Returns how the run
+  // ended, for its root span: the agent's answer's outcome, or failed.
+  async function settleRun(runId: string, request: InvocationRequest, access: () => Promise<Access>): Promise<Extract<Outcome, 'completed' | 'stopped' | 'failed'>> {
     try {
-      const token = await access();
-      if (token.outcome === 'failed') {
-        store.failRun(runId, token.reason);
-        return;
+      const target = await access();
+      if (target.outcome === 'failed') {
+        store.failRun(runId, target.reason);
+        return 'failed';
       }
-      const result = await invokeAgent(agent.url, request, agentWaitMs(agent), token.token);
+      const result = await invokeAgent(telemetry, runId, target.agent.url, request, agentWaitMs(target.agent), target.token);
       if (result.outcome === 'ok') {
         store.completeRun(runId, result.response);
-      } else {
-        store.failRun(runId, result.reason);
+        return result.response.outcome;
       }
+      store.failRun(runId, result.reason);
+      return 'failed';
     } catch (error) {
       console.error(`Run ${runId} failed in the client:`, error);
       try {
@@ -547,27 +571,64 @@ export function createClientServer(deps: ClientDeps): Server {
       } catch (recording) {
         console.error(`Could not record the failure of run ${runId}:`, recording);
       }
+      return 'failed';
     }
   }
 
-  // Records a run of the stored message and sends it, with the id and receipt time it was given when it was
-  // received, carrying the token `access` gives: one already got for a signed-in user, or one a machine client
-  // gets once the run is recorded.
-  function startRun(inquiry: StoredInquiry, agent: AgentConfig, startedBy: Actor, access: () => Promise<Access>): TracedRun {
-    const run = store.startRun(newId(), inquiry.id, agent.id, startedBy);
+  function recordRun(runId: string, inquiryId: string, agentId: string, startedBy: Actor): TracedRun {
+    const run = store.startRun(runId, inquiryId, agentId, startedBy);
     if (run === undefined) {
       throw inquiryNotFound();
     }
-    const request: InvocationRequest = {
-      message: { id: inquiry.id, received_at: inquiry.received_at, sender: inquiry.sender, text: inquiry.text },
-    };
-    void settleRun(run.id, agent, request, access);
     return run;
   }
 
-  // A token already got for a signed-in user, as startRun takes it.
-  function got(token: string): () => Promise<Access> {
-    return () => Promise.resolve({ outcome: 'token', token });
+  // Records a run of the stored message by the agent `agentId` and sends it, with the id and receipt time the message
+  // was given when it was received, to the agent `access` gives, carrying its token: one already got for a signed-in
+  // user, or one a machine client gets once the run is recorded. Resolves once the run is recorded; the call goes on.
+  //
+  // The run is the root span of a new trace, desk.run, ended when the run is settled; the write that records it is its
+  // child desk.run.accepted, exported while the call goes on; the call is agent.invoke (agents.ts). If telemetry refuses
+  // the run's attributes before anything is recorded, the run is made without its two spans and the refusal is logged:
+  // telemetry does not change what is answered or stored.
+  function startRun(inquiry: StoredInquiry, agentId: string, startedBy: Actor, access: () => Promise<Access>): Promise<TracedRun> {
+    const runId = newId();
+    const request: InvocationRequest = {
+      message: { id: inquiry.id, received_at: inquiry.received_at, sender: inquiry.sender, text: inquiry.text },
+    };
+    const ids: SpanAttributes = { 'lab.run.id': runId, 'lab.inquiry.id': inquiry.id, 'gen_ai.agent.id': agentId };
+    return new Promise((accepted, refused) => {
+      let recorded = false;
+      telemetry
+        .span(RUN_SPAN, { kind: 'internal', parent: null, attributes: ids }, async (root) => {
+          const run = await telemetry.span(ACCEPTED_SPAN, { kind: 'internal', attributes: ids }, () => recordRun(runId, inquiry.id, agentId, startedBy));
+          recorded = true;
+          accepted(run);
+          root.set({ 'lab.outcome': await settleRun(run.id, request, access) });
+        })
+        .catch((error: unknown) => {
+          if (recorded) {
+            console.error(`telemetry: the root span of run ${runId} could not be completed:`, error);
+            return;
+          }
+          if (!(error instanceof AttributeRefused)) {
+            refused(error);
+            return;
+          }
+          console.error(`telemetry: run ${runId} is recorded without its spans: ${error.message}`);
+          try {
+            accepted(recordRun(runId, inquiry.id, agentId, startedBy));
+            void settleRun(runId, request, access);
+          } catch (recording) {
+            refused(recording);
+          }
+        });
+    });
+  }
+
+  // A token already got for a signed-in user, for that agent, as startRun takes it.
+  function got(agent: AgentConfig, token: string): () => Promise<Access> {
+    return () => Promise.resolve({ outcome: 'call', agent, token });
   }
 
 
@@ -661,7 +722,7 @@ export function createClientServer(deps: ClientDeps): Server {
         const token = await accessToken(session, agent.scope, agentWaitMs(agent));
         const id = newId();
         store.createInquiry({ id, receivedAt: now().toISOString(), sender, text, enteredBy: actorOf(session) });
-        startRun(storedInquiry(id), agent, actorOf(session), got(token));
+        await startRun(storedInquiry(id), agent.id, actorOf(session), got(agent, token));
         const payload: InquiryResponse = { inquiry: inquiryView(deskInquiry(id)) };
         sendJson(response, 202, payload);
       },
@@ -686,7 +747,7 @@ export function createClientServer(deps: ClientDeps): Server {
         const agent = runnableAgent(session, requiredString(body, 'agent_id'));
         const inquiry = deskInquiry(inquiryId);
         const token = await accessToken(session, agent.scope, agentWaitMs(agent));
-        const payload: RunResponse = { run: withoutSteps(startRun(inquiry, agent, actorOf(session), got(token))) };
+        const payload: RunResponse = { run: withoutSteps(await startRun(inquiry, agent.id, actorOf(session), got(agent, token))) };
         sendJson(response, 202, payload);
       },
     };
@@ -840,7 +901,7 @@ export function createClientServer(deps: ClientDeps): Server {
       const body = await readJson(request);
       const agent = configuredAgent(requiredString(body, 'agent_id'));
       const inquiry = labInquiry(body);
-      const run = startRun(inquiry, agent, MACHINE_ACTORS['lab-explorer'], () => machineAccess('lab-explorer', agent));
+      const run = await startRun(inquiry, agent.id, MACHINE_ACTORS['lab-explorer'], () => machineAccess('lab-explorer', agent));
       const payload: LabRunResponse = { inquiry_id: inquiry.id, run_id: run.id };
       sendJson(response, 202, payload);
     },
@@ -907,6 +968,29 @@ export function createClientServer(deps: ClientDeps): Server {
     };
   }
 
+  // The spans the trace store holds for a run (evidence.ts). An unknown run is 404 before the store is asked; a store
+  // that does not answer, or answers in another form, is 502 with a reason that holds no address.
+  function labRunSpans(runId: string): LabRoute {
+    return {
+      GET: async (_request, response) => {
+        if (store.getRun(runId) === undefined) {
+          throw new ApiFailure(404, 'unknown_run', 'There is no run with that id.');
+        }
+        if (traceStore === null) {
+          const payload: RunSpansResponse = { evidence: 'not_configured', spans: [] };
+          sendJson(response, 200, payload);
+          return;
+        }
+        const read = await readRunSpans(traceStore, runId);
+        if (!read.ok) {
+          sendError(response, 502, read.code, read.detail);
+          return;
+        }
+        sendJson(response, 200, read.answer);
+      },
+    };
+  }
+
   function labRoute(pathname: string): LabRoute | undefined {
     switch (pathname) {
       case '/lab/api/status':
@@ -928,6 +1012,11 @@ export function createClientServer(deps: ClientDeps): Server {
     const evaluationId = evaluationRun?.[1] === undefined ? undefined : segment(evaluationRun[1]);
     if (evaluationId !== undefined) {
       return labEvaluationRun(evaluationId);
+    }
+    const spans = /^\/lab\/api\/runs\/([^/]+)\/spans$/.exec(pathname);
+    const spansOf = spans?.[1] === undefined ? undefined : segment(spans[1]);
+    if (spansOf !== undefined) {
+      return labRunSpans(spansOf);
     }
     const run = /^\/lab\/api\/runs\/([^/]+)$/.exec(pathname);
     const runId = run?.[1] === undefined ? undefined : segment(run[1]);
@@ -980,14 +1069,10 @@ export function createClientServer(deps: ClientDeps): Server {
     const receivedAt = now().toISOString();
     store.createInquiry({ id, receivedAt, sender: `${name}, ${role}, ${contact}`, text, enteredBy: actor });
     const orchestrator = config.agents.find((agent) => agent.id === ORCHESTRATOR_ID);
-    if (orchestrator === undefined) {
-      const run = store.startRun(newId(), id, ORCHESTRATOR_ID, actor);
-      if (run !== undefined) {
-        store.failRun(run.id, `No agent with the id "${ORCHESTRATOR_ID}" is configured, so the message was handed to none.`);
-      }
-    } else {
-      startRun(storedInquiry(id), orchestrator, actor, () => machineAccess('contact-form', orchestrator));
-    }
+    const noOrchestrator = `No agent with the id "${ORCHESTRATOR_ID}" is configured, so the message was handed to none.`;
+    await startRun(storedInquiry(id), ORCHESTRATOR_ID, actor, () =>
+      orchestrator === undefined ? Promise.resolve({ outcome: 'failed', reason: noOrchestrator }) : machineAccess('contact-form', orchestrator),
+    );
     const payload: ContactMessageResponse = { received_at: receivedAt };
     sendJson(response, 202, payload);
   }
