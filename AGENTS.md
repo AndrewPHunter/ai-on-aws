@@ -86,9 +86,13 @@ anything under a `secrets/` directory.
 
 ## Testing
 
-- A piece's tests are its invariants: the "Always true" list in its
-  architecture document or README. One test per invariant, named by its
-  number. Nothing else gets a test.
+- A piece's tests are its invariants, the "Always true" list in its
+  architecture document or README, and its probes. One test per invariant,
+  named by its number. Nothing else gets a test.
+- A probe shows that a path is wired: one the invariants' tests do not take,
+  because they reach its parts apart or pass a value in place of a part. It
+  asserts only what that path can show: one probe for a path. The piece's
+  document names it as a probe and says what it shows.
 - A test asserts what a caller can observe. Not a helper function, a
   sentence's wording, a setting read from the environment, a log line, a
   library's behaviour, or a second input that shows the same thing.
@@ -102,8 +106,9 @@ anything under a `secrets/` directory.
 - Tests are deterministic. They need no network, no GPU and no model server,
   and they pass in any order. Time and randomness are passed in, not reached
   for.
-- A new test needs a new invariant, written in the document first. The test
-  list for a piece of work is agreed before the code is written.
+- A new test needs a new invariant or a new probe, written in the document
+  first. The test list for a piece of work is agreed before the code is
+  written.
 - Before a change is reported, the planner measures test lines against code
   lines for the whole tree. A change that raises the ratio is cut first.
 

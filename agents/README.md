@@ -95,7 +95,7 @@ The rules both apply, from [`src/intake/run.ts`](src/intake/run.ts) and, for the
 
 The Strands agent uses Strands the way it comes: its own loop, its own MCP client, and its OpenAI model on that model's default API (the Responses API). The hand-written agent speaks chat completions with `fetch`.
 
-The rules are shared code, tested once on the hand-written agent in [`test/intake.test.ts`](test/intake.test.ts); six tests in [`test/intake-strands.test.ts`](test/intake-strands.test.ts) show the Strands agent is wired to them. Nine differences, as the code and Strands' source have them:
+The rules are shared code, and their tests are the hand-written agent's, in [`test/intake.test.ts`](test/intake.test.ts); six probes in [`test/intake-strands.test.ts`](test/intake-strands.test.ts), `strands 1` to `strands 6`, show the Strands agent is wired to them. Nine differences, as the code and Strands' source have them:
 
 | Situation | Hand-written loop | Strands 1.25.0 |
 |---|---|---|

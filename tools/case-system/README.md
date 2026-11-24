@@ -65,7 +65,7 @@ The four elements are an identifiable patient, an identifiable reporter, a suspe
 9. A tool or a route is reached only with a token that carries its scope: `create_case` and `add_follow_up` need `cases:write`, `find_case` needs `cases:lookup`, reading cases needs `cases:read`, deciding one needs `cases:review`. A tool whose scope the token lacks is not offered, and calling it changes nothing.
 10. A tool that changes a case answers with a receipt: the case's id, status, version and what it still lacks. It never answers with what the case holds.
 
-The tests in `test/` are named `case-system` and the item's number, one for each item, with three probes, P1 to P3, that drive both servers over loopback. P1 and P2 show the token's part of items 7 and 5: the agent recorded is the token's client whatever header a request carries, and the reviewer is the token's holder.
+The tests in `test/` are named `case-system` and the item's number, one for each item, with three probes, P1 to P3, that drive both servers over loopback. P1 and P2 show the token's part of items 7 and 5: the agent recorded is the token's client whatever header a request carries, and the reviewer is the token's holder. P3 shows item 6 over MCP: another sender's case is answered there as one that does not exist.
 
 ## The rules it enforces
 
