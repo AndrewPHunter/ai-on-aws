@@ -20,7 +20,7 @@
   "deskScopes": ["agents:intake", "agents:expert", "agents:orchestrator", "cases:read", "cases:review", "traces:read"],
   "deskForbiddenScopes": ["labels:search", "agents:expert:delegated"],
   "staffRoles": ["desk", "medical-information", "safety-reviewer", "auditor"],
-  "machineRoles": ["evaluation", "knowledge-gate"],
+  "machineRoles": ["evaluation", "knowledge-gate", "contact-form", "lab-explorer"],
   "users": [
     { "username": "dana.desk", "passwordVariable": "IDENTITY_DANA_PASSWORD", "id": "6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f02", "staffRole": "desk", "granted": ["agents:intake", "agents:orchestrator"] },
     { "username": "morgan.medinfo", "passwordVariable": "IDENTITY_MORGAN_PASSWORD", "id": "6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f03", "staffRole": "medical-information", "granted": ["agents:intake", "agents:expert", "agents:orchestrator"] },
@@ -36,7 +36,7 @@
     "clientId": "orchestrator",
     "secretVariable": "IDENTITY_ORCHESTRATOR_CLIENT_SECRET",
     "scope": "agents:orchestrator",
-    "callers": ["dana.desk", "morgan.medinfo"],
+    "callers": ["dana.desk", "morgan.medinfo", "contact-form"],
     "delegations": [
       { "audience": "intake-strands", "scope": "agents:intake", "onlyThisClient": false },
       { "audience": "expert", "scope": "agents:expert:delegated", "onlyThisClient": true }
@@ -45,7 +45,9 @@
   },
   "machines": [
     { "clientId": "evaluation", "secretVariable": "IDENTITY_EVALUATION_CLIENT_SECRET", "id": "6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f05", "role": "evaluation", "scope": "agents:expert", "forbiddenScopes": ["labels:search", "agents:expert:delegated", "traces:read"] },
-    { "clientId": "knowledge-gate", "secretVariable": "IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET", "id": "6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f06", "role": "knowledge-gate", "scope": "labels:search", "forbiddenScopes": ["agents:expert:delegated", "traces:read"] }
+    { "clientId": "knowledge-gate", "secretVariable": "IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET", "id": "6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f06", "role": "knowledge-gate", "scope": "labels:search", "forbiddenScopes": ["agents:expert:delegated", "traces:read"] },
+    { "clientId": "contact-form", "secretVariable": "IDENTITY_CONTACT_FORM_CLIENT_SECRET", "id": "6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f07", "role": "contact-form", "scope": "agents:orchestrator", "forbiddenScopes": ["agents:expert", "cases:read", "cases:review", "traces:read"] },
+    { "clientId": "lab-explorer", "secretVariable": "IDENTITY_LAB_EXPLORER_CLIENT_SECRET", "id": "6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f08", "role": "lab-explorer", "scope": "agents:orchestrator", "forbiddenScopes": ["cases:read", "cases:review", "traces:read"] }
   ],
   "audienceOnlyClients": ["case-system", "knowledge"],
   "exchangeOffDescription": "Standard token exchange is not enabled for the requested client"
