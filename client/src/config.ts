@@ -151,7 +151,8 @@ function origin(name: string, value: string): string {
 }
 
 // The settings in HEALTH_SETTINGS that are set. One absent or empty is left out; one that is not an http(s) URL
-// stops the server, naming it.
+// stops the server, naming the setting but not its value: these are addresses on the local network, and the
+// message is printed to the log.
 function healthUrlsFrom(env: NodeJS.ProcessEnv): Partial<Record<HealthChecked, string>> {
   const urls: Partial<Record<HealthChecked, string>> = {};
   for (const [piece, name] of Object.entries(HEALTH_SETTINGS) as [HealthChecked, string][]) {
@@ -159,7 +160,12 @@ function healthUrlsFrom(env: NodeJS.ProcessEnv): Partial<Record<HealthChecked, s
     if (value === undefined || value === '') {
       continue;
     }
-    const url = httpUrl(name, value);
+    let url: string;
+    try {
+      url = httpUrl(name, value);
+    } catch {
+      throw new Error(`${name} is not an http or https URL.`);
+    }
     urls[piece] = MODEL_SERVERS.includes(piece) ? url.replace(/\/v1$/, '') : url;
   }
   return urls;

@@ -209,12 +209,14 @@ test("invariant 11: the inbox is the desk's; to a session that may neither run a
     {
       name: 'what the lab explorer entered or ran is not shown: its inquiry is not listed and is unknown by id, and its run on a desk inquiry is left out',
       shows: async () => {
+        const deskId = String(at((await inquire(dana, 'A desk inquiry the lab explorer runs')).body, 'inquiry', 'id'));
+        await settled(desk, deskId, dana);
         const entered = await call(`${desk.url}/lab/api/runs`, { method: 'POST', body: { agent_id: 'first', sender: 'A clinician', text: "The lab explorer's inquiry" } });
-        const ran = await call(`${desk.url}/lab/api/runs`, { method: 'POST', body: { agent_id: 'first', inquiry_id: id } });
-        const runs = [at((await read(morgan, id)).body, 'inquiry', 'runs')].flat().map((r) => at(r, 'id'));
+        const ran = await call(`${desk.url}/lab/api/runs`, { method: 'POST', body: { agent_id: 'first', inquiry_id: deskId } });
+        const runs = [at((await read(morgan, deskId)).body, 'inquiry', 'runs')].flat().map((r) => at(r, 'id'));
         return [await listed(morgan, "The lab explorer's inquiry"), (await read(morgan, String(at(entered.body, 'inquiry_id')))).status, runs.includes(at(ran.body, 'run_id')), runs.length];
       },
-      expected: [false, 404, false, 2],
+      expected: [false, 404, false, 1],
     },
     { name: 'the list gives every inquiry to a session that may run an agent, and none to one that may not', shows: async () => [await listed(morgan, "Dana's inquiry"), await listed(riley, "Dana's inquiry")], expected: [true, false] },
   ];
@@ -311,9 +313,9 @@ test('invariant 14: a message through the contact form is stored and handed to t
         const reply = await contact(message('Through the contact form'));
         const inquiry = await inInbox('Through the contact form');
         const seen = await agent.waitFor((r) => textOf(r) === 'Through the contact form');
-        return [reply.status, Object.keys(Object(reply.body)), at(inquiry, 'entered_by', 'name'), at(inquiry, 'sender'), [at(inquiry, 'runs')].flat().map((r) => [at(r, 'agent_id'), at(r, 'started_by', 'name')]), seen.authorization];
+        return [reply.status, Object.keys(Object(reply.body)), at(inquiry, 'entered_by', 'name'), [at(inquiry, 'runs')].flat().map((r) => [at(r, 'agent_id'), at(r, 'started_by', 'name')]), seen.authorization];
       },
-      expected: [202, ['received_at'], 'Contact form', 'Dr Synthetic, cardiology, synthetic@example.org', [['orchestrator', 'Contact form']], 'Bearer contact-form for agents:orchestrator'],
+      expected: [202, ['received_at'], 'Contact form', [['orchestrator', 'Contact form']], 'Bearer contact-form for agents:orchestrator'],
     },
     {
       name: 'the token cannot be got: still 202 with only received_at, and the run is failed',

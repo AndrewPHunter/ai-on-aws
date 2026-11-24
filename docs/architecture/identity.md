@@ -293,8 +293,8 @@ What may be done is read from the scopes granted at sign-in, which the client ke
 | `GET /api/agents` | `{ agents: [{ id, name, description }] }`, only the agents whose scope was granted |
 | A call for anything the session may not do | 403 `not_allowed`, before the provider or the target is asked. An agent id that is not configured is 400 `unknown_agent` |
 | `GET /api/inquiries` | Every inquiry of the desk, to a session that may run an agent; what the lab explorer entered is left out |
-| Reading an inquiry and its runs | Any session allowed to run an agent or read cases, regardless of who entered it. Other sessions receive 404 `inquiry_not_found`, indistinguishable from an absent inquiry |
-| Starting a run on an inquiry | Requires that agent's scope, regardless of who entered the inquiry. Read access without run permission returns 403 `not_allowed`; no read access returns 404 `inquiry_not_found` |
+| Reading an inquiry and its runs | Any session allowed to run an agent or read cases. An inquiry the lab explorer entered is answered as an unknown one, and the runs the lab explorer started are left out. Other sessions receive 404 `inquiry_not_found`, indistinguishable from an absent inquiry |
+| Starting a run on an inquiry | Requires that agent's scope, whichever person or the contact form entered the inquiry. Read access without run permission returns 403 `not_allowed`; no read access returns 404 `inquiry_not_found`, and so does an inquiry the lab explorer entered |
 | `GET /api/traces`, `GET /api/traces/<run_id>` | Every person's runs, with their steps, to a session granted `traces:read`; 403 `not_allowed` to any other, before the store is read. Other desk `/api` routes omit steps |
 
 The local lab explorer is a separate diagnostic surface. Its `/lab/api` routes read no session cookie: they expose every stored run and its steps, read inquiries, and invoke any agent as `lab-explorer`. The desk's `traces:read` restriction therefore protects the desk routes, not all access to stored traces. Downstream agents still require the explorer's machine token.

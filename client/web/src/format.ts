@@ -229,7 +229,7 @@ export function actorWords(actorKind: 'agent' | 'reviewer', actor: string): stri
 }
 
 // How a message reached the desk, in words, from who entered it: a person logged it, or it came in through the
-// contact form or the lab explorer, which the server names in place of a person. Null when nobody is recorded.
+// contact form, which the server names in place of a person. Null when nobody is recorded.
 export function arrivalWords(enteredBy: { name: string } | null): string | null {
   if (enteredBy === null) {
     return null;
@@ -237,8 +237,6 @@ export function arrivalWords(enteredBy: { name: string } | null): string | null 
   switch (enteredBy.name) {
     case 'Contact form':
       return 'sent through the contact form';
-    case 'Lab explorer':
-      return 'sent from the lab explorer';
     default:
       return `logged by ${enteredBy.name}`;
   }
