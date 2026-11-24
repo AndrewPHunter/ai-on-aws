@@ -230,7 +230,7 @@ If the remaining search time is the smaller limit, a timeout returns `search_tim
 
 Every tool result is one MCP text item holding JSON: the result, or `{error, detail}` with `isError` set.
 
-The retrieval boundary requires audience `knowledge`, client `expert` or `knowledge-gate`, and scope `labels:search`. The expert exchanges its caller's token; the gate uses client credentials. Authentication precedes reading the request target and body. HTTP results are:
+The retrieval boundary requires audience `knowledge`, client `expert`, `knowledge-gate` or `lab-explorer`, and scope `labels:search`. The expert exchanges its caller's token; the gate and the client's lab explorer use client credentials. The lab explorer reads the index's facts (the alias, its count and its mapping) from the search engine directly, with GET only, and searches only through the retrieval service. Authentication precedes reading the request target and body. HTTP results are:
 
 | Request | Answer |
 |---|---|

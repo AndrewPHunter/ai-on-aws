@@ -794,6 +794,87 @@
   cursor: not-allowed;
 }
 
+/* Knowledge: a panel whose heading has a control beside it, and the search form's labelled fields. */
+:where(.lab) .lab-panelhead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.lab .lab-button--quiet {
+  border-color: var(--lab-ink-2);
+  background: var(--lab-panel);
+  color: var(--lab-ink);
+}
+
+.lab .lab-button--quiet:hover {
+  border-color: var(--lab-ink);
+  background: var(--lab-code);
+}
+
+:where(.lab) .lab-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 68ch;
+}
+
+:where(.lab) .lab-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+:where(.lab) .lab-field > label {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+:where(.lab) .lab-field__hint {
+  font-size: 14px;
+  color: var(--lab-ink-2);
+}
+
+.lab .lab-input {
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid var(--lab-ink-2);
+  border-radius: 0;
+  background: var(--lab-panel);
+  color: var(--lab-ink);
+  font: inherit;
+}
+
+.lab .lab-input--area {
+  resize: vertical;
+}
+
+:where(.lab) .lab-result > * + * {
+  margin-top: 12px;
+}
+
+/* Evaluation: a run's name is a button that looks like a link, so it can be chosen without leaving the page. */
+.lab .lab-linkbutton {
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--lab-blue);
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.lab .lab-linkbutton[aria-pressed='true'] {
+  color: var(--lab-ink);
+  font-weight: 700;
+  text-decoration: none;
+}
+
 /* Scenarios. */
 :where(.lab) .lab-scenarios {
   list-style: none;

@@ -2,7 +2,8 @@
 // each is a scripted server on loopback that records what it was sent. The client runs with an in-memory store, a
 // clock that moves only when a test moves it, and seeded randomness. Outside auth.test.ts the identity provider is
 // an IdentityProvider whose refresh is a function of the refresh token and the scope: no token is signed, nothing is
-// fetched. A machine client's token is a function too (machineTokens).
+// fetched. A machine client's token is a function too (machineTokens), and the search engine and the retrieval service
+// are values a test passes in (none unless given).
 
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -11,6 +12,7 @@ import type { IncomingMessage, Server } from 'node:http';
 import type { InvocationResponse } from '../../shared/agent-contract.ts';
 import type { AgentConfig, AgentScope, Config, MachineClient } from '../src/config.ts';
 import { IdentityProvider, SignInRefused } from '../src/identity.ts';
+import type { KnowledgeServices } from '../src/knowledge.ts';
 import type { MachineTokenResult, Refreshed, SignedInUser } from '../src/identity.ts';
 import { SESSION_COOKIE, createClientServer } from '../src/server.ts';
 import { SessionStore } from '../src/sessions.ts';
@@ -128,7 +130,7 @@ export function machineTokens(now: () => Date): MachineTokens {
 // An agent for deskConfig; its scope is agents:intake and its wait 180 s unless given.
 export type TestAgent = Omit<AgentConfig, 'scope' | 'wait_seconds'> & { scope?: AgentScope; wait_seconds?: number };
 
-export function deskConfig(options: { agents: TestAgent[]; caseReviewUrl: string; webRoot?: string; discoveryUrl?: string; issuer?: string; revocationEndpoint?: string }): Config {
+export function deskConfig(options: { agents: TestAgent[]; caseReviewUrl: string; webRoot?: string; discoveryUrl?: string; issuer?: string; revocationEndpoint?: string; evaluationDataDir?: string }): Config {
   const unused = 'http://127.0.0.1:1/not-used';
   return {
     dbPath: ':memory:',
@@ -147,12 +149,13 @@ export function deskConfig(options: { agents: TestAgent[]; caseReviewUrl: string
     machineSecrets: { 'contact-form': 'stand-in-contact-form-secret', 'lab-explorer': 'stand-in-lab-explorer-secret' },
     appOrigin: APP_ORIGIN,
     rolesClaim: 'roles',
+    evaluationDataDir: options.evaluationDataDir ?? null,
   };
 }
 
 export type Desk = { url: string; store: InquiryStore; sessions: SessionStore; clock: Clock };
 
-export async function startDesk(t: Hooks, config: Config, time: Clock, identity?: IdentityProvider, machine?: MachineTokens): Promise<Desk> {
+export async function startDesk(t: Hooks, config: Config, time: Clock, identity?: IdentityProvider, machine?: MachineTokens, knowledge?: KnowledgeServices): Promise<Desk> {
   const store = new InquiryStore(':memory:', time.now);
   const sessions = new SessionStore(time.now, seeded('desk'));
   let n = 0;
@@ -164,6 +167,7 @@ export async function startDesk(t: Hooks, config: Config, time: Clock, identity?
     identity: identity ?? new ScriptedRenewal(config, time.now),
     sessions,
     machineToken: (machine ?? machineTokens(time.now)).get,
+    knowledge: knowledge ?? { engine: null, retrieval: null },
   });
   const url = await listen(server);
   t.after(() => {

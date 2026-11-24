@@ -8,6 +8,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { configFrom } from './config.ts';
 import type { Config } from './config.ts';
 import { IdentityProvider } from './identity.ts';
+import { engineAt, retrievalAt } from './knowledge.ts';
 import { createClientServer } from './server.ts';
 import { SessionStore } from './sessions.ts';
 import { InquiryStore } from './store.ts';
@@ -41,6 +42,10 @@ const server = createClientServer({
   identity,
   sessions,
   machineToken: (client, scope) => identity.clientCredentials(client, config.machineSecrets[client], scope),
+  knowledge: {
+    engine: config.healthUrls?.search === undefined ? null : engineAt(config.healthUrls.search),
+    retrieval: config.healthUrls?.retrieval === undefined ? null : retrievalAt(config.healthUrls.retrieval),
+  },
 });
 
 server.listen(PORT, HOST, () => {

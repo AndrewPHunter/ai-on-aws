@@ -7,6 +7,8 @@ import './lab.css';
 import { useEffect } from 'react';
 import { Link, NavLink, useLocation } from 'react-router';
 
+import { EvaluationPage } from './EvaluationPage.tsx';
+import { KnowledgePage } from './KnowledgePage.tsx';
 import { MapPage } from './MapPage.tsx';
 import { PeoplePage } from './PeoplePage.tsx';
 import { RunPage } from './RunPage.tsx';
@@ -18,6 +20,8 @@ type Page =
   | { page: 'scenarios' }
   | { page: 'runs' }
   | { page: 'run'; runId: string }
+  | { page: 'knowledge' }
+  | { page: 'evaluation' }
   | { page: 'people' }
   | { page: 'unknown' };
 
@@ -47,6 +51,10 @@ function pageOf(pathname: string): Page {
         return { page: 'scenarios' };
       case 'runs':
         return { page: 'runs' };
+      case 'knowledge':
+        return { page: 'knowledge' };
+      case 'evaluation':
+        return { page: 'evaluation' };
       case 'people':
         return { page: 'people' };
       default:
@@ -61,6 +69,8 @@ const TABS = [
   { to: '/lab', label: 'Map', end: true },
   { to: '/lab/scenarios', label: 'Scenarios', end: false },
   { to: '/lab/runs', label: 'Runs', end: false },
+  { to: '/lab/knowledge', label: 'Knowledge', end: false },
+  { to: '/lab/evaluation', label: 'Evaluation', end: false },
   { to: '/lab/people', label: 'People', end: false },
 ] as const;
 
@@ -117,6 +127,8 @@ export function LabApp() {
         {current.page === 'scenarios' ? <ScenariosPage /> : null}
         {current.page === 'runs' ? <RunsPage /> : null}
         {current.page === 'run' ? <RunPage runId={current.runId} /> : null}
+        {current.page === 'knowledge' ? <KnowledgePage /> : null}
+        {current.page === 'evaluation' ? <EvaluationPage /> : null}
         {current.page === 'people' ? <PeoplePage /> : null}
         {current.page === 'unknown' ? <Unknown /> : null}
       </main>

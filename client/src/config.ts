@@ -1,5 +1,5 @@
 // The client's settings, read from the environment by name. Every one is required except the five the status
-// checks by health alone, which are optional; nothing falls back to a default of the machine. Pure, so it is
+// checks by health and EVALUATION_DATA_DIR, which are optional; nothing falls back to a default of the machine. Pure, so it is
 // tested with plain objects.
 
 import { z } from 'zod';
@@ -71,8 +71,9 @@ export type OidcConfig = {
 export const MACHINE_CLIENTS = ['contact-form', 'lab-explorer'] as const;
 export type MachineClient = (typeof MACHINE_CLIENTS)[number];
 
-// The pieces the status checks by their health route alone, with no key or token, and the setting each is read
-// from. Each setting is optional.
+// The pieces the status checks by their health route, with no key or token, and the setting each is read from. Each
+// setting is optional. The lab explorer also reads the label index from the search engine and searches through the
+// retrieval service at the same addresses (knowledge.ts).
 export const HEALTH_SETTINGS = {
   retrieval: 'RETRIEVAL_URL',
   search: 'SEARCH_URL',
@@ -99,6 +100,9 @@ export type Config = {
   // Where the status checks each piece in HEALTH_SETTINGS, without a trailing slash, and for a model server
   // without its /v1. A piece left out, or the whole field, is not configured.
   healthUrls?: Partial<Record<HealthChecked, string>>;
+  // The folder the evaluation harness writes its runs to, mounted read-only, which the lab explorer reads; null
+  // when EVALUATION_DATA_DIR is not set.
+  evaluationDataDir: string | null;
 };
 
 function required(env: NodeJS.ProcessEnv, name: string, meaning: string): string {
@@ -231,5 +235,6 @@ export function configFrom(env: NodeJS.ProcessEnv): Config {
     appOrigin: origin('APP_ORIGIN', required(env, 'APP_ORIGIN', 'the origin the web app is served from')),
     rolesClaim: required(env, 'ROLES_CLAIM', 'the ID-token claim holding a flat list of role names'),
     healthUrls: healthUrlsFrom(env),
+    evaluationDataDir: env.EVALUATION_DATA_DIR?.trim() || null,
   };
 }

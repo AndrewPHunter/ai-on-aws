@@ -120,6 +120,8 @@ evaluation/
 
 ## Reading the table
 
+The client's lab explorer (`/lab/evaluation`, see [client/README.md](../client/README.md)) shows each run's figures from these files, under the same names, with no question, answer, reply or reason.
+
 Every share is printed as `numerator of denominator = share [low, high]`: the interval is the 95% Wilson score interval. A share over fewer than 20 items is marked "too few to read". Two runs differ on a measure only as far as `compare.sh`'s sign test says: the two middle counts (only A right, only B right) are what it weighs; questions both got right or both got wrong say nothing about which run is better. With 250 questions, a difference of a few points on a share is within the interval.
 
 The wording overlap of a question is the share of its content words found in the benchmark passage it was written from (the definition is in the architecture document). `score.sh` splits the answerable questions into thirds at the sample's own cut points, which it prints; a tie at a cut point falls to the lower third, so the thirds need not be the same size, and each third's size is printed. A question with no content words is in no third, and counted. `compare.sh` splits both runs by run A's thirds.

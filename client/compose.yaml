@@ -60,14 +60,15 @@ services:
       # session cookie and the check on a POST's Origin are all on localhost.
       APP_ORIGIN: http://localhost:3000
       ROLES_CLAIM: roles
-      # The contact form and the lab explorer call agents with nobody signed in, each getting its token by
-      # client credentials as its own machine client (contact-form, lab-explorer) with its own secret. The other
-      # two values this container takes from platform/identity/.env.
+      # The contact form and the lab explorer call agents, and the lab explorer the retrieval service, with nobody
+      # signed in, each getting its token by client credentials as its own machine client (contact-form,
+      # lab-explorer) with its own secret. The other two values this container takes from platform/identity/.env.
       CONTACT_FORM_CLIENT_SECRET: ${IDENTITY_CONTACT_FORM_CLIENT_SECRET:?run platform/identity/setup.sh}
       LAB_EXPLORER_CLIENT_SECRET: ${IDENTITY_LAB_EXPLORER_CLIENT_SECRET:?run platform/identity/setup.sh}
-      # The pieces the status checks by their health route alone, sent no key or token. Each is optional: one not set
+      # The pieces the status checks by their health route, sent no key or token. Each is optional: one not set
       # is reported as not set up. The retrieval service and the search engine by their service names on the shared
-      # network.
+      # network. The lab explorer also reads what the label index holds from the search engine (GET only, no token),
+      # and runs its label search through the retrieval service with the lab-explorer client's token.
       RETRIEVAL_URL: http://knowledge:8000
       SEARCH_URL: http://search:9200
       # The three model servers' base URLs, from model/.env, which the root compose.yaml reads for this file; empty
@@ -75,11 +76,15 @@ services:
       MODEL_BASE_URL: ${MODEL_BASE_URL:-}
       MODEL_EMBED_BASE_URL: ${MODEL_EMBED_BASE_URL:-}
       MODEL_RERANK_BASE_URL: ${MODEL_RERANK_BASE_URL:-}
+      # Where the lab explorer reads the evaluation harness's runs: the harness's data folder, mounted read-only below.
+      EVALUATION_DATA_DIR: /evaluation-data
     ports:
       # Published on this machine only.
       - "127.0.0.1:3000:3000"
     volumes:
       - inquiries:/data
+      # The evaluation harness's runs (evaluation/data, never in an image), read by the lab explorer only.
+      - ../evaluation/data:/evaluation-data:ro
     read_only: true
     tmpfs:
       - /tmp

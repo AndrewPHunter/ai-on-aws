@@ -8,8 +8,9 @@
 // Two routes have nobody signed in, and call agents with a token got by client credentials as their own
 // client: POST /contact/api/messages, where a clinician writes in and the message goes to the orchestrator,
 // and, under /lab/api, the lab explorer, which reads what the status, agent, sample and trace routes give,
-// reads an inquiry with its runs' steps, and runs a message through any agent. The server is published on
-// its own machine only. /ping and the built web app need no session.
+// reads an inquiry with its runs' steps, runs a message through any agent, reads what the label index holds, and
+// runs a label search through the retrieval service, and reads the evaluation harness's runs. The server is published
+// on its own machine only. /ping and the built web app need no session.
 //
 // Tokens stay here: the browser holds only a session cookie.
 
@@ -23,9 +24,13 @@ import type {
   AgentList,
   ApiError,
   ContactMessageResponse,
+  EvaluationList,
+  EvaluationRunResponse,
   Inquiry,
   InquiryList,
   InquiryResponse,
+  KnowledgeResponse,
+  KnowledgeSearchResponse,
   LabInquiryResponse,
   LabRunResponse,
   PieceStatus,
@@ -48,6 +53,9 @@ import { HEALTH_SETTINGS } from './config.ts';
 import type { AgentConfig, Config, HealthChecked, MachineClient } from './config.ts';
 import { IdentityUnreachable, SignInRefused } from './identity.ts';
 import type { IdentityProvider, MachineTokenResult } from './identity.ts';
+import { findRuns, runFigures, runList } from './evaluation.ts';
+import { LABELS_SCOPE, MAX_MEDICINE_LENGTH, MAX_QUESTION_LENGTH, labelSearch, readLabelIndex } from './knowledge.ts';
+import type { KnowledgeServices } from './knowledge.ts';
 import { SAMPLES } from './samples.ts';
 import type { Session, SessionStore } from './sessions.ts';
 import type { Actor, InquiryStore, StoredInquiry } from './store.ts';
@@ -65,6 +73,9 @@ export type ClientDeps = {
   // A token for a machine client, as itself, for one scope, by client credentials (IdentityProvider.clientCredentials
   // in the running server). Never throws: a failure comes back with its reason.
   machineToken: (client: MachineClient, scope: string) => Promise<MachineTokenResult>;
+  // The search engine the lab explorer reads the label index from, and the retrieval service it searches; each null
+  // when its setting is not set.
+  knowledge: KnowledgeServices;
 };
 
 // The token a run is sent with, or why there is none.
@@ -400,7 +411,7 @@ function segment(raw: string): string | undefined {
 }
 
 export function createClientServer(deps: ClientDeps): Server {
-  const { config, store, now, newId, identity, sessions, machineToken } = deps;
+  const { config, store, now, newId, identity, sessions, machineToken, knowledge } = deps;
 
   // Asked for at sign-in: each distinct agent scope configured, the case system's two and traces:read. The
   // provider leaves out any the person's role does not grant.
@@ -797,8 +808,9 @@ export function createClientServer(deps: ClientDeps): Server {
   // --- The lab explorer -------------------------------------------------------------------------------
 
   // The explorer's routes read no cookie. They give what the /api routes of the same names give, with no session and
-  // no permission: every agent, every inquiry and every person's runs with their steps. POST /lab/api/runs is the
-  // one route that takes POST: it runs a message through any agent as the client lab-explorer.
+  // no permission: every agent, every inquiry and every person's runs with their steps; and what the label index
+  // holds, and the evaluation runs on disk. Two routes take POST: POST /lab/api/runs runs a message through any agent, and POST
+  // /lab/api/knowledge/search runs a label search, each as the client lab-explorer.
   type Handled = (request: IncomingMessage, response: ServerResponse) => Promise<void>;
   type LabRoute = Partial<Record<'GET' | 'POST', Handled>>;
 
@@ -834,6 +846,67 @@ export function createClientServer(deps: ClientDeps): Server {
     },
   };
 
+  function notConfigured(setting: string, what: string): ApiFailure {
+    return new ApiFailure(503, 'not_configured', `${setting} is not set, so ${what}.`);
+  }
+
+  // What the label index holds, from the search engine. A failure of the engine is 502 with its reason.
+  const labKnowledge: LabRoute = {
+    GET: async (_request, response) => {
+      if (knowledge.engine === null) throw notConfigured('SEARCH_URL', 'the label index cannot be read');
+      const read = await readLabelIndex(knowledge.engine);
+      if (!read.ok) {
+        sendError(response, 502, read.code, read.detail);
+        return;
+      }
+      const payload: KnowledgeResponse = { checked_at: now().toISOString(), index: read.index };
+      sendJson(response, 200, payload);
+    },
+  };
+
+  // A label search, as the client lab-explorer with a token for labels:search alone. A token that cannot be got is 502
+  // and nothing is sent; so is any failure of the retrieval service (knowledge.ts). Nothing is retried.
+  const labKnowledgeSearch: LabRoute = {
+    POST: async (request, response) => {
+      const body = await readJson(request);
+      const medicine = boundedString(body, 'medicine', MAX_MEDICINE_LENGTH);
+      const question = boundedString(body, 'question', MAX_QUESTION_LENGTH);
+      if (knowledge.retrieval === null) throw notConfigured('RETRIEVAL_URL', 'no label search can be made');
+      const got = await machineToken('lab-explorer', LABELS_SCOPE);
+      if (got.outcome === 'failed') {
+        const failed: KnowledgeSearchResponse = {
+          outcome: 'failed',
+          calls: [],
+          error: 'token_failed',
+          detail: `The client lab-explorer could not get a token for ${LABELS_SCOPE}: ${got.reason}`,
+        };
+        sendJson(response, 502, failed);
+        return;
+      }
+      const result = await labelSearch(knowledge.retrieval, got.token, medicine, question, now);
+      sendJson(response, result.status, result.body);
+    },
+  };
+
+  // The evaluation runs on disk, read-only. A run is named by an id found on disk; any other is 404.
+  const labEvaluation: LabRoute = {
+    GET: async (_request, response) => {
+      const payload: EvaluationList = runList(await findRuns(config.evaluationDataDir));
+      sendJson(response, 200, payload);
+    },
+  };
+
+  function labEvaluationRun(runId: string): LabRoute {
+    return {
+      GET: async (_request, response) => {
+        const run = (await findRuns(config.evaluationDataDir)).runs.find((candidate) => candidate.id === runId);
+        if (run === undefined) throw new ApiFailure(404, 'unknown_evaluation_run', 'There is no evaluation run with that id in the data folder.');
+        const payload: EvaluationRunResponse = runFigures(run);
+        sendJson(response, 200, payload);
+      },
+    };
+  }
+
   function labRoute(pathname: string): LabRoute | undefined {
     switch (pathname) {
       case '/lab/api/status':
@@ -844,6 +917,17 @@ export function createClientServer(deps: ClientDeps): Server {
         return { GET: async (_request, response) => sendJson(response, 200, sampleList()) };
       case '/lab/api/runs':
         return labRuns;
+      case '/lab/api/knowledge':
+        return labKnowledge;
+      case '/lab/api/knowledge/search':
+        return labKnowledgeSearch;
+      case '/lab/api/evaluation':
+        return labEvaluation;
+    }
+    const evaluationRun = /^\/lab\/api\/evaluation\/([^/]+)$/.exec(pathname);
+    const evaluationId = evaluationRun?.[1] === undefined ? undefined : segment(evaluationRun[1]);
+    if (evaluationId !== undefined) {
+      return labEvaluationRun(evaluationId);
     }
     const run = /^\/lab\/api\/runs\/([^/]+)$/.exec(pathname);
     const runId = run?.[1] === undefined ? undefined : segment(run[1]);
