@@ -67,6 +67,7 @@ services:
       IDENTITY_ORCHESTRATOR_CLIENT_SECRET: ${IDENTITY_ORCHESTRATOR_CLIENT_SECRET:?run platform/identity/setup.sh}
       IDENTITY_EVALUATION_CLIENT_SECRET: ${IDENTITY_EVALUATION_CLIENT_SECRET:?run platform/identity/setup.sh}
       IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET: ${IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET:?run platform/identity/setup.sh}
+      IDENTITY_LAB_EXPLORER_CLIENT_SECRET: ${IDENTITY_LAB_EXPLORER_CLIENT_SECRET:?run platform/identity/setup.sh}
       # Set by stack-gate.sh for the merge step only: what it found in the client's output.
       REVOCATION_FAILURES: ${REVOCATION_FAILURES:-}
     command: ["node", "/repo/platform/identity/gate/stack-gate.ts"]

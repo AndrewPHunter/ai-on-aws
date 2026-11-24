@@ -26,15 +26,20 @@
 //   - When the model replies and the run has recorded no case, the report check is made (report-check.ts)
 //     and the rule afterReply in run.ts says whether the run completes, the model is told once to
 //     record, or the run stops. Being told is one more turn of this loop, inside both limits.
+//   - Every request to the model and every tool call, refused ones included, is a span that ends when the call
+//     ends (../run/spans.ts). A request sent again is the same operation, the next attempt; so is the repeat of a
+//     write. The spans are children of the run's span, which the front door holds open around this handler.
 
 import type { Caller } from '../../../shared/access-token.ts';
 import type { InboundMessage, InvocationResponse } from '../../../shared/agent-contract.ts';
+import type { Telemetry } from '../../../shared/telemetry.ts';
 import type { AgentIdentity } from '../contract/server.ts';
 import type { ChatMessage, ChatModel, ChatResult, ToolCall } from '../model/chat.ts';
 import { completed, failed, stopped, stoppedAtTimeLimit, stoppedAtTurnLimit, stoppedWithoutReply } from '../run/endings.ts';
 import type { Limits } from '../run/limits.ts';
 import { timed } from '../run/record.ts';
 import type { Timed } from '../run/record.ts';
+import { modelCallSpan, refusedToolCallSpan, toolCallSpan, toolOperation, turnOperation } from '../run/spans.ts';
 import { recordError, recordRefusal, recordToolCall, toldAbout } from '../run/steps.ts';
 import { askAgainWithoutThinking } from '../run/turns.ts';
 import { isCaseTool, missingCaseTools } from '../tools/case-system.ts';
@@ -59,6 +64,8 @@ export type IntakeDeps = {
   // The report check, a separate request to the model (createReportCheck in report-check.ts).
   reportCheck: ReportCheck;
   limits: Limits;
+  // Where the run's model and tool calls are recorded as spans. Off records nothing.
+  telemetry: Telemetry;
 };
 
 // How a failed request to the model is sent again.
@@ -88,65 +95,80 @@ function argumentsOf(call: ToolCall): Record<string, unknown> | undefined {
   }
 }
 
-// Calls the case system once and records the step.
+// Calls the case system once, inside the call's span, and records the step.
 async function callOnce(
   run: IntakeRun,
+  telemetry: Telemetry,
   tools: ToolSet,
   tool: string,
   args: Record<string, unknown>,
   requestedBy: 'model' | 'agent',
+  at: { operation: string; attempt: number },
 ): Promise<ToolOutcome> {
-  const call = await timed(run.now, () => tools.call(tool, args, run.deadline.within(run.limits.toolMs)));
+  const call = await timed(run.now, () =>
+    toolCallSpan(telemetry, { tool, requestedBy, ...at }, () => tools.call(tool, args, run.deadline.within(run.limits.toolMs))),
+  );
   recordToolCall(run, { tool, requestedBy, args, outcome: call.value, startedAt: call.started_at, durationMs: call.duration_ms });
   return call.value;
 }
 
-// Runs one tool call the model asked for and returns what the model is told about it.
-async function runToolCall(run: IntakeRun, tools: ToolSet, call: ToolCall): Promise<string> {
+// Runs one tool call the model asked for and returns what the model is told about it. `operation` names the call
+// in its spans: the same for the repeat of a write.
+async function runToolCall(run: IntakeRun, telemetry: Telemetry, tools: ToolSet, call: ToolCall, operation: string): Promise<string> {
   const tool = call.function.name;
   const known = tools.definitions.map((definition) => definition.function.name);
+  // A name the model made up is not recorded in the span: it is the model's text.
+  const refused = { tool: known.includes(tool) ? tool : undefined, requestedBy: 'model', operation, attempt: 1 } as const;
 
   // These two are this loop's own: a framework's loop decides them for itself.
   if (!known.includes(tool)) {
-    return recordRefusal(run, tool, call.function.arguments, {
-      error: 'unknown_tool',
-      detail: `There is no tool ${tool}. The tools are ${known.join(', ')}.`,
-    });
+    return refusedToolCallSpan(telemetry, refused, () =>
+      recordRefusal(run, tool, call.function.arguments, {
+        error: 'unknown_tool',
+        detail: `There is no tool ${tool}. The tools are ${known.join(', ')}.`,
+      }),
+    );
   }
   const args = argumentsOf(call);
   if (args === undefined) {
-    return recordRefusal(run, tool, call.function.arguments, {
-      error: 'arguments_not_json',
-      detail: 'The arguments were not a JSON object. Nothing was called.',
-    });
+    return refusedToolCallSpan(telemetry, refused, () =>
+      recordRefusal(run, tool, call.function.arguments, {
+        error: 'arguments_not_json',
+        detail: 'The arguments were not a JSON object. Nothing was called.',
+      }),
+    );
   }
 
   const refusal = refusalBeforeCall(run, tool, args);
   if (refusal !== undefined) {
-    return recordRefusal(run, tool, args, refusal);
+    return refusedToolCallSpan(telemetry, refused, () => recordRefusal(run, tool, args, refusal));
   }
 
-  const first = await callOnce(run, tools, tool, args, 'model');
+  const first = await callOnce(run, telemetry, tools, tool, args, 'model', { operation, attempt: 1 });
   if (afterCall(run, tool, first, 1) !== 'repeat') {
     return toldAbout(first);
   }
-  const second = await callOnce(run, tools, tool, args, 'agent');
+  const second = await callOnce(run, telemetry, tools, tool, args, 'agent', { operation, attempt: 2 });
   afterCall(run, tool, second, 2);
   return toldAbout(second);
 }
 
 // Asks the model for one turn, sending the request again where that could help. Every failed
-// request is recorded. What is returned is the answer, or the last failure.
+// request is recorded. What is returned is the answer, or the last failure. Each request is a span of the
+// turn's operation, numbered by its attempt.
 async function askModel(
   run: IntakeRun,
   deps: IntakeDeps,
   conversation: ChatMessage[],
   tools: ToolSet,
   thinking: boolean,
+  turn: number,
 ): Promise<Timed<ChatResult>> {
   for (let request = 1; ; request++) {
     const asked = await timed(run.now, () =>
-      deps.model.complete(conversation, tools.definitions, { timeoutMs: run.deadline.within(run.limits.modelMs), thinking }),
+      modelCallSpan(deps.telemetry, deps.model.id, { operation: turnOperation(turn), attempt: request }, () =>
+        deps.model.complete(conversation, tools.definitions, { timeoutMs: run.deadline.within(run.limits.modelMs), thinking }),
+      ),
     );
     if (asked.value.ok) {
       return asked;
@@ -212,7 +234,7 @@ async function loop(run: IntakeRun, deps: IntakeDeps, tools: ToolSet, message: I
     }
 
     // A request that is sent again is still the same turn.
-    const asked = await askModel(run, deps, conversation, tools, thinking);
+    const asked = await askModel(run, deps, conversation, tools, thinking, turn);
     if (!asked.value.ok) {
       return failed(run, asked.value.reason);
     }
@@ -259,8 +281,8 @@ async function loop(run: IntakeRun, deps: IntakeDeps, tools: ToolSet, message: I
 
     // Every call the model made gets an answer, in order, before the model is asked again.
     conversation.push({ role: 'assistant', content: completion.content, tool_calls: completion.toolCalls });
-    for (const call of completion.toolCalls) {
-      const told = await runToolCall(run, tools, call);
+    for (const [index, call] of completion.toolCalls.entries()) {
+      const told = await runToolCall(run, deps.telemetry, tools, call, toolOperation(turn, index + 1));
       conversation.push({ role: 'tool', tool_call_id: call.id, content: told });
       if (run.unsettled !== undefined) {
         return failed(run, run.unsettled);

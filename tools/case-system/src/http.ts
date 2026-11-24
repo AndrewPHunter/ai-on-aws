@@ -4,7 +4,8 @@
 // Every route on both but GET /ping requires a valid access token, checked before the body is read, and
 // each server has its own check. On the agent server the token's client is the agent and its user the
 // user the agent acted for; on the review server the token's user is the reviewer. Each tool and route
-// needs its own scope (scopes.ts).
+// needs its own scope (scopes.ts). Each tool call is a case.tool span (mcp.ts) and each review decision a
+// case.review span, each a child of the request's traceparent when it carries a usable one.
 
 import { createServer } from 'node:http';
 import type { IncomingHttpHeaders, IncomingMessage, Server, ServerResponse } from 'node:http';
@@ -14,6 +15,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { refusalAnswer } from '../../../shared/access-token.ts';
 import type { AccessTokenCheck, Caller, Refusal } from '../../../shared/access-token.ts';
 import { CASE_STATUSES, REVIEW_DECISIONS } from '../../../shared/case-contract.ts';
+import type { Telemetry } from '../../../shared/telemetry.ts';
 import { buildMcpServer } from './mcp.ts';
 import { routeRefusal } from './scopes.ts';
 import type { Route } from './scopes.ts';
@@ -152,7 +154,7 @@ function personOf(caller: Caller): Person {
   return { name: caller.name, subject: caller.subject };
 }
 
-export function createAgentServer(store: CaseStore, now: () => Date, checkToken: AccessTokenCheck): Server {
+export function createAgentServer(store: CaseStore, now: () => Date, checkToken: AccessTokenCheck, telemetry: Telemetry): Server {
   return createServer(
     listener(async (request, response) => {
       const { pathname } = pathOf(request);
@@ -178,7 +180,8 @@ export function createAgentServer(store: CaseStore, now: () => Date, checkToken:
 
       const context = contextFrom(request.headers, now, caller);
       const body = await readJson(request);
-      const mcp = buildMcpServer(store, context, caller.scopes);
+      const trace = { telemetry, parent: telemetry.extract(request.headers), agentId: caller.clientId };
+      const mcp = buildMcpServer(store, context, caller.scopes, trace);
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
       response.on('close', () => {
         void transport.close();
@@ -239,7 +242,40 @@ function targetOf(pathname: string, method: string | undefined): Target | 'not_f
   return 'method_not_allowed';
 }
 
-export function createReviewServer(store: CaseStore, checkToken: AccessTokenCheck): Server {
+// Records one decision on a case, answering the request. Executed when the store recorded it, refused when the
+// case or its status does not allow it. A body that is not a decision throws BadRequest, also a refusal.
+async function decide(request: IncomingMessage, response: ServerResponse, store: CaseStore, caller: Caller, caseId: string): Promise<'executed' | 'refused'> {
+  const body = await readJson(request);
+  if (field(body, 'reviewer') !== undefined) {
+    throw new BadRequest('"reviewer" is not accepted: the reviewer is whoever the access token names');
+  }
+  const reviewer = personOf(caller);
+  const wanted = requiredString(body, 'decision');
+  const decision = DECISIONS.find((candidate) => candidate === wanted);
+  if (decision === undefined) {
+    throw new BadRequest(`"decision" must be one of ${DECISIONS.join(', ')}`);
+  }
+  const result = store.review(caseId, reviewer, decision, optionalString(body, 'note'));
+  switch (result.outcome) {
+    case 'done':
+      sendJson(response, 200, result);
+      return 'executed';
+    case 'not_found':
+      sendJson(response, 404, { error: 'case_not_found' });
+      return 'refused';
+    case 'note_required':
+      sendJson(response, 400, { error: 'note_required', detail: 'Say what information is needed.' });
+      return 'refused';
+    case 'not_allowed':
+      sendJson(response, 409, {
+        error: 'not_allowed',
+        detail: `A case that is ${result.status} cannot be given the decision ${decision}.`,
+      });
+      return 'refused';
+  }
+}
+
+export function createReviewServer(store: CaseStore, checkToken: AccessTokenCheck, telemetry: Telemetry): Server {
   return createServer(
     listener(async (request, response) => {
       const url = pathOf(request);
@@ -259,7 +295,29 @@ export function createReviewServer(store: CaseStore, checkToken: AccessTokenChec
         return;
       }
 
-      // Decided before a case is looked up or the body read, so a caller without the scope learns nothing.
+      if (target.route === 'POST /cases/<id>/review') {
+        const { caseId } = target;
+        // One span for the decision: its outcome only, never the reviewer or the note.
+        await telemetry.span('case.review', { kind: 'server', parent: telemetry.extract(request.headers) }, async (span) => {
+          // Decided before the case is looked up or the body read, so a caller without the scope learns nothing.
+          const refusal = routeRefusal(target.route, caller.scopes);
+          if (refusal !== undefined) {
+            request.resume();
+            sendRefusal(response, refusal);
+            span.set({ 'lab.outcome': 'refused' });
+            return;
+          }
+          try {
+            span.set({ 'lab.outcome': await decide(request, response, store, caller, caseId) });
+          } catch (error) {
+            if (error instanceof BadRequest) span.set({ 'lab.outcome': 'refused' });
+            throw error;
+          }
+        });
+        return;
+      }
+
+      // Decided before a case is looked up, so a caller without the scope learns nothing.
       const refusal = routeRefusal(target.route, caller.scopes);
       if (refusal !== undefined) {
         request.resume();
@@ -281,45 +339,12 @@ export function createReviewServer(store: CaseStore, checkToken: AccessTokenChec
         return;
       }
       const { caseId } = target;
-
-      if (target.route === 'GET /cases/<id>') {
-        const found = store.getCase(caseId);
-        if (found === undefined) {
-          sendJson(response, 404, { error: 'case_not_found' });
-          return;
-        }
-        sendJson(response, 200, { case: found, versions: store.versions(caseId), audit: store.auditTrail(caseId) });
+      const found = store.getCase(caseId);
+      if (found === undefined) {
+        sendJson(response, 404, { error: 'case_not_found' });
         return;
       }
-
-      const body = await readJson(request);
-      if (field(body, 'reviewer') !== undefined) {
-        throw new BadRequest('"reviewer" is not accepted: the reviewer is whoever the access token names');
-      }
-      const reviewer = personOf(caller);
-      const wanted = requiredString(body, 'decision');
-      const decision = DECISIONS.find((candidate) => candidate === wanted);
-      if (decision === undefined) {
-        throw new BadRequest(`"decision" must be one of ${DECISIONS.join(', ')}`);
-      }
-      const result = store.review(caseId, reviewer, decision, optionalString(body, 'note'));
-      switch (result.outcome) {
-        case 'done':
-          sendJson(response, 200, result);
-          return;
-        case 'not_found':
-          sendJson(response, 404, { error: 'case_not_found' });
-          return;
-        case 'note_required':
-          sendJson(response, 400, { error: 'note_required', detail: 'Say what information is needed.' });
-          return;
-        case 'not_allowed':
-          sendJson(response, 409, {
-            error: 'not_allowed',
-            detail: `A case that is ${result.status} cannot be given the decision ${decision}.`,
-          });
-          return;
-      }
+      sendJson(response, 200, { case: found, versions: store.versions(caseId), audit: store.auditTrail(caseId) });
     }),
   );
 }

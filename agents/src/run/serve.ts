@@ -20,11 +20,17 @@
 //   EXCHANGE_TOKEN_ENDPOINT  the identity provider's token endpoint, where the caller's token is exchanged
 //   EXCHANGE_CLIENT_SECRET   this agent's client secret at the identity provider, for the exchange
 //   LOCAL_RUNTIME_EDGE     on the AgentCore SDK server only: on or off (see ../contract/runtime-contract.ts)
+//   TELEMETRY_ENDPOINT     on the hand-written contract server only, optional: where spans are exported
 // and whatever the agent's own reader reads from the same object.
+//
+// Spans are made by the hand-written contract server and the handler it serves. An agent on the SDK server makes
+// none: it reads no TELEMETRY_ENDPOINT and is given a handle that is off, which says nothing at start.
 
 import { createAccessTokenCheck } from '../../../shared/access-token.ts';
 import type { AccessTokenSettings, Caller } from '../../../shared/access-token.ts';
 import type { InboundMessage, InvocationResponse } from '../../../shared/agent-contract.ts';
+import { LAB_QUEUE, startTelemetry } from '../../../shared/telemetry.ts';
+import type { Telemetry } from '../../../shared/telemetry.ts';
 import { createTokenExchange } from '../../../shared/token-exchange.ts';
 import type { TokenExchange, TokenExchangeSettings } from '../../../shared/token-exchange.ts';
 import { runtimeLayoutFrom } from '../contract/runtime-contract.ts';
@@ -45,6 +51,9 @@ const HOST = '0.0.0.0';
 // often. Keycloak makes new keys when it restarts; this is how soon the agent can follow.
 const KEY_REFETCH_WAIT_MS = 30_000;
 const IDENTITY_TIMEOUT_MS = 5_000;
+// On SIGTERM or SIGINT, how long the spans still waiting are given to be sent. Inside the 10 s Docker waits
+// before it kills the container.
+const TELEMETRY_SHUTDOWN_MS = 5_000;
 
 export type Environment = Readonly<Record<string, string | undefined>>;
 
@@ -56,6 +65,8 @@ export type BaseWiring = {
   model: ModelSettings;
   // Exchanges the token the agent was called with for one meant for its tool server. One per process.
   exchange: TokenExchange;
+  // Where the agent's spans go: the same handle the front door holds the run's span on. Off on the SDK server.
+  telemetry: Telemetry;
 };
 
 export type Handler = (message: InboundMessage, caller: Caller) => Promise<InvocationResponse>;
@@ -127,6 +138,25 @@ export function agentSettingsFrom<Own>(env: Environment, limits: Limits, readOwn
   };
 }
 
+// TELEMETRY_ENDPOINT, optional: the trace store's OTLP/HTTP traces address. Unset or empty: null, telemetry is off.
+// Anything but an http or https URL stops the agent at start, naming the setting and not repeating its value.
+export function telemetryEndpointFrom(env: Environment): string | null {
+  const value = env['TELEMETRY_ENDPOINT']?.trim();
+  if (value === undefined || value === '') {
+    return null;
+  }
+  let protocol: string;
+  try {
+    protocol = new URL(value).protocol;
+  } catch {
+    throw new Error('TELEMETRY_ENDPOINT is not a URL. It is the address spans are exported to, such as http://telemetry:4318/v1/traces.');
+  }
+  if (protocol !== 'http:' && protocol !== 'https:') {
+    throw new Error('TELEMETRY_ENDPOINT must be an http or https URL.');
+  }
+  return value;
+}
+
 export type Server = 'hand-written contract server' | 'AgentCore SDK server';
 
 export type AgentDefinition<Own> = {
@@ -145,11 +175,14 @@ export type AgentDefinition<Own> = {
 
 export function serveAgent<Own>(definition: AgentDefinition<Own>): void {
   const { implementation, limits } = definition;
+  const makesSpans = definition.server === 'hand-written contract server';
   let settings: AgentSettings<Own>;
   let layout: RuntimeLayout | undefined;
+  let telemetryEndpoint: string | null;
   try {
     settings = agentSettingsFrom(process.env, limits, definition.readOwn);
     layout = definition.server === 'AgentCore SDK server' ? runtimeLayoutFrom(process.env) : undefined;
+    telemetryEndpoint = makesSpans ? telemetryEndpointFrom(process.env) : null;
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(2);
@@ -164,6 +197,13 @@ export function serveAgent<Own>(definition: AgentDefinition<Own>): void {
     timeoutMs: IDENTITY_TIMEOUT_MS,
   });
   const exchange = createTokenExchange(settings.exchange, { fetch, now });
+  const log = (line: string): void => {
+    console.error(line);
+  };
+  const telemetry = startTelemetry(
+    { service: agentId, endpoint: telemetryEndpoint, queue: LAB_QUEUE },
+    { now: () => now().getTime(), log: makesSpans ? log : () => undefined },
+  );
 
   // The model's name is asked of the server once, on first use, unless MODEL_ID names it.
   let handler: Handler | undefined;
@@ -179,14 +219,14 @@ export function serveAgent<Own>(definition: AgentDefinition<Own>): void {
       }
       modelId = served.id;
     }
-    handler = definition.build({ identity, now, limits, model: { baseUrl, apiKey, modelId, ...SAMPLING }, exchange }, own);
+    handler = definition.build({ identity, now, limits, model: { baseUrl, apiKey, modelId, ...SAMPLING }, exchange, telemetry }, own);
     return handler;
   }
 
   const respond: Handler = async (message, caller) => {
     const handle = await ready();
     if (typeof handle === 'string' && definition.withoutModel !== undefined) {
-      return definition.withoutModel({ identity, now, limits, exchange }, own, handle)(message, caller);
+      return definition.withoutModel({ identity, now, limits, exchange, telemetry }, own, handle)(message, caller);
     }
     if (typeof handle === 'string') {
       const run = { ...startRunState(identity, now, limits), citations: [], caseActions: [] };
@@ -210,15 +250,27 @@ export function serveAgent<Own>(definition: AgentDefinition<Own>): void {
     return;
   }
 
-  const server = createContractServer(identity, respond, checkToken);
+  const server = createContractServer(identity, respond, checkToken, telemetry);
 
   server.listen(PORT, HOST, () => {
     console.log(`${definition.title} listening on ${HOST}:${PORT}`);
   });
 
+  // Closes the server, then gives the spans still waiting a limited time to be sent, and says what became of them
+  // as counts. Once only, whichever signal comes first.
+  let stopping = false;
   function stop(): void {
+    if (stopping) {
+      return;
+    }
+    stopping = true;
     server.close();
     server.closeAllConnections();
+    void telemetry.shutdown(TELEMETRY_SHUTDOWN_MS).then(({ counts, notSent, timedOut }) => {
+      log(
+        `telemetry: shut down${timedOut ? ' at its time limit' : ''}: ${counts.ended} spans ended, ${counts.exported} exported, ${counts.failed} failed, ${counts.dropped} dropped, ${notSent} not sent`,
+      );
+    });
   }
 
   process.on('SIGTERM', stop);

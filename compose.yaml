@@ -1,5 +1,5 @@
 # The lab, started together on one network: the agents, the case system they write to, the client, the identity
-# provider, and the search engine with the retrieval service.
+# provider, the search engine with the retrieval service, and the trace store.
 #
 #   docker compose up -d --build --wait
 #
@@ -19,5 +19,7 @@ include:
       - platform/identity/.env
       - model/.env
   - platform/identity/compose.yaml
+  # The trace store, where pieces export execution evidence. Published on this machine only.
+  - platform/telemetry/compose.yaml
   # The search engine and the retrieval service. The index is built into the running stack with knowledge/index.sh.
   - knowledge/compose.yaml

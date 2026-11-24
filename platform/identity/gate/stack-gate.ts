@@ -827,7 +827,7 @@ async function grantFrom(what: string, ask: () => Promise<Answer>, fields?: read
   }
 }
 
-type Secrets = { deskSecret: string; intakeHandwritten: string; expert: string; orchestrator: string; evaluation: string; knowledgeGate: string };
+type Secrets = { deskSecret: string; intakeHandwritten: string; expert: string; orchestrator: string; evaluation: string; knowledgeGate: string; labExplorer: string };
 
 /** The person signs in through the desk client directly (Authorization Code with PKCE), and the refresh token is kept. */
 async function directSignIn(person: Person, secrets: Secrets): Promise<Grant & { refreshToken?: string }> {
@@ -955,6 +955,9 @@ async function tokenStatements(people: Map<string, Person>, secrets: Secrets): P
 
   const knowledgeGate = await grantFrom('knowledge-gate by client credentials', () => clientCredentials(HTTP, TOKEN_ENDPOINT, 'knowledge-gate', secrets.knowledgeGate, 'labels:search'));
   await presentedStatement(knowledgeGate, "knowledge-gate's token for labels:search", 'the retrieval service, /mcp', (token) => mcpRequest(KNOWLEDGE, token), { kind: 'admitted' });
+
+  const labExplorer = await grantFrom('lab-explorer by client credentials', () => clientCredentials(HTTP, TOKEN_ENDPOINT, 'lab-explorer', secrets.labExplorer, 'labels:search'));
+  await presentedStatement(labExplorer, "lab-explorer's token for labels:search", 'the retrieval service, /mcp', (token) => mcpRequest(KNOWLEDGE, token), { kind: 'admitted' });
 
   const evaluation = await grantFrom('evaluation by client credentials', () => clientCredentials(HTTP, TOKEN_ENDPOINT, 'evaluation', secrets.evaluation, 'agents:expert'));
   await presentedStatement(evaluation, "evaluation's token for agents:expert", 'the retrieval service, /mcp', (token) => mcpRequest(KNOWLEDGE, token), { kind: 'refused', reason: 'wrong_audience' });
@@ -1084,6 +1087,7 @@ async function main(): Promise<number> {
     orchestrator: requiredEnv('IDENTITY_ORCHESTRATOR_CLIENT_SECRET'),
     evaluation: requiredEnv('IDENTITY_EVALUATION_CLIENT_SECRET'),
     knowledgeGate: requiredEnv('IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET'),
+    labExplorer: requiredEnv('IDENTITY_LAB_EXPLORER_CLIENT_SECRET'),
   };
   const byName = new Map(people.map((person) => [person.username, person]));
   const named = (username: string): Person => {

@@ -60,6 +60,9 @@ services:
       EXCHANGE_CLIENT_SECRET: ${IDENTITY_INTAKE_HANDWRITTEN_CLIENT_SECRET:?run platform/identity/setup.sh}
       # The case system's MCP endpoint, by its service name on the shared network.
       CASE_MCP_URL: http://case-system:8000/mcp
+      # The trace store, by its service name on the shared network: this agent exports a span for each run, each
+      # request to the model and each tool call. The other agents export none and do not read it.
+      TELEMETRY_ENDPOINT: http://telemetry:4318/v1/traces
     ports:
       # Published on this machine only, for calling the agent directly.
       - "127.0.0.1:8080:8080"

@@ -1,0 +1,42 @@
+# The trace store: receives spans as OTLP/HTTP JSON and keeps the newest in SQLite. It checks no token, so it is
+# published on this machine only. See platform/telemetry/README.md.
+#
+#   docker compose -f platform/telemetry/compose.yaml up -d --build --wait
+name: ai-on-aws-telemetry
+
+services:
+  telemetry:
+    build:
+      context: ../..
+      dockerfile: toolchain/Dockerfile
+      target: run
+      args:
+        PIECE: platform/telemetry
+    image: ai-on-aws-telemetry:local
+    command: ["node", "platform/telemetry/src/main.ts"]
+    environment:
+      TELEMETRY_DB_PATH: /data/traces.sqlite
+      TELEMETRY_RETAIN_SPANS: "100000"
+    ports:
+      # Published on this machine only: no route asks for a token. Pieces on the lab's network send to
+      # http://telemetry:4318/v1/traces.
+      - "127.0.0.1:4318:4318"
+    volumes:
+      - traces:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4318/ping').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  # The SQLite file lives here, so spans survive the container being removed.
+  traces:

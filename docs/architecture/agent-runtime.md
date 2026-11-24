@@ -89,9 +89,9 @@ sequenceDiagram
 | Request body | At most 1,000,000 bytes, forwarded with a content length | Runtime's payload limit |
 | Health | Passes `GET /ping` to the SDK without headers | Runtime calls `/ping` |
 
-The edge forwards `Content-Type`, `Accept`, `Authorization`, headers starting
-`X-Amzn-Bedrock-AgentCore-Runtime-Custom-`, the session id, and a generated
-`X-Amzn-Bedrock-AgentCore-Runtime-Request-Id`. It drops all other headers,
+The edge forwards `Content-Type`, `Accept`, `Authorization`, `traceparent`,
+headers starting `X-Amzn-Bedrock-AgentCore-Runtime-Custom-`, the session id,
+and a generated `X-Amzn-Bedrock-AgentCore-Runtime-Request-Id`. It drops all other headers,
 including cookies and `X-Forwarded-For`. On Runtime, `Authorization` must be
 in the request header allowlist; Runtime also forwards the custom headers.
 
@@ -189,8 +189,9 @@ At startup, SDK agents log their server, listener addresses and
 3. No line written by the SDK's logger, the edge or `contract/sdk-app.ts` carries a token, a message's text, or an error's message. The SDK's logger stays on with its request lines; a request is logged as its method and path, an error as its type, code and status, and a line about an error has the error's code as its message. What Strands itself writes to the log is in the [Strands document](intake-agent-strands.md#not-present-in-addition).
 4. On the SDK server, SIGTERM and SIGINT end the process with exit 0. The SDK registers no handler of its own. The hand-written agent closes its server and every open connection on either signal.
 5. An agent sends a tool server only a token it got for that server: it exchanges the token it was called with, as itself, for one naming that server's audience and scopes, once per run, before it connects. The caller's token goes to the identity provider's token endpoint and nowhere else. An exchange that is refused or cannot be made ends the run failed with the reason: nothing is connected and the model is not asked.
+6. The hand-written server passes a request's `traceparent` to the handler: each accepted request is one `agent.run` span of kind `server`, carrying the agent's id and the message's id, that the handler runs inside, a child of the request's `traceparent` when it has a usable one and a new trace otherwise. It ends with the response's outcome, and `failed` when the handler throws, with the answer to a throw unchanged. The edge forwards `traceparent` to the server behind it. The SDK app gives its handler no trace context, and the agents on it record no spans.
 
-`agents/test/runtime.test.ts` has one test for each item, `runtime 1` to `runtime 5`, and one probe, `runtime P1`, that the hand-written agent's model client reads a text answer and a tool call from a model server.
+`agents/test/runtime.test.ts` has one test for each item, `runtime 1` to `runtime 6`, and one probe, `runtime P1`, that the hand-written agent's model client reads a text answer and a tool call from a model server.
 
 ## Not present
 

@@ -1,11 +1,11 @@
-// One run: the message as it was received, what the run came to, and every step drawn to scale on one time
-// axis. Choosing a step shows what it holds. Beside it, every run of the same message, and a control to run
-// the message again.
+// One run: the message as it was received, the evidence each piece exported for it, what the run came to, and every
+// step drawn to scale on one time axis. Choosing a step shows what it holds. Beside it, every run of the same message,
+// and a control to run the message again.
 
 import { useState } from 'react';
 import { Link } from 'react-router';
 
-import type { InvocationResponse, Step, Trace, TracedRun } from '../../../shared/api.ts';
+import type { ExportedSpan, InvocationResponse, Step, Trace, TracedRun } from '../../../shared/api.ts';
 import {
   formatDateTime,
   formatDuration,
@@ -15,7 +15,7 @@ import {
   pretty,
   stepTitle,
 } from '../format.ts';
-import { RUN_REFRESH_MS, useLabAgents, useLabInquiry, useLabRun } from './api.ts';
+import { EVIDENCE_GRACE_MS, RUN_REFRESH_MS, readWhileSettling, useLabAgents, useLabInquiry, useLabRun, useLabRunSpans } from './api.ts';
 import { Empty, Failed, Loading, ResultTag } from './parts.tsx';
 import { RunControl } from './RunControl.tsx';
 
@@ -330,6 +330,186 @@ function Timeline({
   );
 }
 
+// The service the client exports as, and the case system's: the client's spans are drawn first and the case system's
+// last, every other service (the agents) between them in the order it first started.
+const CLIENT_SERVICE = 'client';
+const CASE_SYSTEM_SERVICE = 'case-system';
+
+// The closed list of outcomes a span may carry (shared/telemetry-attributes.ts), in words.
+const SPAN_OUTCOME_TEXT: Readonly<Record<string, string>> = {
+  completed: 'Completed',
+  stopped: 'Stopped before the end',
+  failed: 'Failed',
+  executed: 'An answer came back',
+  refused: 'Refused, nothing was done',
+  response_lost: 'No answer came back',
+  created: 'Created',
+  replayed: 'Already done, answered again',
+  conflict: 'Declined as a conflict',
+};
+
+function spanOutcomeText(span: ExportedSpan): string {
+  const outcome = span.attributes['lab.outcome'];
+  const words = typeof outcome === 'string' ? SPAN_OUTCOME_TEXT[outcome] : undefined;
+  if (words !== undefined) return words;
+  return span.status === 'error' ? 'Ended with an error' : 'Ended';
+}
+
+type EvidenceRow = { span: ExportedSpan; depth: number; startMs: number; endMs: number };
+type ServiceGroup = { service: string; rows: EvidenceRow[] };
+
+const spanKey = (traceId: string, spanId: string) => `${traceId}/${spanId}`;
+
+// One service's spans, each child right under its parent and indented one more, when the parent is a span of the same
+// service; any other span starts a line of its own. The spans come in start order, and keep it among siblings.
+function treeRows(spans: readonly ExportedSpan[]): EvidenceRow[] {
+  const present = new Set(spans.map((span) => spanKey(span.trace_id, span.span_id)));
+  const children = new Map<string, ExportedSpan[]>();
+  const tops: ExportedSpan[] = [];
+  for (const span of spans) {
+    const parent = span.parent === null ? null : spanKey(span.trace_id, span.parent);
+    if (parent !== null && parent !== spanKey(span.trace_id, span.span_id) && present.has(parent)) {
+      children.set(parent, [...(children.get(parent) ?? []), span]);
+    } else {
+      tops.push(span);
+    }
+  }
+  const rows: EvidenceRow[] = [];
+  const seen = new Set<string>();
+  const visit = (span: ExportedSpan, depth: number) => {
+    const key = spanKey(span.trace_id, span.span_id);
+    if (seen.has(key)) return;
+    seen.add(key);
+    rows.push({ span, depth, startMs: Date.parse(span.start), endMs: Date.parse(span.end) });
+    for (const child of children.get(key) ?? []) visit(child, depth + 1);
+  };
+  tops.forEach((span) => visit(span, 0));
+  // A span whose parents loop back to it is reached from no top line: it is drawn as one.
+  spans.forEach((span) => visit(span, 0));
+  return rows;
+}
+
+function serviceGroups(spans: readonly ExportedSpan[]): ServiceGroup[] {
+  const byService = new Map<string, ExportedSpan[]>();
+  for (const span of spans) {
+    const service = span.service ?? '(no service name)';
+    byService.set(service, [...(byService.get(service) ?? []), span]);
+  }
+  const rank = (service: string) => (service === CLIENT_SERVICE ? 0 : service === CASE_SYSTEM_SERVICE ? 2 : 1);
+  // The map keeps the order each service first appears in, which is the order it first started; the sort is stable.
+  return [...byService.keys()]
+    .sort((a, b) => rank(a) - rank(b))
+    .map((service) => ({ service, rows: treeRows(byService.get(service) ?? []) }));
+}
+
+// The spans every piece exported for this run, read from the trace store, on one time axis.
+function Evidence({ run }: { run: TracedRun }) {
+  const running = run.state === 'running';
+  const read = useLabRunSpans(run.id, running, run.finished_at);
+  const spans = read.data?.spans ?? [];
+  const groups = serviceGroups(spans);
+  const rows = groups.flatMap((group) => group.rows);
+  const startMs = Math.min(...rows.map((row) => row.startMs));
+  const scaleMs = Math.max(1, ...rows.map((row) => row.endMs - startMs));
+  const { stepMs, ticks } = ticksFor(scaleMs);
+  const percent = (ms: number) => (ms / scaleMs) * 100;
+  const ofClient = (name: string) => spans.some((span) => span.service === CLIENT_SERVICE && span.name === name);
+  const unfinished = ofClient('desk.run.accepted') && !ofClient('desk.run');
+  // The run has ended in the client's store, and the evidence was last read soon enough after that that some of it may
+  // still be on its way to the trace store.
+  const settling = !running && read.data !== undefined && read.data.evidence !== 'not_configured' && readWhileSettling(read.dataUpdatedAt, run.finished_at);
+  const graceSeconds = EVIDENCE_GRACE_MS / 1000;
+
+  return (
+    <section className="lab-panel lab-axis" aria-labelledby="lab-evidence-title">
+      <div className="lab-axis__row lab-axis__header">
+        <h2 id="lab-evidence-title" className="lab-axis__label">
+          Exported evidence
+        </h2>
+        {rows.length === 0 ? null : (
+          <div className="lab-axis__scale lab-mono" aria-hidden="true">
+            {ticks.map((at) => {
+              const left = clampPercent(percent(at));
+              const shift = at === 0 ? '0' : left > 88 ? '-100%' : '-50%';
+              return (
+                <span key={at} style={{ left: `${left}%`, transform: `translateX(${shift})` }}>
+                  {tickText(at)}
+                </span>
+              );
+            })}
+          </div>
+        )}
+      </div>
+      <p className="lab-note">
+        Each piece exported these spans itself as it worked; the steps below came back in the agent’s answer.
+      </p>
+      {read.isPending ? <Loading what="the exported evidence" /> : null}
+      {read.isError ? <Failed what="the exported evidence" error={read.error} /> : null}
+      {read.data?.evidence === 'not_configured' ? (
+        <Empty>TELEMETRY_STORE_URL is not set, so what was exported for this run cannot be read.</Empty>
+      ) : null}
+      {read.data?.evidence === 'none' ? (
+        <Empty>
+          {running || settling
+            ? 'Nothing exported for this run has reached the trace store yet.'
+            : 'Nothing was exported for this run: telemetry was off when it ran, or the trace store no longer holds its spans.'}
+        </Empty>
+      ) : null}
+      {unfinished ? (
+        <p className="lab-note" role="status">
+          {running
+            ? 'The run has not finished, so no ending has been exported yet.'
+            : settling
+              ? 'The run has ended in the client’s store, and its ending has not reached the trace store yet.'
+              : 'The run did not finish while the client was running: its trace has the accepted span and no desk.run, and no ending was exported.'}
+        </p>
+      ) : null}
+      {running && read.data !== undefined ? (
+        <p className="lab-note">The run is still going. The evidence is asked for again every {RUN_REFRESH_MS / 1000} seconds.</p>
+      ) : null}
+      {settling ? (
+        <p className="lab-note">
+          The run ended less than {graceSeconds} seconds ago, so spans may still be arriving. The evidence is asked for again
+          every {RUN_REFRESH_MS / 1000} seconds until then.
+        </p>
+      ) : null}
+      {groups.map((group) => (
+        <div key={group.service} className="lab-spans">
+          <h3 className="lab-subhead lab-mono">{group.service}</h3>
+          <ol className="lab-steps">
+            {group.rows.map((row) => {
+              const left = clampPercent(percent(row.startMs - startMs));
+              const width = Math.min(100 - left, percent(row.endMs - row.startMs));
+              const attempt = row.span.attributes['lab.attempt'];
+              const classes = ['lab-step', 'lab-span', row.depth > 0 ? 'lab-step--nested' : '', row.span.status === 'error' ? 'is-failed' : '']
+                .filter((name) => name !== '')
+                .join(' ');
+              return (
+                <li key={spanKey(row.span.trace_id, row.span.span_id)} className={classes}>
+                  <div className="lab-axis__label lab-span__label" style={{ paddingLeft: `${4 + Math.min(row.depth, 6) * 18}px` }}>
+                    <span className="lab-span__name">
+                      {row.depth > 0 ? <span className="lab-visually-hidden">Inside the span above: </span> : null}
+                      <span className="lab-mono">{row.span.name}</span>
+                      <span className="lab-span__outcome">
+                        {spanOutcomeText(row.span)}
+                        {typeof attempt === 'number' && attempt > 1 ? `, attempt ${attempt}` : ''}
+                      </span>
+                    </span>
+                    <span className="lab-mono lab-step__time">{formatDuration(Math.max(0, row.endMs - row.startMs))}</span>
+                  </div>
+                  <div className="lab-axis__scale lab-step__track" style={{ backgroundSize: `${percent(stepMs)}% 100%` }} aria-hidden="true">
+                    <div className="lab-step__bar" style={{ left: `${left}%`, width: `max(3px, ${width}%)` }} />
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
+      ))}
+    </section>
+  );
+}
+
 const ACTION_TEXT = {
   case_opened: 'opened',
   case_already_open: 'was already open for this message',
@@ -542,6 +722,8 @@ function RunView({
         />
         <pre className="lab-pre lab-pre--prose">{inquiry.text}</pre>
       </section>
+
+      <Evidence run={run} />
 
       {response === null ? (
         <section className="lab-panel" aria-labelledby="lab-axis-none">

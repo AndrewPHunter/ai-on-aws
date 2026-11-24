@@ -156,6 +156,24 @@ export type TraceInquiry = Omit<Inquiry, 'runs'>;
 export type Trace = { inquiry: TraceInquiry; run: TracedRun };
 export type TraceResponse = { trace: Trace };
 
+// GET /lab/api/runs/<run_id>/spans: every span of the traces in the trace store that carry the run's id, in start
+// order, from every piece. `parent` is the parent's span id, or null for the first span of a trace; `start` and `end`
+// are ISO 8601 times. `evidence` says whether TELEMETRY_STORE_URL is not set, the store holds nothing for the run, or
+// spans were found.
+export type ExportedSpan = {
+  trace_id: string;
+  span_id: string;
+  parent: string | null;
+  service: string | null;
+  name: string;
+  kind: 'internal' | 'server' | 'client' | 'producer' | 'consumer' | 'unspecified';
+  start: string;
+  end: string;
+  status: 'unset' | 'ok' | 'error';
+  attributes: Record<string, string | number | boolean>;
+};
+export type RunSpansResponse = { evidence: 'not_configured' | 'none' | 'found'; spans: ExportedSpan[] };
+
 // POST /contact/api/messages: a clinician writes in through the public form. Nobody is signed in. Each of name,
 // role and contact is at most 200 characters, and text at most what POST /api/inquiries takes. The message becomes
 // an inquiry in the desk's inbox, entered by "Contact form", and is handled by the orchestrator. Answers 202; the
@@ -172,3 +190,97 @@ export type LabInquiryResponse = { inquiry: LabInquiry };
 // explorer"; a body with both is 400. Answers 202; the run is started by "Lab explorer".
 export type LabRunRequest = { agent_id: string } & ({ inquiry_id: string } | { sender: string; text: string });
 export type LabRunResponse = { inquiry_id: string; run_id: string };
+
+// GET /lab/api/knowledge: what the label index holds, as the search engine reports it for the alias the retrieval
+// service searches. `embedding` is the identity the index's mapping records, or null for an index built without
+// vectors.
+export type EmbeddingIdentity = { repository: string; revision: string; dimensions: number; recipe: string };
+export type LabelIndex =
+  | { state: 'built'; alias: string; index: string; passages: number; embedding: EmbeddingIdentity | null }
+  | { state: 'not_built'; alias: string; detail: string };
+export type KnowledgeResponse = { checked_at: string; index: LabelIndex };
+
+// POST /lab/api/knowledge/search: a label search as the label expert makes one, find the label and then search it,
+// run as the lab explorer's own client. Each field is required: medicine at most 200 characters, question at most
+// 1,000.
+export type KnowledgeSearchRequest = { medicine: string; question: string };
+
+export type KnowledgeTool = 'find_labels' | 'search_label';
+// One call made to the retrieval service: what was sent and how long it took, in milliseconds.
+export type KnowledgeCall = { tool: KnowledgeTool; sent: Record<string, string>; duration_ms: number };
+
+// A label as find_labels lists it.
+export type FoundLabel = {
+  set_id: string;
+  version: number;
+  effective_date: string;
+  kind: string;
+  names: string[];
+  source: string;
+};
+
+// The passage's rank, from 1, in each list the service's strategy computed and that it is in; otherwise null.
+export type PassageRanks = { keyword: number | null; vector: number | null; fused: number | null; reranked: number | null };
+
+// A passage as search_label returns it, in the order returned (rank 1 first).
+export type FoundPassage = {
+  rank: number;
+  chunk_id: string;
+  text: string;
+  score: number;
+  part: string;
+  section: { number: string | null; title: string | null; path: string[] };
+  label: { set_id: string; version: number; effective_date: string; source: string };
+  ranks: PassageRanks | null;
+};
+
+// 200: `found` (the labels found, the one searched, the strategy the service reports and the passages), or
+// `no_label` with find_labels's own answer. 502: `failed`, with the error's code and sentence and the calls made
+// before it.
+export type KnowledgeSearchResponse =
+  | { outcome: 'found'; calls: KnowledgeCall[]; labels: FoundLabel[]; searched: FoundLabel; strategy: string; passages: FoundPassage[] }
+  | { outcome: 'no_label'; calls: KnowledgeCall[]; answer: unknown }
+  | { outcome: 'failed'; calls: KnowledgeCall[]; error: string; detail: string };
+
+// GET /lab/api/evaluation: the evaluation runs found in the harness's data folder, newest first by the time their
+// file was last written. `data` is `not_configured` when the setting is not set, `empty` when the folder holds no run.
+// `skipped` names each file that was found but could not be read, and why, in words that quote nothing of it.
+export type EvaluationKind = 'benchmark' | 'attack';
+export type EvaluationRunSummary = { id: string; kind: EvaluationKind; name: string; written_at: string };
+export type EvaluationSkipped = { file: string; reason: string };
+export type EvaluationList = { data: 'not_configured' | 'empty' | 'found'; runs: EvaluationRunSummary[]; skipped: EvaluationSkipped[] };
+
+// A share as scores.json holds it: numerator of denominator, the share and its 95% Wilson interval, and whether it is
+// over too few items to read.
+export type EvaluationShare = { numerator: number; denominator: number; share: number | null; low: number | null; high: number | null; too_few: boolean };
+
+// One line of a benchmark run's figures, under the name the harness's own table gives it.
+export type EvaluationRow = { name: string } & (
+  | { kind: 'share'; share: EvaluationShare }
+  | { kind: 'count'; count: number }
+  | { kind: 'effort'; count: number; median: number | null; p95: number | null }
+  | { kind: 'fraction'; value: number | null }
+  | { kind: 'not_judged' }
+);
+export type EvaluationGroup = { name: string; rows: EvaluationRow[] };
+
+// What run.json says was run: the agent, the models and strategies its responses named, and when. Null when the run
+// has no run.json this server can read.
+export type BenchmarkRunFacts = { agent_id: string | null; models: string[]; strategies: string[]; started_at: string; ended_at: string | null };
+
+// One attack, control or fault case of an attack run: identifiers and its verdict only. `failed` lists the kinds of
+// the expectations that did not hold.
+export type AttackVerdict = 'held' | 'failed' | 'inconclusive' | 'not_run';
+export type AttackCaseResult = {
+  id: string;
+  class: string;
+  target: string;
+  decided_by: 'code' | 'model';
+  verdict: AttackVerdict;
+  failed: { kind: string; scope: string | null; decided_by: 'code' | 'model' }[];
+};
+
+// GET /lab/api/evaluation/<id>: one run's figures. 404 for an id that names no run found on disk.
+export type EvaluationRunResponse =
+  | { kind: 'benchmark'; id: string; name: string; written_at: string; run: BenchmarkRunFacts | null; variant: string; groups: EvaluationGroup[] }
+  | { kind: 'attack'; id: string; name: string; written_at: string; cases: AttackCaseResult[]; totals: Record<AttackVerdict, number> };

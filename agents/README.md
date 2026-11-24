@@ -71,6 +71,7 @@ The flows, the rules of a tool call, and the controls neither has are in two doc
 | [`src/run/turns.ts`](src/run/turns.ts) | The turn lost to thinking | Both, and the orchestrator |
 | [`src/run/endings.ts`](src/run/endings.ts) | The wording of every ending | Both, and the label expert |
 | [`src/run/record.ts`](src/run/record.ts) | Step timing and the run's deadline | Both, the label expert and the orchestrator (the deadline) |
+| [`src/run/spans.ts`](src/run/spans.ts) | The `model.call` and `tool.call` spans the hand-written agent exports | Hand-written; the report check in both, with a handle that is off on Strands |
 | [`src/model/served.ts`](src/model/served.ts) | The model settings, which model the server serves, the wording of a model failure | Both, the label expert and the orchestrator |
 | [`src/tools/case-system.ts`](src/tools/case-system.ts) | What is particular to the case system: its context headers, the two tools a run needs and is shown, how to read its answers, and what they mean for the run's record. Also the hand-written agent's MCP connection | Both |
 | [`src/tools/tool-token.ts`](src/tools/tool-token.ts) | The exchange of the caller's token for one meant for a tool server or an agent, and each target (audience and scopes) | Both, the label expert and the orchestrator |
@@ -143,8 +144,9 @@ Set in [`compose.yaml`](compose.yaml), for each agent. The intake agents' limits
 | `EXCHANGE_TOKEN_ENDPOINT` | Where the agent exchanges the caller's token: `http://identity:8080/realms/lab/protocol/openid-connect/token` |
 | `EXCHANGE_CLIENT_SECRET` | The agent's client secret for the exchange. Read from `platform/identity/.env`, written by `platform/identity/setup.sh`; never logged |
 | `LOCAL_RUNTIME_EDGE` | The three agents on Strands only: `on` runs the local stand-in for AgentCore Runtime's front door in front of the SDK app; `off` serves as on AgentCore Runtime. Set to `on` here |
+| `TELEMETRY_ENDPOINT` | The hand-written intake agent only: where it exports its spans, the trace store's `http://telemetry:4318/v1/traces`. Optional: unset or empty, it exports nothing and says so once at start. What it exports is in [the hand-written agent's document](../docs/architecture/intake-agent-handwritten.md#what-the-agent-exports). The other agents do not read it |
 
-Every setting but `MODEL_ID` is required; the agent stops at start-up (exit 2) naming the first that is missing, or a `LOCAL_RUNTIME_EDGE` other than `on` or `off`. A token must have at least the run's time limit left: 150 s for the intake agents and the label expert, 280 s for the orchestrator. The keys are fetched again, at most every 30 s, when a token names one not yet seen.
+Every setting but `MODEL_ID` and `TELEMETRY_ENDPOINT` is required; the agent stops at start-up (exit 2) naming the first that is missing, a `LOCAL_RUNTIME_EDGE` other than `on` or `off`, or a `TELEMETRY_ENDPOINT` that is not an http or https URL. A token must have at least the run's time limit left: 150 s for the intake agents and the label expert, 280 s for the orchestrator. The keys are fetched again, at most every 30 s, when a token names one not yet seen.
 
 ## Known limits
 
