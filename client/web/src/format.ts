@@ -166,6 +166,74 @@ export function firstLine(text: string, length: number): string {
   return flat.length <= length ? flat : `${flat.slice(0, length - 1).trimEnd()}…`;
 }
 
+const shortTime = new Intl.DateTimeFormat(undefined, { timeStyle: 'short' });
+const shortDate = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+
+// When something arrived, as an inbox lists it: the time on the day it is read, otherwise the date.
+export function formatWhen(iso: string, now: Date): string {
+  const date = new Date(iso);
+  const sameDay =
+    date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+  return sameDay ? shortTime.format(date) : shortDate.format(date);
+}
+
+// Time on a running clock: 0:07, 1:42, 12:05.
+export function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+// The roles the desk names, in words. Any other role name is not shown.
+const ROLE_WORDS: Record<string, string> = {
+  desk: 'Desk',
+  'medical-information': 'Medical information',
+  'safety-reviewer': 'Safety reviewer',
+  auditor: 'Auditor',
+};
+
+export function roleWords(roles: readonly string[]): string[] {
+  return roles.flatMap((role) => {
+    const words = ROLE_WORDS[role];
+    return words === undefined ? [] : [words];
+  });
+}
+
+// A case status as the case system wrote it on a case action, in words; null for one the desk does not know.
+export function caseStatusWords(status: string): string | null {
+  return Object.hasOwn(STATUS_LABEL, status) ? STATUS_LABEL[status as CaseStatus] : null;
+}
+
+// What an audit entry records, in words for the case history. An action the desk has no words for is
+// described as a change, with the recorded detail beside it.
+const HISTORY_WORDS: Record<string, string> = {
+  case_created: 'Case opened',
+  create_replayed: 'The same request to open this case was made again; nothing new was recorded',
+  create_conflict: 'A second, different case for the same message was refused',
+  follow_up_added: 'Follow-up added',
+  follow_up_replayed: 'The same follow-up was sent again; nothing new was recorded',
+  follow_up_conflict: 'A second, different follow-up for the same message was refused',
+  review_approve: 'Approved',
+  review_reject: 'Rejected',
+  review_request_information: 'More information requested',
+};
+
+export function historyWords(action: string): string {
+  return HISTORY_WORDS[action] ?? 'Change to the case';
+}
+
+// Who acted on a case, in words: a reviewer by their name, an intake agent as "the intake agent", any other
+// agent as "an agent".
+const INTAKE_AGENTS = new Set(['intake-handwritten', 'intake-strands']);
+
+export function actorWords(actorKind: 'agent' | 'reviewer', actor: string): string {
+  if (actorKind === 'reviewer') {
+    return actor;
+  }
+  return INTAKE_AGENTS.has(actor) ? 'the intake agent' : 'an agent';
+}
+
 export function pretty(value: unknown): string {
   if (typeof value === 'string') {
     return value;

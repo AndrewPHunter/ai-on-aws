@@ -1,102 +1,181 @@
-import { Inbox, ClipboardCheck, Activity, ScrollText } from 'lucide-react';
-import { NavLink, Navigate, Route, Routes } from 'react-router';
+import { ChevronDown, ExternalLink } from 'lucide-react';
+import { useEffect, useId, useRef, useState } from 'react';
+import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router';
 
 import type { SessionMay, SessionUser } from '../../shared/api.ts';
-import { failureText, useCases, useSession, useSignOut, useStatus } from './api.ts';
+import { failureText, useCases, useSession, useSignOut } from './api.ts';
 import { Empty, Loading, Problem } from './components.tsx';
+import { roleWords } from './format.ts';
+import { INBOX_AGENT, LABEL_AGENT } from './inbox.ts';
+import { LabApp } from './lab/LabApp.tsx';
 import { CasePage } from './pages/CasePage.tsx';
 import { CasesPage } from './pages/CasesPage.tsx';
-import { InquiriesPage } from './pages/InquiriesPage.tsx';
-import { SystemPage } from './pages/SystemPage.tsx';
-import { TracesPage } from './pages/TracesPage.tsx';
+import { InboxPage } from './pages/InboxPage.tsx';
+import { LabelPage } from './pages/LabelPage.tsx';
+import { LogInquiryPage } from './pages/LogInquiryPage.tsx';
 import { SignedInProvider } from './session.tsx';
+
+// Every path under /lab is the lab explorer, which asks nothing of the desk, not even who is signed in.
+// Everything else is the desk.
+export function App() {
+  const { pathname } = useLocation();
+  if (pathname === '/lab' || pathname.startsWith('/lab/')) {
+    return <LabApp />;
+  }
+  return <Desk />;
+}
+
+function Mark() {
+  return (
+    <span className="mark">
+      <svg aria-hidden="true" width="26" height="26" viewBox="0 0 26 26" fill="none" strokeWidth="2">
+        <rect x="2" y="2" width="22" height="22" stroke="currentColor" />
+        <path d="M13 7v12M7 13h12" className="mark__cross" />
+      </svg>
+      <span className="mark__name">Medical Information Desk</span>
+    </span>
+  );
+}
+
+// The sections this session may use, in the order the header shows them.
+type Section = 'inbox' | 'label' | 'cases';
+
+function sectionsOf(may: SessionMay): Section[] {
+  const sections: Section[] = [];
+  if (may.agents.includes(INBOX_AGENT)) sections.push('inbox');
+  if (may.agents.includes(LABEL_AGENT)) sections.push('label');
+  if (may.read_cases) sections.push('cases');
+  return sections;
+}
+
+const SECTION_PATH: Record<Section, string> = { inbox: '/inquiries', label: '/label', cases: '/cases' };
 
 // Rendered only for a session that may read cases, so nobody else asks for them.
 function CasesLink() {
   const awaiting = useCases('awaiting_review');
   const waiting = awaiting.data?.cases.length ?? 0;
   return (
-    <NavLink to="/cases" className="rail__link">
-      <ClipboardCheck size={18} aria-hidden="true" />
-      <span>Cases</span>
+    <NavLink to="/cases" className="nav__link">
+      Cases
       {waiting > 0 ? (
-        <span className="rail__count" title={`${waiting} awaiting review`}>
-          {awaiting.data?.truncated === true ? `${waiting}+` : waiting}
+        <span className="tag tag--awaiting_review">
+          {waiting}
+          {awaiting.data?.truncated === true ? '+' : ''} to review
         </span>
       ) : null}
     </NavLink>
   );
 }
 
-function mayText(may: SessionMay): string {
-  const traces = may.read_traces ? 'can read traces' : 'cannot see traces';
-  if (may.decide_cases) return `Can decide cases; ${traces}.`;
-  if (may.read_cases) return `Can read cases, not decide them; ${traces}.`;
-  return may.read_traces ? 'Cannot see cases; can read traces.' : 'Cannot see cases or traces.';
-}
-
-function Rail({ user, may }: { user: SessionUser; may: SessionMay }) {
+function UserMenu({ user }: { user: SessionUser }) {
   const signOut = useSignOut();
-  const status = useStatus();
-  const down = status.data?.pieces.filter((piece) => piece.state === 'down').length ?? 0;
+  const [open, setOpen] = useState(false);
+  const menuId = useId();
+  const box = useRef<HTMLDivElement>(null);
+  const roles = roleWords(user.roles);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    function onPointer(event: PointerEvent): void {
+      if (box.current !== null && event.target instanceof Node && !box.current.contains(event.target)) {
+        setOpen(false);
+      }
+    }
+    function onKey(event: KeyboardEvent): void {
+      if (event.key === 'Escape') {
+        setOpen(false);
+      }
+    }
+    document.addEventListener('pointerdown', onPointer);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', onPointer);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
 
   return (
-    <header className="rail">
-      <div className="rail__mark">
-        <span className="rail__glyph" aria-hidden="true" />
-        <span className="rail__name">Medical information desk</span>
-      </div>
+    <div className="usermenu" ref={box}>
+      <button
+        type="button"
+        className="usermenu__button"
+        aria-expanded={open}
+        aria-controls={menuId}
+        onClick={() => setOpen((was) => !was)}
+      >
+        <span className="usermenu__who">
+          <span className="usermenu__name">{user.name}</span>
+          {roles.length === 0 ? null : <span className="usermenu__role">{roles.join(', ')}</span>}
+        </span>
+        <ChevronDown size={14} aria-hidden="true" />
+      </button>
+      {open ? (
+        <div className="usermenu__panel" id={menuId}>
+          <button
+            type="button"
+            className="usermenu__item"
+            disabled={signOut.isPending}
+            onClick={() => signOut.mutate()}
+          >
+            {signOut.isPending ? 'Signing out…' : 'Sign out'}
+          </button>
+          {signOut.isError ? <Problem>{failureText(signOut.error)}</Problem> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
-      <nav className="rail__nav" aria-label="Sections">
-        {may.agents.length > 0 ? (
-          <NavLink to="/inquiries" className="rail__link">
-            <Inbox size={18} aria-hidden="true" />
-            <span>Inquiries</span>
+function LabLink() {
+  return (
+    <a className="lablink" href="/lab" target="_blank" rel="noopener">
+      <ExternalLink size={15} aria-hidden="true" />
+      Open lab explorer
+    </a>
+  );
+}
+
+function Header({ user, sections }: { user: SessionUser; sections: readonly Section[] }) {
+  return (
+    <header className="topbar">
+      <Mark />
+      <nav className="nav" aria-label="Sections">
+        {sections.includes('inbox') ? (
+          <NavLink to="/inquiries" className="nav__link">
+            Inbox
           </NavLink>
         ) : null}
-        {may.read_cases ? <CasesLink /> : null}
-        {may.read_traces ? (
-          <NavLink to="/traces" className="rail__link">
-            <ScrollText size={18} aria-hidden="true" />
-            <span>Traces</span>
+        {sections.includes('label') ? (
+          <NavLink to="/label" className="nav__link">
+            Ask the label
           </NavLink>
         ) : null}
-        <NavLink to="/system" className="rail__link">
-          <Activity size={18} aria-hidden="true" />
-          <span>System</span>
-          {down > 0 ? (
-            <span className="rail__count rail__count--alert" title={`${down} not reachable`}>
-              {down}
-            </span>
-          ) : null}
-        </NavLink>
+        {sections.includes('cases') ? <CasesLink /> : null}
       </nav>
-
-      <div className="rail__reviewer">
-        <p className="rail__hint">Signed in as</p>
-        <p>
-          <strong>{user.name}</strong>
-        </p>
-        <p className="rail__hint">{mayText(may)}</p>
-        <button
-          type="button"
-          className="button button--small"
-          disabled={signOut.isPending}
-          onClick={() => signOut.mutate()}
-        >
-          Sign out
-        </button>
-        {signOut.isError ? <Problem>{failureText(signOut.error)}</Problem> : null}
+      <div className="topbar__end">
+        <LabLink />
+        <UserMenu user={user} />
       </div>
     </header>
   );
 }
 
+// Each new page starts at its top.
+function ScrollToTop() {
+  const { pathname, search } = useLocation();
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [pathname, search]);
+  return null;
+}
+
 function NothingToDo() {
   return (
-    <div className="column">
+    <div className="page page--narrow">
       <Empty title="Nothing to do here">
-        <p>Your account has nothing to do at this desk: it may not send inquiries to an agent, read cases or read traces.</p>
+        <p>Your account has nothing to do at this desk: it may not log inquiries, ask the label or read cases.</p>
       </Empty>
     </div>
   );
@@ -104,41 +183,39 @@ function NothingToDo() {
 
 function SignIn() {
   return (
-    <main className="page">
-      <div className="column">
-        <div className="empty">
-          <p className="empty__title">Medical information desk</p>
-          <div className="empty__body">
-            <p>Sign in with your desk account to receive inquiries and review cases.</p>
-            <p>
-              <a className="button button--primary" href="/auth/login">
-                Sign in
-              </a>
-            </p>
-          </div>
-        </div>
+    <main className="signin">
+      <div className="signin__card">
+        <Mark />
+        <p>Sign in with your desk account to answer inquiries and review adverse event cases.</p>
+        <a className="button button--primary button--wide" href="/auth/login">
+          Sign in
+        </a>
+        <a className="signin__lab" href="/lab">
+          Open lab explorer
+        </a>
       </div>
     </main>
   );
 }
 
-export function App() {
+function Desk() {
   const session = useSession();
 
   if (session.isPending) {
     return (
-      <main className="page">
-        <div className="column">
-          <Loading what="who is signed in" />
-        </div>
+      <main className="signin">
+        <Loading what="who is signed in" />
       </main>
     );
   }
   if (session.isError) {
     return (
-      <main className="page">
-        <div className="column">
-          <Problem>{failureText(session.error)}</Problem>
+      <main className="signin">
+        <div className="signin__card">
+          <Problem>
+            <p>{failureText(session.error)}</p>
+            <p>Reload the page to try again.</p>
+          </Problem>
         </div>
       </main>
     );
@@ -148,29 +225,35 @@ export function App() {
   }
 
   const { user, may } = session.data;
-  const inquiries = may.agents.length > 0;
-  // Where a path the session has no page for leads. With no inquiries, cases or traces, every such path
-  // shows that the account has nothing to do here.
-  const home = inquiries ? '/inquiries' : may.read_cases ? '/cases' : may.read_traces ? '/traces' : undefined;
-  const elsewhere = home === undefined ? <NothingToDo /> : <Navigate to={home} replace />;
+  const sections = sectionsOf(may);
+  const first = sections[0];
+  // Where a path the session has no page for leads: the first section it may use, or, with none, a page
+  // saying the account has nothing to do here.
+  const elsewhere = first === undefined ? <NothingToDo /> : <Navigate to={SECTION_PATH[first]} replace />;
   return (
     <SignedInProvider session={session.data}>
-      <div className="shell">
-        <Rail user={user} may={may} />
-        <main className="page">
-          <Routes>
-            <Route path="/" element={elsewhere} />
-            {inquiries ? <Route path="/inquiries" element={<InquiriesPage />} /> : null}
-            {inquiries ? <Route path="/inquiries/:inquiryId" element={<InquiriesPage />} /> : null}
-            {may.read_cases ? <Route path="/cases" element={<CasesPage />} /> : null}
-            {may.read_cases ? <Route path="/cases/:caseId" element={<CasePage />} /> : null}
-            {may.read_traces ? <Route path="/traces" element={<TracesPage />} /> : null}
-            {may.read_traces ? <Route path="/traces/:runId" element={<TracesPage />} /> : null}
-            <Route path="/system" element={<SystemPage />} />
-            <Route path="*" element={elsewhere} />
-          </Routes>
-        </main>
-      </div>
+      <ScrollToTop />
+      <Header user={user} sections={sections} />
+      <main className="main">
+        <Routes>
+          <Route path="/" element={elsewhere} />
+          {sections.includes('inbox') ? (
+            <>
+              <Route path="/inquiries" element={<InboxPage />} />
+              <Route path="/inquiries/new" element={<LogInquiryPage />} />
+              <Route path="/inquiries/:inquiryId" element={<InboxPage />} />
+            </>
+          ) : null}
+          {sections.includes('label') ? <Route path="/label" element={<LabelPage />} /> : null}
+          {sections.includes('cases') ? (
+            <>
+              <Route path="/cases" element={<CasesPage />} />
+              <Route path="/cases/:caseId" element={<CasePage />} />
+            </>
+          ) : null}
+          <Route path="*" element={elsewhere} />
+        </Routes>
+      </main>
     </SignedInProvider>
   );
 }

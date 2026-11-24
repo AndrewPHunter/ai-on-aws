@@ -25,13 +25,15 @@ stops them and keeps the inquiries, the cases and the label index. Add `-v` to d
 
 ## The screens
 
+The header shows only the sections the session may use, with the person's name and role in words in a menu that holds "Sign out", and a link that opens the lab explorer in a new tab. The start page is the first section the person has.
+
 | Screen | What it is for |
 |---|---|
-| Sign in | The only screen without a session: one action, which goes to the identity provider. |
-| Inquiries | Receive a message, from a prepared one or your own, and send it to an agent you may run. Only the inquiries you entered are listed. Read the reply, the label passages it cites, and any case it opened. Citations are numbered from 1, so a `[2]` in the reply can be found; each gives the drug, the section, the label's version and date, the quote, and a link to that version's page. When the agent answers from labels, one line says whether the label answered the question, and if not why. Send the same message again, to the same agent or another, and compare the runs by result, cases and time. Each inquiry shows who entered it, and each run who started it. A run's steps are not shown here. |
-| Traces | For someone who may read traces: every run by anyone, newest first, with when, who, the agent, the result, the outcome and the time taken. Opening one shows the message as it was received, the run's result as the Inquiries screen shows it (the outcome when it was not completed, any case actions, whether the label answered, the reply and the label passages it cites), and, beside them, what the agent did: every step in order, with how long it took and what was sent and returned. Model calls, tool calls, label searches, an intake agent's report check (made by its code, with its finding in words) and calls to another agent each have their own read-out; each label-search hit shows the name the model was shown it by, and says when it matched but was not shown; a call to another agent shows what was sent, why there is no answer if there is none, and the other agent's outcome, reply and steps, listed inside it. |
-| Cases | The review queue. A case shows its four parts as a form, every earlier version, and its audit trail; an agent's entry says whom the agent acted for ("Agent intake-strands, for Dana Desk"). Someone who may decide cases approves, rejects or asks for information, recorded under the name they signed in with; anyone else who may read cases sees that their account cannot decide them. |
-| System | Each part the desk depends on, and whether it answers right now. |
+| Sign in | The only screen without a session: "Sign in", which goes to the identity provider, and a link to the lab explorer. |
+| Inbox (`/inquiries`) | For a session that may run the orchestrator. The inquiries the person logged, newest first, each with one status in words: Working, Needs attention (its latest run failed or did not complete), Case opened with the case numbers, Follow-up added with the case number, or Answered. Questions asked on "Ask the label" are not listed. Opening one shows the message and its latest run: while it runs, the time since it started, counted each second; when it failed or did not complete, what happened and why; when it completed, the draft reply with "Copy reply", and the label passages it relies on, numbered from 1 so a `[2]` in the reply can be found, each with the drug, the section, the label's version and date, the quote and a link to that version's page. Beside them, each case the run acted on, with what happened to it and its status then, linked to the case for someone who may read cases; and how long the run took and when it finished. |
+| Log an inquiry (`/inquiries/new`) | Who the inquiry is from and what they said. Logging it hands it to the orchestrator and opens it in the inbox. |
+| Ask the label (`/label`) | For a session that may run the label expert. A question, sent to the label expert under the person's name; the answer shows on the same page, with whether the label answered, the reply and the passages it cites, as the inbox shows them. The person's earlier questions are listed beside it, newest first. |
+| Cases (`/cases`, `/cases/<id>`) | For a session that may read cases. The queue, filtered by status, with the count awaiting review beside "Cases" in the header. A case shows its number and status, when it was received, the date 15 calendar days on, who opened it, its four parts as a ruled form, and its history: each audit entry in words, with the version it recorded and the recorded detail behind a disclosure. Someone who may decide cases approves, rejects or asks for information, recorded under the name they signed in with, and sees the next two cases awaiting review; anyone else who may read cases sees that their account cannot decide them. |
 
 ## What each person sees
 
@@ -137,5 +139,8 @@ The case system's two scopes, `cases:read` and `cases:review`, are fixed in the 
 - **What a session may do is fixed at sign-in.** A change to a person's role takes effect when they sign in again.
 - **The cookie is not marked `Secure`,** because the lab is served over plain HTTP on this machine.
 - **A run that is in progress when the server stops is marked as failed** when it starts again. The agent may still have acted.
+- **The inbox reads each listed inquiry whose latest run has finished once more, in full,** because the list gives a run's state and case numbers but not its outcome or what it did to each case. Up to 100 requests open the inbox the first time.
+- **The desk shows only an inquiry's latest run,** and has no way to send an inquiry to an agent again.
+- **The draft reply cannot be edited on the desk.** It is copied out to be sent.
 - **The React app has no tests.** The repository check typechecks, lints and builds it.
 - **Label search and evaluation have no screen.**
