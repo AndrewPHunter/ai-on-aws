@@ -1,9 +1,8 @@
 // Everything the app asks the client's server for, as hooks.
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type {
-  AgentList,
   CaseRecord,
   CaseStatus,
   FoundCases,
@@ -11,15 +10,9 @@ import type {
   InquiryList,
   InquiryResponse,
   NewInquiryRequest,
-  NewRunRequest,
   ReviewDecisionRequest,
-  RunResponse,
-  SampleList,
   SessionView,
   SignOutResponse,
-  SystemStatus,
-  TraceList,
-  TraceResponse,
 } from '../../shared/api.ts';
 
 export class ApiFailure extends Error {
@@ -114,30 +107,6 @@ function anyRunning(inquiry: Inquiry | undefined): boolean {
   return inquiry?.runs.some((run) => run.state === 'running') ?? false;
 }
 
-export function useStatus() {
-  return useQuery({
-    queryKey: ['status'],
-    queryFn: () => request<SystemStatus>('/api/status'),
-    refetchInterval: 10_000,
-  });
-}
-
-export function useAgents() {
-  return useQuery({
-    queryKey: ['agents'],
-    queryFn: () => request<AgentList>('/api/agents'),
-    staleTime: 60_000,
-  });
-}
-
-export function useSamples() {
-  return useQuery({
-    queryKey: ['samples'],
-    queryFn: () => request<SampleList>('/api/samples'),
-    staleTime: Infinity,
-  });
-}
-
 export function useInquiries() {
   return useQuery({
     queryKey: ['inquiries'],
@@ -158,6 +127,19 @@ export function useInquiry(id: string | undefined) {
   });
 }
 
+// Each listed inquiry whose latest run has finished, read whole once: the list gives a run's state and case
+// numbers, but not its outcome or what it did to each case, which its status in the inbox needs. Keyed by
+// the latest run, since a finished run does not change.
+export function useFinishedInquiries(finished: readonly { inquiryId: string; latestRunId: string }[]) {
+  return useQueries({
+    queries: finished.map(({ inquiryId, latestRunId }) => ({
+      queryKey: ['finished-inquiry', inquiryId, latestRunId],
+      queryFn: async () => (await request<InquiryResponse>(`/api/inquiries/${encodeURIComponent(inquiryId)}`)).inquiry,
+      staleTime: Infinity,
+    })),
+  });
+}
+
 export function useSendInquiry() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -166,35 +148,6 @@ export function useSendInquiry() {
       queryClient.setQueryData(['inquiry', inquiry.id], inquiry);
       void queryClient.invalidateQueries({ queryKey: ['inquiries'] });
     },
-  });
-}
-
-export function useSendAgain(inquiryId: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (payload: NewRunRequest) =>
-      (await post<RunResponse>(`/api/inquiries/${encodeURIComponent(inquiryId)}/runs`, payload)).run,
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['inquiry', inquiryId] });
-      void queryClient.invalidateQueries({ queryKey: ['inquiries'] });
-    },
-  });
-}
-
-export function useTraces() {
-  return useQuery({
-    queryKey: ['traces'],
-    queryFn: () => request<TraceList>('/api/traces'),
-    refetchInterval: (query) => (query.state.data?.traces.some((trace) => trace.state === 'running') === true ? 1500 : 15_000),
-  });
-}
-
-export function useTrace(runId: string | undefined) {
-  return useQuery({
-    queryKey: ['trace', runId],
-    queryFn: async () => (await request<TraceResponse>(`/api/traces/${encodeURIComponent(runId ?? '')}`)).trace,
-    enabled: runId !== undefined,
-    refetchInterval: (query) => (query.state.data?.run.state === 'running' ? 1000 : false),
   });
 }
 

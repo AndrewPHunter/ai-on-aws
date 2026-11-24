@@ -2,7 +2,7 @@ import { Link, useSearchParams } from 'react-router';
 
 import type { CaseStatus } from '../../../shared/api.ts';
 import { failureText, useCases } from '../api.ts';
-import { Empty, Loading, Problem, StatusBadge } from '../components.tsx';
+import { CaseStatusTag, Empty, Loading, Problem } from '../components.tsx';
 import { STATUS_LABEL, firstLine, formatDateTime } from '../format.ts';
 
 const FILTERS: readonly CaseStatus[] = ['awaiting_review', 'incomplete', 'needs_information', 'approved', 'rejected'];
@@ -18,23 +18,24 @@ export function CasesPage() {
   const cases = useCases(status);
 
   return (
-    <div className="column column--wide">
-      <header className="pagehead">
+    <div className="page page--wide stack stack--large">
+      <div>
         <h1>Cases</h1>
-        <p className="pagehead__lead">
-          Adverse event cases opened by the agents. An agent can open a case and add to it; only a person can
-          approve or reject it.
+        <p className="lead">
+          Adverse event cases opened from inquiries. The intake agent opens a case and adds follow-ups; a safety
+          reviewer approves or rejects it.
         </p>
-      </header>
+      </div>
 
       <div className="filters" role="group" aria-label="Show cases that are">
-        <button type="button" aria-pressed={status === undefined} onClick={() => setParams({})}>
+        <button type="button" className="filter" aria-pressed={status === undefined} onClick={() => setParams({})}>
           All
         </button>
         {FILTERS.map((filter) => (
           <button
             key={filter}
             type="button"
+            className="filter"
             aria-pressed={status === filter}
             onClick={() => setParams({ status: filter })}
           >
@@ -44,18 +45,19 @@ export function CasesPage() {
       </div>
 
       {cases.isPending ? <Loading what="cases" /> : null}
-      {cases.isError ? <Problem>{failureText(cases.error)}</Problem> : null}
+      {cases.isError ? (
+        <Problem>
+          <p>{failureText(cases.error)}</p>
+        </Problem>
+      ) : null}
 
       {cases.data === undefined ? null : cases.data.cases.length === 0 ? (
         <Empty title={status === undefined ? 'No cases yet' : `No cases are ${STATUS_LABEL[status].toLowerCase()}`}>
-          <p>
-            A case appears here when an agent finds an adverse event in an inquiry.{' '}
-            <Link to="/inquiries">Send an inquiry</Link> that reports one.
-          </p>
+          <p>A case appears here when an inquiry reports an adverse event.</p>
         </Empty>
       ) : (
-        <>
-          <div className="tablewrap">
+        <div className="stack">
+          <div className="tablebox">
             <table className="table">
               <thead>
                 <tr>
@@ -70,15 +72,17 @@ export function CasesPage() {
                 {cases.data.cases.map((found) => (
                   <tr key={found.case_id}>
                     <th scope="row">
-                      <Link to={`/cases/${found.case_id}`} className="caseid">
+                      <Link to={`/cases/${found.case_id}`} className="caseno">
                         {found.case_id}
                       </Link>
                     </th>
                     <td>
-                      <StatusBadge status={found.status} />
+                      <CaseStatusTag status={found.status} />
                     </td>
-                    <td>{found.elements.suspect_drug ?? <span className="absent">Not given</span>}</td>
-                    <td>
+                    <td className="writing-cell">
+                      {found.elements.suspect_drug ?? <span className="absent">Not given</span>}
+                    </td>
+                    <td className="writing-cell">
                       {found.elements.event === undefined ? (
                         <span className="absent">Not given</span>
                       ) : (
@@ -91,10 +95,8 @@ export function CasesPage() {
               </tbody>
             </table>
           </div>
-          {cases.data.truncated ? (
-            <p className="footnote">Showing the 50 newest. Older cases are not listed here.</p>
-          ) : null}
-        </>
+          {cases.data.truncated ? <p className="footnote">Showing the 50 newest. Older cases are not listed here.</p> : null}
+        </div>
       )}
     </div>
   );
