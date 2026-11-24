@@ -79,7 +79,7 @@ export function LogInquiryPage() {
         <section className="card side__card">
           <h2 className="side__title">When you log it</h2>
           <p>
-            It joins your inbox and is handled straight away. You get a draft reply with the label passages it relies
+            It joins the desk’s inbox and is handled straight away. You get a draft reply with the label passages it relies
             on, and an adverse event case is opened if the message reports a side effect.
           </p>
         </section>

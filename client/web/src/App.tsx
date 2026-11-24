@@ -4,7 +4,8 @@ import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router';
 
 import type { SessionMay, SessionUser } from '../../shared/api.ts';
 import { failureText, useCases, useSession, useSignOut } from './api.ts';
-import { Empty, Loading, Problem } from './components.tsx';
+import { Empty, Loading, Mark, Problem } from './components.tsx';
+import { ContactPage } from './contact/ContactPage.tsx';
 import { roleWords } from './format.ts';
 import { INBOX_AGENT, LABEL_AGENT } from './inbox.ts';
 import { LabApp } from './lab/LabApp.tsx';
@@ -15,27 +16,20 @@ import { LabelPage } from './pages/LabelPage.tsx';
 import { LogInquiryPage } from './pages/LogInquiryPage.tsx';
 import { SignedInProvider } from './session.tsx';
 
-// Every path under /lab is the lab explorer, which asks nothing of the desk, not even who is signed in.
-// Everything else is the desk.
+// Every path under /lab is the lab explorer, and /contact is the contact form for clinicians; neither asks
+// anything of the desk, not even who is signed in. Everything else is the desk.
 export function App() {
   const { pathname } = useLocation();
   if (pathname === '/lab' || pathname.startsWith('/lab/')) {
     return <LabApp />;
   }
+  if (pathname === '/contact' || pathname === '/contact/') {
+    return <ContactPage />;
+  }
   return <Desk />;
 }
 
-function Mark() {
-  return (
-    <span className="mark">
-      <svg aria-hidden="true" width="26" height="26" viewBox="0 0 26 26" fill="none" strokeWidth="2">
-        <rect x="2" y="2" width="22" height="22" stroke="currentColor" />
-        <path d="M13 7v12M7 13h12" className="mark__cross" />
-      </svg>
-      <span className="mark__name">Medical Information Desk</span>
-    </span>
-  );
-}
+const DESK_NAME = 'Medical Information Desk';
 
 // The sections this session may use, in the order the header shows them.
 type Section = 'inbox' | 'label' | 'cases';
@@ -140,7 +134,7 @@ function LabLink() {
 function Header({ user, sections }: { user: SessionUser; sections: readonly Section[] }) {
   return (
     <header className="topbar">
-      <Mark />
+      <Mark name={DESK_NAME} />
       <nav className="nav" aria-label="Sections">
         {sections.includes('inbox') ? (
           <NavLink to="/inquiries" className="nav__link">
@@ -185,13 +179,16 @@ function SignIn() {
   return (
     <main className="signin">
       <div className="signin__card">
-        <Mark />
+        <Mark name={DESK_NAME} />
         <p>Sign in with your desk account to answer inquiries and review adverse event cases.</p>
         <a className="button button--primary button--wide" href="/auth/login">
           Sign in
         </a>
         <a className="signin__lab" href="/lab">
           Open lab explorer
+        </a>
+        <a className="signin__lab" href="/contact">
+          Contact form for clinicians
         </a>
       </div>
     </main>
