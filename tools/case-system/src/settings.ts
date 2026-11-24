@@ -10,6 +10,8 @@ export type CaseSystemSettings = {
   // scopes of its own tools or routes. A token needs only to be valid now: a call here is short.
   agentServerAuth: AccessTokenSettings;
   reviewServerAuth: AccessTokenSettings;
+  // Where spans are sent, over OTLP/HTTP. null: telemetry is off.
+  telemetryEndpoint: string | null;
 };
 
 function required(env: Readonly<Record<string, string | undefined>>, name: string, meaning: string): string {
@@ -31,6 +33,25 @@ function clients(env: Readonly<Record<string, string | undefined>>, name: string
   return listed;
 }
 
+// Optional. Absent or empty is off; anything else must be an http or https URL. The error names the setting and
+// never repeats its value.
+function telemetryEndpoint(env: Readonly<Record<string, string | undefined>>): string | null {
+  const value = env['TELEMETRY_ENDPOINT']?.trim();
+  if (value === undefined || value === '') {
+    return null;
+  }
+  let protocol: string;
+  try {
+    protocol = new URL(value).protocol;
+  } catch {
+    protocol = '';
+  }
+  if (protocol !== 'http:' && protocol !== 'https:') {
+    throw new Error('TELEMETRY_ENDPOINT is not an http or https URL. It is where spans are sent, or empty for none.');
+  }
+  return value;
+}
+
 export function settingsFrom(env: Readonly<Record<string, string | undefined>>): CaseSystemSettings {
   const agentClients = clients(env, 'AUTH_AGENT_SERVER_CLIENTS', "agents' server");
   const reviewClients = clients(env, 'AUTH_REVIEW_SERVER_CLIENTS', 'review server');
@@ -45,5 +66,6 @@ export function settingsFrom(env: Readonly<Record<string, string | undefined>>):
     databasePath: required(env, 'CASE_DB_PATH', 'the path of the SQLite file that holds the cases'),
     agentServerAuth: { ...shared, allowedClients: agentClients, requiredScopes: AGENT_SERVER_SCOPES },
     reviewServerAuth: { ...shared, allowedClients: reviewClients, requiredScopes: REVIEW_SERVER_SCOPES },
+    telemetryEndpoint: telemetryEndpoint(env),
   };
 }

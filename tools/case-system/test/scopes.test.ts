@@ -14,6 +14,7 @@ import { ROUTE_SCOPES, TOOL_SCOPES, routeRefusal } from '../src/scopes.ts';
 import type { Route, ToolName } from '../src/scopes.ts';
 import { CaseStore } from '../src/store.ts';
 import type { CallContext } from '../src/store.ts';
+import { telemetryOff } from './telemetry-rig.ts';
 
 const RIVERA = 'Dr A. Rivera, a.rivera@example.org';
 const COMPLETE = { patient: 'JD, 54, male', reporter: RIVERA, suspect_drug: 'examplamab', event: 'muscle pain' };
@@ -51,7 +52,7 @@ test('case-system 9. a tool or a route is reached only with a token that carries
 
     const store = new CaseStore(':memory:', () => new Date('2026-01-01T09:00:00.000Z'));
     store.createCase(message('m1'), COMPLETE);
-    const server = buildMcpServer(store, message('m2'), scopes);
+    const server = buildMcpServer(store, message('m2'), scopes, { telemetry: telemetryOff(), parent: null, agentId: 'intake-agent' });
     const client = new Client({ name: 'probe', version: '1' });
     const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
     await server.connect(serverSide);
