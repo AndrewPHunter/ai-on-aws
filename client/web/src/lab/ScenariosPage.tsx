@@ -15,7 +15,8 @@ export function ScenariosPage() {
           <h1>Scenarios</h1>
           <p className="lab-lede">
             Prepared messages, each written to show one behaviour. Each says what sending it should show. Running
-            one sends it as the lab explorer, not as a person, and opens the run.
+            one sends it as the lab explorer, not as a person, and opens the run. A scenario that reports a side
+            effect opens a real case, which the desk's reviewers will see.
           </p>
         </div>
       </div>

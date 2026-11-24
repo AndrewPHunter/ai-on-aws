@@ -1,6 +1,7 @@
 {
   "realm": "lab",
-  "displayName": "AI on AWS lab",
+  "displayName": "Medical Information Desk",
+  "loginTheme": "medical-information-desk",
   "enabled": true,
   "sslRequired": "external",
   "registrationAllowed": false,

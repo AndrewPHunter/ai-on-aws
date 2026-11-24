@@ -87,6 +87,22 @@ knowledge/gate.sh ai-on-aws
 
 The stack gate checks sign-in, permissions, and agent calls across the application. It submits four synthetic inquiries and may create three test cases. The identity gate checks the provider's token behavior; the knowledge gate checks the built index and retrieval tools. Each emits a JSON report and exits successfully only when its checks pass. Details are in the [identity guide](platform/identity/README.md) and [knowledge guide](knowledge/README.md).
 
+### Stop the lab or clear its data
+
+```bash
+docker compose down
+```
+
+This stops the services and keeps the inquiries, the cases, and the label index. Adding `-v` deletes all three, and the index then has to be built again with `knowledge/index.sh`.
+
+To empty the inbox and the review queue but keep the label index, run:
+
+```bash
+./reset-demo-data.sh
+```
+
+It deletes the client's inquiries and the case system's cases, starts those two services again with empty stores, and waits until both are healthy. Every other service, and the label index, is left as it is. It asks before deleting; `--yes` skips the question. It acts on the Compose project `ai-on-aws`, or on the one named by `COMPOSE_PROJECT_NAME`, and works from any directory.
+
 ### Check the code
 
 This check needs Docker but no GPU or running stack:

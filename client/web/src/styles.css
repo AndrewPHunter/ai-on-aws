@@ -749,6 +749,46 @@ h2 {
   color: var(--ink-2);
 }
 
+/* The search at the top of the list. Its count line is a live region, present whenever the search is. */
+.inbox__search {
+  padding: 0 24px 16px;
+}
+
+.search {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.field .search input {
+  flex: 1 1 180px;
+  width: auto;
+  min-width: 0;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.search input::placeholder {
+  color: var(--ink-2);
+  opacity: 1;
+}
+
+/* The one way to clear the field is the "Clear search" button, so the browser's own is hidden. */
+.search input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.search .button {
+  min-height: 48px;
+}
+
+.inbox__found {
+  margin-top: 12px;
+  font-size: 15px;
+  color: var(--ink-2);
+}
+
 .inbox__item {
   display: flex;
   flex-direction: column;
@@ -856,6 +896,23 @@ h2 {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+/* "Edit" (or "Done") and "Copy reply" beside the reply's heading. */
+.sectionhead__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.reply__field textarea {
+  min-height: 220px;
+}
+
+.reply__unsaved {
+  font-size: 15px;
+  color: var(--ink-2);
 }
 
 .passages {
@@ -1395,6 +1452,7 @@ h2 {
 
   .inbox__pad,
   .inbox__none,
+  .inbox__search,
   .inbox > .loading {
     padding-left: 16px;
     padding-right: 16px;

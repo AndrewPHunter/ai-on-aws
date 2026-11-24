@@ -44,6 +44,8 @@ services:
       - "127.0.0.1:8090:8080"
     volumes:
       - ./realm:/opt/keycloak/data/import:ro
+      # The realm's login theme (loginTheme in the realm file): the stock theme in the desk's look, styles only.
+      - ./themes/medical-information-desk:/opt/keycloak/themes/medical-information-desk:ro
     # No read_only: start-dev rebuilds Keycloak's server under /opt/keycloak/lib/quarkus at every start, and
     # that directory must start with the image's own files, so neither a read-only root nor a tmpfs over it
     # works (see platform/identity/README.md, "Hardening").
