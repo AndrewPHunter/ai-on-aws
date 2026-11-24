@@ -55,7 +55,7 @@ services:
       <<: *auth
       AGENT_ID: intake-handwritten
       AUTH_ALLOWED_AUDIENCE: intake-handwritten
-      AUTH_ALLOWED_CLIENTS: desk
+      AUTH_ALLOWED_CLIENTS: desk,lab-explorer
       AUTH_REQUIRED_SCOPES: agents:intake
       EXCHANGE_CLIENT_SECRET: ${IDENTITY_INTAKE_HANDWRITTEN_CLIENT_SECRET:?run platform/identity/setup.sh}
       # The case system's MCP endpoint, by its service name on the shared network.
@@ -74,7 +74,7 @@ services:
       AGENT_ID: intake-strands
       AUTH_ALLOWED_AUDIENCE: intake-strands
       # The orchestrator calls it as its own client, to screen every message it receives.
-      AUTH_ALLOWED_CLIENTS: desk,orchestrator
+      AUTH_ALLOWED_CLIENTS: desk,orchestrator,lab-explorer
       AUTH_REQUIRED_SCOPES: agents:intake
       EXCHANGE_CLIENT_SECRET: ${IDENTITY_INTAKE_STRANDS_CLIENT_SECRET:?run platform/identity/setup.sh}
       CASE_MCP_URL: http://case-system:8000/mcp
@@ -96,7 +96,7 @@ services:
       AUTH_ALLOWED_AUDIENCE: expert
       # The evaluation harness and the orchestrator call the label expert as their own clients. The orchestrator
       # asks for agents:expert:delegated, which only its client may ask for.
-      AUTH_ALLOWED_CLIENTS: desk,evaluation,orchestrator
+      AUTH_ALLOWED_CLIENTS: desk,evaluation,orchestrator,lab-explorer
       AUTH_REQUIRED_SCOPES: agents:expert,agents:expert:delegated
       EXCHANGE_CLIENT_SECRET: ${IDENTITY_EXPERT_CLIENT_SECRET:?run platform/identity/setup.sh}
       # The retrieval service's MCP endpoint, by its service name on the shared network.
@@ -116,7 +116,7 @@ services:
       <<: *auth
       AGENT_ID: orchestrator
       AUTH_ALLOWED_AUDIENCE: orchestrator
-      AUTH_ALLOWED_CLIENTS: desk
+      AUTH_ALLOWED_CLIENTS: desk,contact-form,lab-explorer
       AUTH_REQUIRED_SCOPES: agents:orchestrator
       EXCHANGE_CLIENT_SECRET: ${IDENTITY_ORCHESTRATOR_CLIENT_SECRET:?run platform/identity/setup.sh}
       # The two agents it calls, by their service names on the shared network.

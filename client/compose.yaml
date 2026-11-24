@@ -47,8 +47,8 @@ services:
       OIDC_DISCOVERY_URL: http://identity:8080/realms/lab/.well-known/openid-configuration
       OIDC_ISSUER: http://localhost:8090/realms/lab
       OIDC_CLIENT_ID: desk
-      # The one value this container takes from platform/identity/.env, which the root compose.yaml reads
-      # for this file only. The users' and the administrator's passwords are not passed in.
+      # One of the three values this container takes from platform/identity/.env, which the root compose.yaml
+      # reads for this file only. The users' and the administrator's passwords are not passed in.
       OIDC_CLIENT_SECRET: ${IDENTITY_DESK_CLIENT_SECRET:?run platform/identity/setup.sh}
       OIDC_REDIRECT_URI: http://localhost:3000/auth/callback
       OIDC_POST_LOGOUT_REDIRECT_URI: http://localhost:3000/
@@ -60,6 +60,11 @@ services:
       # session cookie and the check on a POST's Origin are all on localhost.
       APP_ORIGIN: http://localhost:3000
       ROLES_CLAIM: roles
+      # The contact form and the lab explorer call agents with nobody signed in, each getting its token by
+      # client credentials as its own machine client (contact-form, lab-explorer) with its own secret. The other
+      # two values this container takes from platform/identity/.env.
+      CONTACT_FORM_CLIENT_SECRET: ${IDENTITY_CONTACT_FORM_CLIENT_SECRET:?run platform/identity/setup.sh}
+      LAB_EXPLORER_CLIENT_SECRET: ${IDENTITY_LAB_EXPLORER_CLIENT_SECRET:?run platform/identity/setup.sh}
     ports:
       # Published on this machine only.
       - "127.0.0.1:3000:3000"

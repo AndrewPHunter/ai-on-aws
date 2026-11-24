@@ -17,7 +17,8 @@
 //      their tool servers;
 //   5. asks the client for traces: both trace routes are 403 to dana.desk, morgan.medinfo and riley.reviewer;
 //      to avery.auditor the list holds the runs made in step 4 and a run's trace holds steps;
-//   6. asks the client, as morgan.medinfo, for the inquiry dana.desk entered;
+//   6. asks the client, as morgan.medinfo and riley.reviewer, for the inquiry dana.desk entered, and to start a run
+//      of the label expert on it: both read it, morgan.medinfo's run is accepted, riley.reviewer's refused;
 //   7. gets tokens of its own from the provider, as the identity gate does (../src/provider.ts), and presents
 //      each to a service, which must accept it or refuse it for the stated reason;
 //   8. signs each person out.
@@ -25,7 +26,8 @@
 // It changes the stack it is run against: it enters four inquiries, all from the sender "Dr Gate,
 // gate@example.org", and up to three cases may be opened from them: one by each intake agent from its inquiry,
 // and one by the intake agent on Strands from the orchestrator's (each an adverse event about the invented
-// medicine "examplamab"). Run it on a stack whose data may hold them.
+// medicine "examplamab"). It also starts a run of the label expert, which writes nothing, on the first of those
+// inquiries, as morgan.medinfo, and does not wait for it. Run it on a stack whose data may hold them.
 //
 // A run may end at the model on a stack with no model server, or the model may open no case. The statements
 // that need what such a run did not reach are then neither held nor failed: they go in the report's
@@ -758,36 +760,47 @@ async function traceStatements(sessions: Sessions, made: readonly Made[]): Promi
   }
 }
 
-// ---------- an inquiry belongs to who entered it ----------
+// ---------- who may read an inquiry and start a run on it ----------
 
-/** The answer's status and body, with `id` in the body replaced, so two answers about different ids compare. */
-function answerAbout(reply: Reply, id: string): { status: number; body: string } {
-  return { status: reply.status, body: reply.text.split(id).join('<id>') };
-}
-
+/**
+ * An inquiry and its runs are read by any session that may run an agent or read cases, and a run is started on any
+ * inquiry by a session that may run that agent. morgan.medinfo (who may run agents) and riley.reviewer (who may read
+ * cases) each read the inquiry dana.desk entered; morgan.medinfo starts a run of the label expert on it, and
+ * riley.reviewer, who may run no agent, is refused as for any call it may not make. The label expert writes nothing,
+ * so the run started opens no case; the gate does not wait for it.
+ */
 async function ownershipStatements(sessions: Sessions, inquiryId: string | undefined): Promise<void> {
-  const unknown = randomUUID();
+  const noInquiry = "dana.desk's inquiry was not accepted, so there was none to ask for";
   // The inquiry carries its runs, so reading it covers them.
-  const asks: [string, (session: string, id: string) => Promise<Reply>][] = [
-    ['reading', (session, id) => readInquiry(HTTP, ADDRESSES, session, id)],
-    // An agent morgan may run, so that a refusal can only be about whose inquiry it is.
-    ['starting a run on', (session, id) => sendAgain(HTTP, ADDRESSES, session, id, INTAKE_AGENTS[0])],
-  ];
-  for (const [doing, send] of asks) {
-    const what = `morgan.medinfo: ${doing} the inquiry dana.desk entered gets the same status and body (the id aside) as an inquiry id that does not exist`;
+  for (const who of ['morgan.medinfo', 'riley.reviewer']) {
+    const what = `${who}: reading the inquiry dana.desk entered is 200 and gives that inquiry`;
     if (inquiryId === undefined) {
-      statement(false, what, "dana.desk's inquiry was not accepted, so there was none to ask for");
+      statement(false, what, noInquiry);
       continue;
     }
-    const session = sessionFor(sessions, 'morgan.medinfo', what);
+    const session = sessionFor(sessions, who, what);
     if (session === undefined) continue;
-    const theirs = answerAbout(await send(session, inquiryId), inquiryId);
-    const none = answerAbout(await send(session, unknown), unknown);
-    statement(
-      theirs.status === none.status && theirs.body === none.body,
-      what,
-      `status ${theirs.status} against ${none.status}, bodies ${theirs.body === none.body ? 'the same' : 'differ'}`,
-    );
+    const read = await readInquiry(HTTP, ADDRESSES, session, inquiryId);
+    const inquiry = read.body.inquiry as { id?: unknown } | undefined;
+    statement(read.status === 200 && inquiry?.id === inquiryId, what, `status ${read.status}, ${inquiry?.id === inquiryId ? 'that inquiry' : 'not that inquiry'}`);
+  }
+
+  const started = `morgan.medinfo: starting a run of ${EXPERT} on the inquiry dana.desk entered is 202`;
+  if (inquiryId === undefined) {
+    statement(false, started, noInquiry);
+  } else {
+    const session = sessionFor(sessions, 'morgan.medinfo', started);
+    if (session !== undefined) {
+      const answer = await sendAgain(HTTP, ADDRESSES, session, inquiryId, EXPERT);
+      statement(answer.status === 202, started, `status ${answer.status}, ${String(answer.body.error ?? '')}`);
+    }
+  }
+
+  const refused = `starting a run of ${EXPERT} on the inquiry dana.desk entered`;
+  if (inquiryId === undefined) {
+    statement(false, `riley.reviewer: ${refused} is 403 not_allowed`, noInquiry);
+  } else {
+    await refusedStatement(sessions, 'riley.reviewer', refused, (session) => sendAgain(HTTP, ADDRESSES, session, inquiryId, EXPERT));
   }
 }
 

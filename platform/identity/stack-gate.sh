@@ -6,13 +6,14 @@
 # and a question to the label expert, through each agent's exchange to its tool server and the end of the run;
 # an inquiry to the orchestrator, through its delegations to the intake agent on Strands and the label expert
 # and on to their tool servers; that a run read back holds no steps and its trace is read by the auditor alone;
-# an inquiry kept from anyone but who entered it; tokens the gate gets itself,
+# who may read an inquiry another person entered and start a run on it; tokens the gate gets itself,
 # presented to each service and agent; and sign-out. Then, on the Docker host, that the client wrote no
 # revocation failure while the gate ran. See platform/identity/README.md.
 #
 # It changes the stack it is run against: it enters four inquiries, all from the sender "Dr Gate,
 # gate@example.org", and up to three cases may be opened from them: one by each intake agent from its own
-# inquiry, and one by the intake agent on Strands from the orchestrator's.
+# inquiry, and one by the intake agent on Strands from the orchestrator's. It also starts a run of the label
+# expert, which writes nothing, on the first of those inquiries, and does not wait for it.
 #
 #   platform/identity/stack-gate.sh <compose-project>
 #

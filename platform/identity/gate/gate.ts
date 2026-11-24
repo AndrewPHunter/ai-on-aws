@@ -20,12 +20,13 @@
 //   G5   A refresh for a scope the role does not grant is answered 200 with the scope and its audiences absent.
 //   G11, G12  Each machine obtains a token by client credentials for its scope, with its fixed sub, its name and
 //        its one role; each is refused the scopes its client may not ask for: a tool server's, the one only
-//        the orchestrator may ask for, and the one only desk may ask for (traces:read).
+//        the orchestrator may ask for, another agent's, the case system's that only desk may ask for, and the one
+//        only desk may ask for (traces:read).
 //   G7, G8, G11  Each agent exchanges the token it is called with for a token for the one service it calls, holding
 //        every scope it asked for and no other custom scope.
-//   G15  The orchestrator exchanges each caller's token for it for a token for each sub-agent it calls, with
-//        that sub-agent's scope and no other custom scope: one audience, the orchestrator as client, the person, the
-//        same expiry.
+//   G15  The orchestrator exchanges each caller's token for it (a person's from a refresh, or a machine's from client
+//        credentials) for a token for each sub-agent it calls, with that sub-agent's scope and no other custom scope:
+//        one audience, the orchestrator as client, the caller's subject, the same expiry.
 //   G16  Each sub-agent exchanges the orchestrator's token for it for a token for its own tool server, as it does
 //        a token it is called with directly: the second exchange of the chain.
 //   G9   An agent (the orchestrator among them) is refused a person's token it is not an audience of.
@@ -34,7 +35,7 @@
 //        plain method, and for the implicit flow (response_type=token).
 // Last, the answers the throwaway Keycloak runs did not observe on this path, so that a wrong expectation there
 // leaves every statement above checked:
-//   G10  The desk client, both audience-only clients and both machines cannot exchange a token.
+//   G10  The desk client, both audience-only clients and every machine cannot exchange a token.
 //   G9   An agent is refused a scope its client may not ask for: the other kind of agent's scopes, a scope of its
 //        own tool server that its client may not ask for (an intake agent asking for cases:lookup), a scope only
 //        the orchestrator may ask for, and, for the orchestrator, a tool server's scope and the label expert's
@@ -115,7 +116,7 @@ type OrchestratorConfig = {
   secretVariable: string
   /** The scope of a caller's token for the orchestrator. */
   scope: string
-  /** The people whose token for the orchestrator it exchanges. */
+  /** The callers whose token for the orchestrator it exchanges: a username in `users`, or a clientId in `machines` whose scope is `scope`. */
   callers: string[]
   delegations: DelegationConfig[]
   /** Scopes its client may not ask for. */
@@ -231,7 +232,9 @@ function loadConfig(path: string): GateConfig {
     if (!config.agents.some((agent) => agent.clientId === delegation.audience)) throw new UsageError(`config: orchestrator.delegations names ${delegation.audience}, which is not in agents`)
   }
   for (const caller of orchestrator.callers) {
-    if (!config.users.some((user) => user.username === caller)) throw new UsageError(`config: orchestrator.callers names ${caller}, who is not in users`)
+    const person = config.users.some((user) => user.username === caller)
+    const machine = config.machines.some((entry) => entry.clientId === caller && entry.scope === orchestrator.scope)
+    if (!person && !machine) throw new UsageError(`config: orchestrator.callers names ${caller}, who is neither in users nor a machine whose scope is ${orchestrator.scope}`)
   }
   if (config.users.length === 0) throw new UsageError('config: users is empty')
   return config
@@ -602,13 +605,15 @@ async function main(): Promise<number> {
     // ---------- G15, G16: the chain, caller to orchestrator to sub-agent to tool server ----------
     const orchestrator = config.orchestrator
     const orchestratorSecret = clientSecret(secrets, orchestrator.clientId)
+    // A caller's token for the orchestrator: a machine's from client credentials (G11), or a person's from a refresh (G3).
+    const callerToken = (caller: string): { token: string; claims: Claims } => machineTokens.get(caller) ?? subjectOf(caller, orchestrator.scope)
     const agentNamed = (clientId: string): AgentConfig => {
       const found = config.agents.find((agent) => agent.clientId === clientId)
       if (found === undefined) throw new UsageError(`config: ${clientId} is not in agents`)
       return found
     }
     for (const caller of orchestrator.callers) {
-      const subject: Subject = { name: `${caller}'s ${orchestrator.scope} token`, ...subjectOf(caller, orchestrator.scope), audiences: audiencesOfScope(orchestrator.scope) }
+      const subject: Subject = { name: `${caller}'s ${orchestrator.scope} token`, ...callerToken(caller), audiences: audiencesOfScope(orchestrator.scope) }
       for (const delegation of orchestrator.delegations) {
         // G15: the first exchange, by the orchestrator, for the sub-agent.
         const statement = `G15 ${orchestrator.clientId} exchanges ${subject.name} for audience=${delegation.audience} scope=${delegation.scope}: aud ${delegation.audience} alone, client_id and azp ${orchestrator.clientId}, the subject's sub, preferred_username, name, roles and exp, the scope asked for and no other custom scope, no refresh token`
@@ -772,7 +777,7 @@ async function main(): Promise<number> {
     const orchestratorCaller = orchestrator.callers[0]
     if (orchestratorCaller === undefined) throw new UsageError('config: orchestrator.callers is empty')
     for (const forbiddenScope of orchestrator.forbiddenScopes) {
-      const own = subjectOf(orchestratorCaller, orchestrator.scope)
+      const own = callerToken(orchestratorCaller)
       // A scope that names no audience (traces:read) is asked for with the first sub-agent's audience.
       const audience = audiencesOfScope(forbiddenScope)[0] ?? firstDelegation.audience
       const answer = await exchange(http, discovery, orchestrator.clientId, orchestratorSecret, own.token, audience, [forbiddenScope])
