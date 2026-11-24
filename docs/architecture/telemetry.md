@@ -9,6 +9,7 @@ Two parts make it up: [`shared/telemetry.ts`](../../shared/telemetry.ts), the mo
 | Piece | Service name | Spans | Described in |
 |---|---|---|---|
 | Case system | `case-system` | `case.tool` (server) for each tool call, a child of the request's `traceparent`; `case.commit` (internal) around each create or follow-up, saying `created`, `replayed` or `conflict`, ended before the answer is sent; `case.review` (server) for each review decision | [its README](../../tools/case-system/README.md#telemetry) |
+| The hand-written intake agent | `intake-handwritten` | `agent.run` (server), `model.call` and `tool.call` (client), with `traceparent` on each request to the case system | [Intake agent, hand-written loop](intake-agent-handwritten.md#what-the-agent-exports) |
 
 ## Terms
 
@@ -88,6 +89,7 @@ The module's items are 8 to 11 in [`shared/README.md`](../../shared/README.md); 
 
 ## Not present
 
+- No spans from the intake agent on Strands, the label expert or the orchestrator.
 - No sampling: every span is kept, within the store's limits.
 - No span links, events, `tracestate` or baggage. Only `traceparent` crosses a boundary.
 - No content lane: no prompt, completion, argument or result is exported anywhere.

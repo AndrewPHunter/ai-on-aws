@@ -31,8 +31,10 @@ export type Completion = {
 // server said the fault was momentary or its own (408, 429, 5xx). A request the server rejected,
 // or an answer in the wrong form, would be the same again. A request that ran out of time is not
 // worth it either: it has already had all the time one request is allowed. This client never
-// sends twice itself; that is the caller's to do.
-export type ChatResult = { ok: true; completion: Completion } | { ok: false; reason: string; retryable: boolean };
+// sends twice itself; that is the caller's to do. `lost` says that no answer came back: the request ran out of
+// time or the connection failed, so whether the server worked on it is not known. A status or an answer in the
+// wrong form is an answer.
+export type ChatResult = { ok: true; completion: Completion } | { ok: false; reason: string; retryable: boolean; lost: boolean };
 
 // `thinking` asks the model to reason before it answers, where the model has such a mode.
 // Reasoning counts against the output allowance, so a turn can spend all of it and answer nothing.
@@ -70,7 +72,7 @@ export function createChatModel(settings: ModelSettings): ChatModel {
   return {
     id: settings.modelId,
     async complete(messages, tools, { timeoutMs, thinking }) {
-      let status: number;
+      let status: number | undefined;
       let body: unknown;
       try {
         const response = await fetch(`${settings.baseUrl}/chat/completions`, {
@@ -91,20 +93,22 @@ export function createChatModel(settings: ModelSettings): ChatModel {
         status = response.status;
         body = status === 200 ? await response.json() : null;
       } catch (error) {
+        // An answer whose status was read and whose body then failed arrived: it is not lost.
+        const lost = status === undefined;
         return {
           ok: false,
           ...(isTimeout(error)
-            ? { reason: modelDidNotAnswerWithin(timeoutMs), retryable: false }
-            : { reason: MODEL_UNREACHABLE, retryable: true }),
+            ? { reason: modelDidNotAnswerWithin(timeoutMs), retryable: false, lost }
+            : { reason: MODEL_UNREACHABLE, retryable: true, lost }),
         };
       }
       if (status !== 200) {
-        return { ok: false, reason: modelAnsweredWithStatus(status), retryable: status === 408 || status === 429 || status >= 500 };
+        return { ok: false, reason: modelAnsweredWithStatus(status), retryable: status === 408 || status === 429 || status >= 500, lost: false };
       }
       const parsed = completionSchema.safeParse(body);
       const choice = parsed.success ? parsed.data.choices[0] : undefined;
       if (!parsed.success || choice === undefined) {
-        return { ok: false, reason: 'The model’s answer was not in the expected form.', retryable: false };
+        return { ok: false, reason: 'The model’s answer was not in the expected form.', retryable: false, lost: false };
       }
       return {
         ok: true,

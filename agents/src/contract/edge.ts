@@ -10,8 +10,8 @@
 //                      characters, a new UUID when there is none, 400 otherwise. Then the body, read here, up to
 //                      1,000,000 bytes (400 beyond, as contract/server.ts answers). Then the request goes to the
 //                      SDK app with the whole body, a content length, and only these headers: content type,
-//                      accept, Authorization, any X-Amzn-Bedrock-AgentCore-Runtime-Custom- header, the session
-//                      id, and a request id made here. The SDK app's answer comes back unchanged.
+//                      accept, Authorization, traceparent, any X-Amzn-Bedrock-AgentCore-Runtime-Custom- header,
+//                      the session id, and a request id made here. The SDK app's answer comes back unchanged.
 //   GET /ping          passed to the SDK app.
 //   anything else      404, or 405 for another method on /invocations, as contract/server.ts answers.
 //
@@ -67,10 +67,11 @@ async function readBody(request: IncomingMessage): Promise<Buffer | undefined> {
   return size > MAX_BODY_BYTES ? undefined : Buffer.concat(chunks);
 }
 
-// Only the headers AgentCore Runtime would let through, and the ones it sets.
+// Only the headers AgentCore Runtime would let through, the ones it sets, and traceparent, which carries the
+// caller's trace context to the server behind the edge.
 export function forwardedHeaders(incoming: IncomingHttpHeaders, sessionId: string, requestId: string): OutgoingHttpHeaders {
   const out: OutgoingHttpHeaders = {};
-  for (const name of ['content-type', 'accept', 'authorization']) {
+  for (const name of ['content-type', 'accept', 'authorization', 'traceparent']) {
     const value = single(incoming[name]);
     if (value !== undefined) {
       out[name] = value;

@@ -1,6 +1,7 @@
-// What the agents' tests share: a caller and a message as values, a clock the test moves, and the two stand-ins
-// the Strands agents need, each on loopback on a port the system picks and each labelled below. Nothing here
-// mints a token or imports another piece's code.
+// What the agents' tests share: a caller and a message as values, a clock the test moves, telemetry handles (one
+// off, and one on with an exporter in memory), and the two stand-ins the Strands agents and intake 17 need, each on
+// loopback on a port the system picks and each labelled below. Nothing here mints a token or imports another
+// piece's test code.
 
 import { createServer } from 'node:http';
 import type { IncomingHttpHeaders, IncomingMessage, Server, ServerResponse } from 'node:http';
@@ -9,10 +10,15 @@ import type { TestContext } from 'node:test';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { ExportResultCode } from '@opentelemetry/core';
+import type { ExportResult } from '@opentelemetry/core';
+import type { ReadableSpan } from '@opentelemetry/sdk-trace-base';
 import type { ZodRawShape } from 'zod';
 
 import type { Caller } from '../../shared/access-token.ts';
 import type { InboundMessage } from '../../shared/agent-contract.ts';
+import { LAB_QUEUE, startTelemetry } from '../../shared/telemetry.ts';
+import type { SpanExporter, Telemetry } from '../../shared/telemetry.ts';
 import type { ModelSettings } from '../src/model/served.ts';
 
 export async function listen(server: Server): Promise<string> {
@@ -65,6 +71,42 @@ export type Clock = { now: () => Date; advance: (ms: number) => void };
 export function clock(): Clock {
   let at = new Date('2026-03-01T10:00:00.000Z').getTime();
   return { now: () => new Date(at++), advance: (ms) => (at += ms) };
+}
+
+// --- Telemetry handles ----------------------------------------------------------------------------------------
+// A handle that is off, for code that takes one and is not under test for its spans.
+export const TELEMETRY_OFF: Telemetry = startTelemetry({ service: 'agents-test', endpoint: null, queue: LAB_QUEUE }, { now: () => 0, log: () => undefined });
+
+// Keeps every span it is given, in the order they ended. In place of the OTLP exporter; nothing is sent.
+class KeptSpans implements SpanExporter {
+  readonly spans: ReadableSpan[] = [];
+
+  export(spans: ReadableSpan[], done: (result: ExportResult) => void): void {
+    this.spans.push(...spans);
+    done({ code: ExportResultCode.SUCCESS });
+  }
+
+  shutdown(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+// A handle that is on, with its own clock (a millisecond each read) and an exporter in memory. `exported` shuts it
+// down, which hands every ended span to the exporter, and returns them in the order they started.
+export function recordingTelemetry(): { telemetry: Telemetry; exported: () => Promise<ReadableSpan[]> } {
+  const kept = new KeptSpans();
+  let at = Date.parse('2026-03-01T10:00:00.000Z');
+  const telemetry = startTelemetry(
+    { service: 'agents-test', endpoint: 'http://telemetry.test/v1/traces', queue: { maxSpans: 1000, maxBatch: 100, delayMs: 60_000, exportTimeoutMs: 60_000 } },
+    { now: () => (at += 1), log: () => undefined, exporter: kept },
+  );
+  return {
+    telemetry,
+    exported: async () => {
+      await telemetry.shutdown(5_000);
+      return [...kept.spans].sort((a, b) => a.startTime[0] - b.startTime[0] || a.startTime[1] - b.startTime[1]);
+    },
+  };
 }
 
 // --- Stand-in 1: the scripted model server --------------------------------------------------------------------
