@@ -64,7 +64,8 @@ services:
       AUTH_DISCOVERY_URL: http://identity:8080/realms/lab/.well-known/openid-configuration
       AUTH_ISSUER: http://localhost:8090/realms/lab
       AUTH_ALLOWED_AUDIENCE: knowledge
-      AUTH_ALLOWED_CLIENTS: expert,knowledge-gate
+      # The label expert's exchanged tokens, the knowledge gate's, and the client's lab explorer's (its label search).
+      AUTH_ALLOWED_CLIENTS: expert,knowledge-gate,lab-explorer
       AUTH_ROLES_CLAIM: roles
       AUTH_REQUIRED_SCOPES: labels:search
     ports:

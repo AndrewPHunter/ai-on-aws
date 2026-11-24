@@ -5,6 +5,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type {
   AgentList,
+  EvaluationList,
+  EvaluationRunResponse,
+  KnowledgeResponse,
+  KnowledgeSearchRequest,
+  KnowledgeSearchResponse,
   LabInquiryResponse,
   LabRunRequest,
   LabRunResponse,
@@ -47,7 +52,8 @@ function post<Result>(path: string, payload: unknown): Promise<Result> {
   });
 }
 
-async function ask<Result>(path: string, init: RequestInit): Promise<Result> {
+// The server's answer and its body, parsed as JSON (null when it is empty or not JSON).
+async function send(path: string, init: RequestInit): Promise<{ response: Response; body: unknown }> {
   let response: Response;
   try {
     response = await fetch(path, init);
@@ -65,10 +71,19 @@ async function ask<Result>(path: string, init: RequestInit): Promise<Result> {
   } catch {
     body = null;
   }
+  return { response, body };
+}
+
+function refusal(path: string, response: Response, body: unknown): LabFailure {
+  const code = textField(body, 'error') ?? `http_${response.status}`;
+  const detail = textField(body, 'detail') ?? `The server answered ${path} with status ${response.status}.`;
+  return new LabFailure(response.status, code, detail);
+}
+
+async function ask<Result>(path: string, init: RequestInit): Promise<Result> {
+  const { response, body } = await send(path, init);
   if (!response.ok) {
-    const code = textField(body, 'error') ?? `http_${response.status}`;
-    const detail = textField(body, 'detail') ?? `The server answered ${path} with status ${response.status}.`;
-    throw new LabFailure(response.status, code, detail);
+    throw refusal(path, response, body);
   }
   if (body === null) {
     throw new LabFailure(response.status, 'not_json', `The server answered ${path} with something that is not JSON.`);
@@ -184,5 +199,52 @@ export function useRunThrough() {
       void queryClient.invalidateQueries({ queryKey: ['lab', 'runs'] });
       void queryClient.invalidateQueries({ queryKey: ['lab', 'inquiry'] });
     },
+  });
+}
+
+// What the label index holds. Asked for once; "Read again" on the page asks again.
+export function useLabKnowledge() {
+  return useQuery({
+    queryKey: ['lab', 'knowledge'],
+    queryFn: () => get<KnowledgeResponse>('/lab/api/knowledge'),
+  });
+}
+
+const SEARCH_PATH = '/lab/api/knowledge/search';
+
+// A label search. A failure of the token or the retrieval service is answered 502 with the calls made before it, so
+// that answer is returned like a 200 one; any other refusal (a field the server would not take, a setting not set) is
+// thrown.
+async function searchLabels(request: KnowledgeSearchRequest): Promise<KnowledgeSearchResponse> {
+  const { response, body } = await send(SEARCH_PATH, {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  const outcome = textField(body, 'outcome');
+  if ((response.status === 200 && (outcome === 'found' || outcome === 'no_label')) || (response.status === 502 && outcome === 'failed')) {
+    return body as KnowledgeSearchResponse;
+  }
+  throw refusal(SEARCH_PATH, response, body);
+}
+
+export function useLabelSearch() {
+  return useMutation({ mutationFn: searchLabels });
+}
+
+// The evaluation runs found in the harness's data folder.
+export function useLabEvaluation() {
+  return useQuery({
+    queryKey: ['lab', 'evaluation'],
+    queryFn: () => get<EvaluationList>('/lab/api/evaluation'),
+  });
+}
+
+// One evaluation run's figures, by the id the list gave.
+export function useLabEvaluationRun(runId: string | null) {
+  return useQuery({
+    queryKey: ['lab', 'evaluation', runId],
+    queryFn: () => get<EvaluationRunResponse>(`/lab/api/evaluation/${encodeURIComponent(runId ?? '')}`),
+    enabled: runId !== null,
   });
 }

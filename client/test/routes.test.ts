@@ -1,15 +1,17 @@
 // Invariants 5, 6 and 9 to 14 of client/README.md ("Always true"), and the probe that the built app is served. The
-// agent and the case system are scripted servers; the identity provider refreshes by a function, and a machine
-// client's token is a function (support.ts).
+// agent and the case system are scripted servers; the identity provider refreshes by a function, a machine client's
+// token is a function (support.ts), and the retrieval service is a value that records each call and answers from
+// invented labels.
 
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { isDeepStrictEqual } from 'node:util';
 
 import type { Refreshed } from '../src/identity.ts';
+import type { EngineAnswer, RetrievalService, SearchEngine } from '../src/knowledge.ts';
 import type { Session } from '../src/sessions.ts';
 import { tokenFor } from '../src/tokens.ts';
 import type { Person, Received } from './support.ts';
@@ -29,11 +31,98 @@ const agents = [
   { id: 'expert', name: 'Expert', description: 'scripted', scope: 'agents:expert' as const, url: agent.url },
   { id: 'orchestrator', name: 'Orchestrator', description: 'scripted', scope: 'agents:orchestrator' as const, url: agent.url, wait_seconds: 295 },
 ];
-const config = deskConfig({ agents, caseReviewUrl: cases.url, webRoot });
+// The evaluation harness's data folder, of invented files: a scored benchmark run, an attack run whose line carries
+// fields that must not leave the server, and a run whose scores.json is not JSON.
+const evaluationData = mkdtempSync(join(tmpdir(), 'client-evaluation-'));
+after(() => rmSync(evaluationData, { recursive: true, force: true }));
+const SHARE = { numerator: 3, denominator: 4, share: 0.75, low: 0.3, high: 0.95, tooFew: true };
+const EFFORT = { count: 4, median: 2, p95: 3 };
+const SCORES = {
+  questions: 4,
+  outcomes: { completed: 3, stopped: 1, failed: 0, callFailures: 0 },
+  stopReasons: [{ outcome: 'stopped', reason: 'An invented stop sentence.', count: 1 }],
+  labelAnswers: { answered: 3 },
+  declining: { refusalDeclined: SHARE, answerableAnswered: SHARE, declinedThatWereRefusal: SHARE },
+  rightLabel: SHARE,
+  citations: { precision: SHARE, recall: SHARE, citedPassages: 5, citedWithoutSection: 1 },
+  retrieval: { anySearch: SHARE, firstSearch: SHARE },
+  numbers: SHARE,
+  effort: { searches: EFFORT, corrections: EFFORT, seconds: EFFORT, inputTokens: EFFORT, outputTokens: EFFORT },
+  correctness: null,
+  agreement: null,
+  answersQuestion: null,
+  answersAgreement: null,
+  variant: 'original',
+  rewordedQids: [],
+  overlap: null,
+  perQuestion: { 'q-1': { right_label: true } },
+};
+const RESULT_LINE = {
+  id: 'invented-attack-1',
+  class: 'plant',
+  target: 'intake-strands',
+  person: 'dana.desk',
+  decided_by: 'code',
+  verdict: 'failed',
+  failed: [{ kind: 'no_case', decided_by: 'code' }],
+  why: ['An invented reason.'],
+  findings: [],
+  expectations: [],
+  observed: { replies: ['An invented reply.'] },
+  client_runs: [],
+  traces: [],
+};
+mkdirSync(join(evaluationData, 'runs', 'invented-bench'), { recursive: true });
+writeFileSync(join(evaluationData, 'runs', 'invented-bench', 'scores.json'), JSON.stringify(SCORES));
+writeFileSync(join(evaluationData, 'runs', 'invented-bench', 'run.json'), JSON.stringify({ variant: 'original', sample_sha256: 'abc', agent_id: 'expert', models: ['invented-model'], strategies: ['keyword'], started_at: '2026-03-01T08:00:00.000Z', ended_at: '2026-03-01T08:10:00.000Z' }));
+mkdirSync(join(evaluationData, 'runs', 'invented-broken'), { recursive: true });
+writeFileSync(join(evaluationData, 'runs', 'invented-broken', 'scores.json'), 'not json');
+mkdirSync(join(evaluationData, 'attacks', 'invented-attacks'), { recursive: true });
+writeFileSync(join(evaluationData, 'attacks', 'invented-attacks', 'results.jsonl'), `${JSON.stringify(RESULT_LINE)}\n`);
+utimesSync(join(evaluationData, 'runs', 'invented-bench', 'scores.json'), new Date('2026-03-01T08:20:00.000Z'), new Date('2026-03-01T08:20:00.000Z'));
+utimesSync(join(evaluationData, 'attacks', 'invented-attacks', 'results.jsonl'), new Date('2026-03-02T08:00:00.000Z'), new Date('2026-03-02T08:00:00.000Z'));
+const config = deskConfig({ agents, caseReviewUrl: cases.url, webRoot, evaluationDataDir: evaluationData });
 const time = clock();
 const identity = new ScriptedRenewal(config, time.now);
 const machine = machineTokens(time.now);
-const desk = await startDesk({ after }, config, time, identity, machine);
+// The retrieval service: find_labels finds one invented label for any drug; search_label answers two invented
+// passages, or the service's own error for the query 'A question the engine cannot answer'.
+const LABEL = { set_id: '11111111-2222-4333-8444-555555555555', version: 3, effective_date: '20260101', kind: 'human_prescription', names: ['Inventamab'], source: 'https://example.org/label' };
+const passage = (chunkId: string, score: number) => ({
+  chunk_id: chunkId,
+  text: `Invented passage ${chunkId}.`,
+  score,
+  part: 'body',
+  type: 'paragraph',
+  section: { number: '2.1', title: 'Invented section', path: ['Invented section'] },
+  position: { start: 0 },
+  label: { set_id: LABEL.set_id, version: LABEL.version, effective_date: LABEL.effective_date, kind: LABEL.kind, source: LABEL.source },
+  ranks: { keyword: 1, vector: null, fused: null, reranked: null },
+});
+const retrievalCalls: { token: string; tool: string; args: Record<string, string> }[] = [];
+const retrieval: RetrievalService = {
+  call: (token, tool, args) => {
+    retrievalCalls.push({ token, tool, args });
+    if (tool === 'find_labels') return Promise.resolve({ outcome: 'answered', isError: false, payload: { labels: [LABEL], more_matched: false, matched_by: 'exact_name' } });
+    if (args.query === 'A question the engine cannot answer') {
+      return Promise.resolve({ outcome: 'answered', isError: true, payload: { error: 'search_unreachable', detail: 'The search engine could not be reached.' } });
+    }
+    return Promise.resolve({ outcome: 'answered', isError: false, payload: { set_id: LABEL.set_id, strategy: 'keyword', passages: [passage('chunk-a', 9.5), passage('chunk-b', 4.25)] } });
+  },
+};
+// The search engine: the alias points at one invented index with a recorded embedding identity, until a test says it
+// has gone.
+const searchIndex = { aliasPresent: true };
+const EMBEDDING = { repository: 'invented/embedder', revision: 'abc123', dimensions: 8, recipe: 'invented-recipe', instruction: 'Invented.', vectorsSha256: 'def' };
+const engine: SearchEngine = {
+  get: (path): Promise<EngineAnswer> => {
+    if (!searchIndex.aliasPresent) return Promise.resolve({ outcome: 'answered', status: 404, body: { error: 'alias [labels] missing', status: 404 } });
+    if (path === '/_alias/labels') return Promise.resolve({ outcome: 'answered', status: 200, body: { 'labels-invented': { aliases: { labels: {} } } } });
+    if (path === '/labels/_count') return Promise.resolve({ outcome: 'answered', status: 200, body: { count: 42 } });
+    return Promise.resolve({ outcome: 'answered', status: 200, body: { 'labels-invented': { mappings: { _meta: { embedding: EMBEDDING } } } } });
+  },
+};
+const desk = await startDesk({ after }, config, time, identity, machine, { engine, retrieval });
 const textOf = (r: Received): unknown => at(r.body, 'message', 'text');
 
 function inquire(cookie: string, text: string, origin?: string): Promise<{ status: number; body: unknown }> {
@@ -250,7 +339,7 @@ test("invariant 12: a run's steps leave the server only on the trace routes, to 
   }
 });
 
-test("invariant 13: the lab explorer's routes need no session, give every inquiry and run with its steps, and run a message as the lab explorer's own client", async (t) => {
+test("invariant 13: the lab explorer's routes need no session, give every inquiry and run with its steps, and run a message and a label search as the lab explorer's own client", async (t) => {
   const dana = signedIn(desk, DANA, 'access-lab-dana', 3_600_000, 'refresh-lab-dana');
   const riley = signedIn(desk, RILEY, 'access-lab-riley', 3_600_000, 'refresh-lab-riley');
   const danaInquiry = String(at((await inquire(dana, 'A message with steps')).body, 'inquiry', 'id'));
@@ -285,6 +374,84 @@ test("invariant 13: the lab explorer's routes need no session, give every inquir
       },
       expected: () => ['Bearer lab-explorer for agents:expert', 'Lab explorer', true, 'Lab explorer'],
     },
+    {
+      name: "a label search, with the token got as the lab explorer's client for the retrieval service's scope, returns the service's hits",
+      path: '/lab/api/knowledge/search',
+      method: 'POST',
+      body: { medicine: 'Inventamab', question: 'An invented question' },
+      status: 200,
+      shows: (b: unknown) => [
+        retrievalCalls.filter((c) => c.args.drug === 'Inventamab' || c.args.query === 'An invented question').map((c) => [c.token, c.tool, c.args]),
+        at(b, 'outcome'),
+        at(b, 'strategy'),
+        [at(b, 'passages')].flat().map((p) => [at(p, 'rank'), at(p, 'chunk_id'), at(p, 'score'), at(p, 'label', 'set_id')]),
+      ],
+      expected: () => [
+        [
+          ['lab-explorer for labels:search', 'find_labels', { drug: 'Inventamab' }],
+          ['lab-explorer for labels:search', 'search_label', { set_id: LABEL.set_id, query: 'An invented question' }],
+        ],
+        'found',
+        'keyword',
+        [
+          [1, 'chunk-a', 9.5, LABEL.set_id],
+          [2, 'chunk-b', 4.25, LABEL.set_id],
+        ],
+      ],
+    },
+    {
+      name: 'a failure of the retrieval service is 502 with its reason',
+      path: '/lab/api/knowledge/search',
+      method: 'POST',
+      body: { medicine: 'Otheramab', question: 'A question the engine cannot answer' },
+      status: 502,
+      shows: (b: unknown) => [at(b, 'outcome'), at(b, 'error'), at(b, 'detail')],
+      expected: () => ['failed', 'search_unreachable', 'The search engine could not be reached.'],
+    },
+    {
+      name: 'what the label index holds: its passage count and embedding identity; an absent alias is not built, not a failure',
+      path: '/lab/api/knowledge',
+      status: 200,
+      shows: async (b: unknown) => {
+        searchIndex.aliasPresent = false;
+        const gone = await call(`${desk.url}/lab/api/knowledge`);
+        searchIndex.aliasPresent = true;
+        return [at(b, 'index', 'index'), at(b, 'index', 'passages'), at(b, 'index', 'embedding'), gone.status, at(gone.body, 'index', 'state')];
+      },
+      expected: () => ['labels-invented', 42, { repository: 'invented/embedder', revision: 'abc123', dimensions: 8, recipe: 'invented-recipe' }, 200, 'not_built'],
+    },
+    {
+      name: "the evaluation runs on disk, newest first, a file that does not parse named, and a run's figures with no question, answer, reply or reason text",
+      path: '/lab/api/evaluation',
+      status: 200,
+      shows: async (b: unknown) => {
+        const bench = (await call(`${desk.url}/lab/api/evaluation/${encodeURIComponent('runs/invented-bench')}`)).body;
+        const attack = (await call(`${desk.url}/lab/api/evaluation/${encodeURIComponent('attacks/invented-attacks')}`)).body;
+        const groups = [at(bench, 'groups')].flat();
+        const rows = (group: string): unknown[] => [at(groups.find((g) => at(g, 'name') === group), 'rows')].flat();
+        return [
+          [at(b, 'runs')].flat().map((r) => at(r, 'id')),
+          [at(b, 'skipped')].flat().map((s) => at(s, 'file')),
+          at(bench, 'run', 'agent_id'),
+          rows('outcomes').find((r) => at(r, 'name') === 'stopped'),
+          rows('retrieval').find((r) => at(r, 'name') === 'a referenced section shown, in the first search'),
+          at(attack, 'cases'),
+          at(attack, 'totals'),
+          ['An invented stop sentence.', 'An invented reply.', 'An invented reason.', 'q-1'].filter((text) => JSON.stringify([bench, attack]).includes(text)),
+        ];
+      },
+      expected: () => [
+        ['attacks/invented-attacks', 'runs/invented-bench'],
+        ['runs/invented-broken/scores.json'],
+        'expert',
+        { name: 'stopped', kind: 'count', count: 1 },
+        { name: 'a referenced section shown, in the first search', kind: 'share', share: { numerator: 3, denominator: 4, share: 0.75, low: 0.3, high: 0.95, too_few: true } },
+        [{ id: 'invented-attack-1', class: 'plant', target: 'intake-strands', decided_by: 'code', verdict: 'failed', failed: [{ kind: 'no_case', scope: null, decided_by: 'code' }] }],
+        { held: 0, failed: 1, inconclusive: 0, not_run: 0 },
+        [],
+      ],
+    },
+    { name: 'an evaluation run not on disk', path: `/lab/api/evaluation/${encodeURIComponent('runs/../runs/invented-bench')}`, status: 404, shows: (b: unknown) => at(b, 'error'), expected: () => 'unknown_evaluation_run' },
     { name: 'a POST to a route that only reads', path: '/lab/api/agents', method: 'POST', status: 405, shows: (b: unknown, allow: string | null) => [at(b, 'error'), allow], expected: () => ['method_not_allowed', 'GET'] },
   ];
   for (const row of rows) {

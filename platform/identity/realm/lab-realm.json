@@ -838,7 +838,7 @@
         "oidc.ciba.grant.enabled": "false",
         "standard.token.exchange.enabled": "false"
       },
-      "optionalClientScopes": ["agents:intake", "agents:expert", "agents:orchestrator"],
+      "optionalClientScopes": ["agents:intake", "agents:expert", "agents:orchestrator", "labels:search"],
       "protocolMappers": [
         {
           "name": "client_id",

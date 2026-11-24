@@ -6,7 +6,7 @@ The client's server signs staff in and keeps their grant and refresh token. Befo
 
 Each service checks its audience, allowed clients and required scope. An agent then exchanges the accepted token, authenticating as itself, for a token addressed to its next service. Intake agents call the case system; the label expert calls retrieval; the orchestrator calls sub-agents, which exchange again for their tools. This keeps each handoff explicit while preserving the caller's identity. The case system records the agent as the actor and the person or machine account it acted for.
 
-Three programs sign a person in without a browser: the identity gate, the stack gate and the attack runner (`evaluation/attacks.sh`). Four get a token as a machine, by client credentials: the knowledge gate, the evaluation runner, and the client's contact form and lab explorer, which call agents with nobody signed in ([Signing in without a browser](#signing-in-without-a-browser)).
+Three programs sign a person in without a browser: the identity gate, the stack gate and the attack runner (`evaluation/attacks.sh`). Four get a token as a machine, by client credentials: the knowledge gate, the evaluation runner, and the client's contact form and lab explorer, which call agents, and the lab explorer the retrieval service, with nobody signed in ([Signing in without a browser](#signing-in-without-a-browser)).
 
 ## Terms
 
@@ -122,7 +122,7 @@ Every client is confidential, with no password grant, implicit flow, device gran
 | `evaluation` | The evaluation runner | Client credentials, as its service account | `agents:expert` | No | `IDENTITY_EVALUATION_CLIENT_SECRET` |
 | `knowledge-gate` | The knowledge gate | Client credentials, as its service account | `labels:search` | No | `IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET` |
 | `contact-form` | The client's contact form | Client credentials, as its service account | `agents:orchestrator` | No | `IDENTITY_CONTACT_FORM_CLIENT_SECRET` |
-| `lab-explorer` | The client's lab explorer | Client credentials, as its service account | `agents:intake`, `agents:expert`, `agents:orchestrator` | No | `IDENTITY_LAB_EXPLORER_CLIENT_SECRET` |
+| `lab-explorer` | The client's lab explorer | Client credentials, as its service account | `agents:intake`, `agents:expert`, `agents:orchestrator`, `labels:search` | No | `IDENTITY_LAB_EXPLORER_CLIENT_SECRET` |
 | `case-system` | The case system, named as an audience only | None | Nothing | No | None |
 | `knowledge` | The retrieval service, named as an audience only | None | Nothing | No | None |
 
@@ -314,7 +314,7 @@ What may be done is read from the scopes granted at sign-in, which the client ke
 | Starting a run on an inquiry | Requires that agent's scope, whichever person or the contact form entered the inquiry. Read access without run permission returns 403 `not_allowed`; no read access returns 404 `inquiry_not_found`, and so does an inquiry the lab explorer entered |
 | `GET /api/traces`, `GET /api/traces/<run_id>` | Every person's runs, with their steps, to a session granted `traces:read`; 403 `not_allowed` to any other, before the store is read. Other desk `/api` routes omit steps |
 
-The local lab explorer is a separate diagnostic surface. Its `/lab/api` routes read no session cookie: they expose every stored run and its steps, read inquiries, and invoke any agent as `lab-explorer`. The desk's `traces:read` restriction therefore protects the desk routes, not all access to stored traces. Downstream agents still require the explorer's machine token.
+The local lab explorer is a separate diagnostic surface. Its `/lab/api` routes read no session cookie: they expose every stored run and its steps, read inquiries, invoke any agent as `lab-explorer`, and search the retrieval service as `lab-explorer`. The desk's `traces:read` restriction therefore protects the desk routes, not all access to stored traces. Downstream agents and the retrieval service still require the explorer's machine token.
 
 ### What the client sends downstream
 
@@ -446,7 +446,7 @@ See [tools/case-system/README.md](../../tools/case-system/README.md).
 
 ## The retrieval service
 
-The retrieval service (`knowledge/src/search/`) uses `shared/access-token.ts` before reading the request target or body. It requires audience `knowledge`, client `expert` or `knowledge-gate`, and scope `labels:search`, which covers both `find_labels` and `search_label`. Check order, provider timeout and key refresh match the case system; no minimum lifetime is required beyond an unexpired token.
+The retrieval service (`knowledge/src/search/`) uses `shared/access-token.ts` before reading the request target or body. It requires audience `knowledge`, client `expert`, `knowledge-gate` or `lab-explorer`, and scope `labels:search`, which covers both `find_labels` and `search_label`. Check order, provider timeout and key refresh match the case system; no minimum lifetime is required beyond an unexpired token.
 
 Every route except `GET /ping`, including unknown routes, requires the token. Refusals return 401 or 403; unavailable identity checks return 503 `identity_unavailable`. The bearer token stops here. Embedding and reranking use the model server's key instead. See [knowledge.md](knowledge.md).
 
@@ -462,11 +462,11 @@ These callers run on the stack's default network (`<compose-project>_default`) a
 | Party | Started by | As | How | Secrets given | What it does with it |
 |---|---|---|---|---|---|
 | Gate | `platform/identity/gate.sh` | Four people, four agents, four machines | PKCE through `desk`, completing the form and exchanging the redirect's code itself; refresh, direct and chained exchanges, client credentials | Every client secret and four passwords | Checks token signatures and claims, including required refusals |
-| Stack gate | `platform/identity/stack-gate.sh` | Four people; own tokens as `intake-handwritten`, `expert`, `orchestrator`, `evaluation`, `knowledge-gate` | Client login and callback with cookies; direct `desk` login for its own tokens; four exchanges (one intake, one expert, two orchestrator); client credentials | Four passwords; secrets for `desk` and those five clients | Exercises the desk, reads runs as their person and traces as `avery.auditor`, and presents missing and issued tokens to agents and tool servers |
+| Stack gate | `platform/identity/stack-gate.sh` | Four people; own tokens as `intake-handwritten`, `expert`, `orchestrator`, `evaluation`, `knowledge-gate`, `lab-explorer` | Client login and callback with cookies; direct `desk` login for its own tokens; four exchanges (one intake, one expert, two orchestrator); client credentials | Four passwords; secrets for `desk` and those six clients | Exercises the desk, reads runs as their person and traces as `avery.auditor`, and presents missing and issued tokens to agents and tool servers |
 | Knowledge gate | `knowledge/gate.sh` | Client `knowledge-gate` | Client credentials with its own secret, scope `labels:search` (`shared/machine-token.ts`) | `IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET` | Calls the retrieval service's MCP endpoint with the token. A token that cannot be got is exit 2 |
 | Evaluation runner | `evaluation/run.sh` | Client `evaluation` | Client credentials with its own secret, scope `agents:expert` (`shared/machine-token.ts`). Gets a new token before the current one has under 200 s left | `IDENTITY_EVALUATION_CLIENT_SECRET` | Sends it to the label expert on `POST /invocations`; the expert exchanges it for its own token for the retrieval service. A question for which no token could be got is recorded with the reason `no access token could be got` |
 | Contact form | The client's server (`client/`) | Client `contact-form` | Client credentials with its own secret, scope `agents:orchestrator` (`shared/machine-token.ts`) | `IDENTITY_CONTACT_FORM_CLIENT_SECRET`, as `CONTACT_FORM_CLIENT_SECRET` | Sends a message a clinician wrote on the public contact page to the orchestrator on `POST /invocations`; the orchestrator exchanges it for each sub-agent, with the contact form's service account as the subject |
-| Lab explorer | The client's server (`client/`) | Client `lab-explorer` | Client credentials with its own secret, scope `agents:intake`, `agents:expert` or `agents:orchestrator`, the scope of the agent it calls (`shared/machine-token.ts`) | `IDENTITY_LAB_EXPLORER_CLIENT_SECRET`, as `LAB_EXPLORER_CLIENT_SECRET` | Sends a prepared, newly entered or stored message to any of the four agents on `POST /invocations` |
+| Lab explorer | The client's server (`client/`) | Client `lab-explorer` | Client credentials with its own secret, scope `agents:intake`, `agents:expert` or `agents:orchestrator`, the scope of the agent it calls, or `labels:search` for a label search (`shared/machine-token.ts`) | `IDENTITY_LAB_EXPLORER_CLIENT_SECRET`, as `LAB_EXPLORER_CLIENT_SECRET` | Sends a prepared, newly entered or stored message to any of the four agents on `POST /invocations`; calls the retrieval service's MCP endpoint (`find_labels`, then `search_label`) for a label search. A token that cannot be got is answered 502 and nothing is sent |
 | Attack runner | `evaluation/attacks.sh` | The four people | Through the client, as the stack gate does (`platform/identity/src/desk.ts`): `/auth/login`, Keycloak's form, the client's callback; the client exchanges the code and the runner holds only cookies. A person whose session ends (401) signs in again once | The four passwords, and no client secret | Sends each attack, control and fault case's inquiry as its person, reads each ended run's trace as `avery.auditor`, and reads cases as `riley.reviewer` |
 
 ## From sign-in to an audit entry
@@ -587,7 +587,7 @@ sequenceDiagram
 | Orchestrator | A token for `agents:orchestrator`, from the client: a person's, or the contact form's or lab explorer's own | `orchestrator` | `desk`, `contact-form`, `lab-explorer` | `agents:orchestrator` | Signature (RS256), issuer, 280 s left | The caller, given to the handler; the token itself, exchanged once for each call to a sub-agent |
 | Case system, agents' server | The token an intake agent got by exchange | `case-system` | `intake-handwritten`, `intake-strands` | `cases:write` or `cases:lookup`; then each tool's own | Signature (RS256), issuer, not expired | The agent and the user it acted for |
 | Case system, review server | A person's token, from the client | `case-system` | `desk` | `cases:read` or `cases:review`; then each route's own | Signature (RS256), issuer, not expired | The reviewer |
-| Retrieval service | The label expert's exchanged token; the knowledge gate's own | `knowledge` | `expert`, `knowledge-gate` | `labels:search` | Signature (RS256), issuer, not expired | Nothing |
+| Retrieval service | The label expert's exchanged token; the knowledge gate's and the lab explorer's own | `knowledge` | `expert`, `knowledge-gate`, `lab-explorer` | `labels:search` | Signature (RS256), issuer, not expired | Nothing |
 
 ## Where secrets live
 
@@ -596,7 +596,7 @@ sequenceDiagram
 | Administrator username and password | `setup.sh`, random | Identity secrets | The provider, at start |
 | `desk` client secret | `setup.sh`, random | Identity secrets | The provider, through the realm import; the gate; the stack gate; the client, as `OIDC_CLIENT_SECRET` |
 | The four agents' client secrets | `setup.sh`, random | Identity secrets | The provider, through the realm import; each agent its own, as `EXCHANGE_CLIENT_SECRET`; the gate (all four); the stack gate (`intake-handwritten`'s, `expert`'s and `orchestrator`'s) |
-| The four machines' client secrets | `setup.sh`, random | Identity secrets | The provider, through the realm import; the evaluation runner (`evaluation`'s only), the knowledge gate (`knowledge-gate`'s only), and the client (`contact-form`'s as `CONTACT_FORM_CLIENT_SECRET` and `lab-explorer`'s as `LAB_EXPLORER_CLIENT_SECRET`, with `desk`'s, and no other value from the identity secrets); the gate (all four); the stack gate (`evaluation`'s and `knowledge-gate`'s) |
+| The four machines' client secrets | `setup.sh`, random | Identity secrets | The provider, through the realm import; the evaluation runner (`evaluation`'s only), the knowledge gate (`knowledge-gate`'s only), and the client (`contact-form`'s as `CONTACT_FORM_CLIENT_SECRET` and `lab-explorer`'s as `LAB_EXPLORER_CLIENT_SECRET`, with `desk`'s, and no other value from the identity secrets); the gate (all four); the stack gate (`evaluation`'s, `knowledge-gate`'s and `lab-explorer`'s) |
 | The four people's passwords | `setup.sh`, each the person's username: the people are synthetic, the lab is local, and the passwords are typed by hand | Identity secrets | The provider, through the realm import; the gate, the stack gate and the attack runner (all four). No other program |
 | Token signing keys | The provider, at start | The provider's database, on a tmpfs | Nobody outside; the public keys are at `jwks_uri` |
 
@@ -627,7 +627,7 @@ The realm file holds a `${NAME}` placeholder where each secret and password goes
 
 | What | Note |
 |---|---|
-| Authentication on the lab explorer | `/lab/api` exposes stored runs, steps and inquiries without sign-in, and invokes agents as `lab-explorer`. This local diagnostic surface is outside the desk's session permissions |
+| Authentication on the lab explorer | `/lab/api` exposes stored runs, steps and inquiries without sign-in, and invokes agents and searches the retrieval service as `lab-explorer`. This local diagnostic surface is outside the desk's session permissions |
 | Proof of who sent a message | The sender is text that the signed-in user vouches for. Lookups and follow-ups are limited by that text |
 | Full delegation chain in tokens | `client_id` and `azp` identify only the exchanging agent. The case system receives `intake-strands` through the orchestrator and records that intake agent as actor; no claim it reads identifies the orchestrator |
 | A token limited to one run or message | Exchange restricts client, audience and scopes, but preserves expiry. Until then, the token can serve any run by that agent for that subject |

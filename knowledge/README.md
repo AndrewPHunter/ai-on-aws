@@ -215,7 +215,7 @@ The index has one shard and no replica.
 
 ### The retrieval service
 
-Settings, each required and read by name: `SEARCH_URL` (`http://search:9200`: an http or https origin with no path), `SEARCH_INDEX` (`labels`: a lowercase index or alias name), `SEARCH_STRATEGY` (below), and `AUTH_DISCOVERY_URL`, `AUTH_ISSUER`, `AUTH_ALLOWED_AUDIENCE` (`knowledge`), `AUTH_ALLOWED_CLIENTS` (`expert,knowledge-gate`, a list separated by commas: the label expert's exchanged tokens and the gate's), `AUTH_REQUIRED_SCOPES` (`labels:search`) and `AUTH_ROLES_CLAIM` (`roles`), in the form the case system uses. A setting missing or malformed stops the service at start with exit 2, naming it. Every request but `GET /ping` requires a valid access token, checked with `shared/access-token.ts` before anything else of the request is read: the target, then the body. The identity provider is given 5 seconds a request, and its keys are fetched again at most every 30 seconds after a token names a key not yet seen.
+Settings, each required and read by name: `SEARCH_URL` (`http://search:9200`: an http or https origin with no path), `SEARCH_INDEX` (`labels`: a lowercase index or alias name), `SEARCH_STRATEGY` (below), and `AUTH_DISCOVERY_URL`, `AUTH_ISSUER`, `AUTH_ALLOWED_AUDIENCE` (`knowledge`), `AUTH_ALLOWED_CLIENTS` (`expert,knowledge-gate,lab-explorer`, a list separated by commas: the label expert's exchanged tokens, the gate's, and the client's lab explorer's, got by client credentials for its label search), `AUTH_REQUIRED_SCOPES` (`labels:search`) and `AUTH_ROLES_CLAIM` (`roles`), in the form the case system uses. A setting missing or malformed stops the service at start with exit 2, naming it. Every request but `GET /ping` requires a valid access token, checked with `shared/access-token.ts` before anything else of the request is read: the target, then the body. The identity provider is given 5 seconds a request, and its keys are fetched again at most every 30 seconds after a token names a key not yet seen.
 
 | Request | Answer |
 |---|---|
@@ -375,7 +375,7 @@ The libraries: [yauzl](https://github.com/thejoshwolfe/yauzl) 3.4.0 reads the zi
 
 ## Not present
 
-- **The search engine's security plugin is off.** It has no TLS, no sign-in and no access control: any container on the stack's network can read, change or delete every index. It publishes no port, so nothing outside that network reaches it. The retrieval service is the only path an agent is given, and it holds the token check. Do not publish the engine's port.
+- **The search engine's security plugin is off.** It has no TLS, no sign-in and no access control: any container on the stack's network can read, change or delete every index. It publishes no port, so nothing outside that network reaches it. The retrieval service is the only path an agent is given, and it holds the token check. The client's lab explorer reads the alias `labels`, its count and its mapping from the engine directly, with GET only, and searches through the retrieval service. Do not publish the engine's port.
 - No Bedrock data source.
 - No record of which passages the reranker read only in part: a passage over 7,000 tokens is cut by the reranker, and nothing says which.
 - One passage of the corpus is over the embedding model's 8,192 tokens: it has no vector, and is found by keyword only.
