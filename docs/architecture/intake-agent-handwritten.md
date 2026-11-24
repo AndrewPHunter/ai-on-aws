@@ -74,7 +74,7 @@ flowchart LR
 
 | Module | Owns | Knows nothing about |
 |---|---|---|
-| `contract/server.ts` | This implementation's HTTP routes, request validation and contract responses. Strands agents use the [SDK server](agent-runtime.md) | Model, tools, cases, handler logic |
+| `contract/server.ts` | This implementation's HTTP routes, request validation and contract responses, and the `agent.run` span around the handler. Strands agents use the [SDK server](agent-runtime.md) | Model, tools, cases, handler logic |
 | `intake/handwritten.ts` | Model/tool sequencing and application of shared rules; its own checks for unknown tools and invalid JSON; model retries | HTTP, MCP, model server address, tool transport |
 | `intake/run.ts` (shared) | Run state and rules: one case per run, unanswered-write retries, unsettled writes and reply handling | Loop implementation, model, tool transport |
 | `run/state.ts`, `run/limits.ts`, `run/steps.ts`, `run/turns.ts`, `run/endings.ts` (shared) | Common state, limits, step records, thinking retry and outcome wording | Loop implementation, model, tool transport |
@@ -85,7 +85,8 @@ flowchart LR
 | `tools/case-system.ts` | The MCP connection, the context headers, the two tools a run needs and is shown (`CASE_TOOLS`, `isCaseTool`), which tools write, and what an answer means for the run's record | The model, the loop |
 | `tools/tool-token.ts` (shared with the other agents) | Token exchange, target audience and scopes, and exchange failure reasons | Model, loop, MCP |
 | `tools/mcp-answers.ts` (shared with the label expert) | MCP connection errors and tool payload parsing. `tools/case-system.ts` supplies the service name for error messages | Service-specific rules |
-| `model/chat.ts` | One model request, response parsing and classification of retryable failures. It performs no retries | Tool meaning, cases, loop |
+| `model/chat.ts` | One model request, response parsing and classification of retryable failures and of failures with no answer. It performs no retries | Tool meaning, cases, loop |
+| `run/spans.ts` | The `model.call` and `tool.call` spans: their attributes and outcomes. `agent.run` is made in `contract/server.ts` | What the call does, the loop |
 | `intake/serve.ts`, `intake/settings.ts`, `run/serve.ts`, `run/sampling.ts` (shared) | Reading the environment, the limits and sampling settings, asking which model is served, starting the server | The rules of a run, which implementation runs |
 | `model/served.ts` (shared) | The model settings, the question "which model do you serve", and the wording of a model failure | Chat requests |
 | `intake/main-handwritten.ts` | Connecting this implementation's modules, the exchange before the tool connection among them | The rules of a run |
@@ -302,6 +303,30 @@ A refusal is 401 with `WWW-Authenticate: Bearer error="invalid_token"` and `{"er
 
 The case system never sees this token. The agent exchanges it for the case-system token (step 5a), which the case system checks with its own settings (`tools/case-system/compose.yaml`). A token the agent accepts whose exchange is refused fails the run before anything is connected, with the reason in step 5a.
 
+## What the agent exports
+
+With `TELEMETRY_ENDPOINT` set, the agent exports one span for each operation as that operation ends, through [`shared/telemetry.ts`](../../shared/telemetry.ts), to the [trace store](../../platform/telemetry/README.md). A span does not wait for the run: when a run later throws, runs out of time, or its answer never reaches the caller, the spans of the calls it made are already on their way. With the setting unset or empty the same code runs and records nothing, and the agent says so once at start. The response's `steps` are unchanged and remain a separate record.
+
+| Span | Kind | Made in | Attributes | Outcome |
+|---|---|---|---|---|
+| `agent.run` | server | `invoke` in `contract/server.ts`, around the handler | `gen_ai.agent.id`, `lab.inquiry.id` (the message's id) | The response's: `completed`, `stopped` or `failed`. `failed` when the handler throws or answers outside the contract; the answer is the same as without telemetry |
+| `model.call` | client | `modelCallSpan` in `run/spans.ts`, for each request `askModel` sends and for the report check's request in `createReportCheck` | `gen_ai.request.model`, `lab.operation.id`, `lab.attempt`, `lab.finish_reason`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`. A count the model server did not report is left out, never 0 | `executed`; `response_lost` when no answer came (the time ran out or the connection failed); `failed` for any other failure |
+| `tool.call` | client | `toolCallSpan` and `refusedToolCallSpan` in `run/spans.ts`, from `callOnce` and `runToolCall` | `gen_ai.tool.name` (only a tool the model was shown), `lab.requested_by` (`model` or `agent`, as the step records it), `lab.operation.id`, `lab.attempt` | `executed`; `refused` when the agent's rules refuse the call and nothing is sent, or the case system answers with a refusal; `response_lost` when no answer came |
+
+`agent.run` is a child of the request's `traceparent` when it has a usable one, and starts a new trace otherwise. Every `model.call` and `tool.call` is a child of `agent.run`, and each ends before the next operation starts.
+
+| Operation | `lab.operation.id` | `lab.attempt` |
+|---|---|---|
+| Turn *n* | `model:turn-<n>` | 1 to 3, one for each request sent for the turn |
+| The report check | `model:report-check` | 1 |
+| The *k*-th tool call the model asked for in turn *n* | `tool:turn-<n>:<k>` | 1, and 2 for the one repeat of a write that got no answer |
+
+Each request to the case system carries a `traceparent` written inside the span of the tool call it belongs to: `connectCaseTools` gives the MCP transport a `fetch` that writes it on every request it sends, so the case system's span for a call is a child of that call's `tool.call`. The requests that connect, list the tools and close carry the run's span.
+
+A span never holds the message's text or sender, a tool's arguments or result, the model's reply, a token, a key or an address. A tool name the model invented is not recorded. A value the module would refuse, such as a message id over 256 characters, an empty finish reason or a token count that is not a whole number, is left out of the span and the call goes on.
+
+On SIGTERM or SIGINT the agent closes its server, gives the spans still waiting up to 5 s to be sent, and logs how many spans ended, were exported, failed, were dropped and were not sent.
+
 ## Always true
 
 1. A request that matches the contract, with an accepted token, gets 200 with an outcome and every step taken, whatever went wrong after it was accepted. Two exceptions: a handler that throws is answered 200 `failed` with no steps, and a response of the agent's own outside the contract is 500.
@@ -318,10 +343,13 @@ The case system never sees this token. The agent exchanges it for the case-syste
 10. Case actions are built from the case system's answers, never from what the model wrote.
 11. A run has at most 6 turns with the model, makes at most 3 requests for each, and starts no turn after 150 seconds.
 12. The response contains no token, no address and no key.
-13. The agent stores nothing, and runs share no state. What it knows about a run is in the response; what it changed is in the case system.
+13. The agent stores nothing, and runs share no state. What it knows about a run is in the response, and as metadata in the spans it exports; what it changed is in the case system.
 14. A run that recorded no case ends `completed` only when the report check found no adverse event. The report check is one separate request to the model, made by code, at most once in a run: it is shown the message and nothing else, it is given no tools, and only its answer of yes or no is kept, never its text. The check is a step in the response, and a request for it that failed is also an error step with the reason. When it finds an adverse event, the model is told once, in a sentence written by code, to record it, if the run has a turn left. A run in which the check found an adverse event and which then ends `stopped` with no case, for whatever reason, ends with "A separate check of the message found an adverse event, and the run recorded no case. A person must read this message." When the check cannot be made, or answers neither yes nor no, the run ends `stopped` with "The run recorded no case, and the separate check for an adverse event could not be made." A run that recorded a case makes no report check.
+15. Every request to the model, the report check's included, and every tool call is a span that ends when the call ends, so it is exported even when the run later throws.
+16. A call the rules refuse is a `tool.call` span with outcome `refused`, and nothing is sent. A write repeated after getting no answer is a second `tool.call` span with the same `lab.operation.id` and the next `lab.attempt`, requested by the agent.
+17. A request to the case system for a tool call carries the `traceparent` of that call's own `tool.call` span.
 
-`agents/test/intake.test.ts` has one test for each item, `intake 1` to `intake 14`, calling the handler with a scripted model and scripted tools. `intake 12` shows the token; the handler is given no address and no key. 3a and 3b have no test there, because the handler makes neither check. In 3a, `runtime 1` shows a request answered before its body is read and `shared 1` a token refused for having less life left than the service asks for. In 3b, `case-system 8` shows the token judged before the request is read, and a connection that fails and a case system that offers one of the two tools are rows of `intake 1`.
+`agents/test/intake.test.ts` has one test for each item, `intake 1` to `intake 17`, calling the handler with a scripted model and scripted tools, and for 15 to 17 a telemetry handle with an in-memory exporter. `intake 17` connects to the scripted MCP server in `agents/test/support.ts`, because the header is written by the MCP connection. `intake 12` shows the token; the handler is given no address and no key. 3a and 3b have no test there, because the handler makes neither check. In 3a, `runtime 1` shows a request answered before its body is read and `shared 1` a token refused for having less life left than the service asks for. In 3b, `case-system 8` shows the token judged before the request is read, and a connection that fails and a case system that offers one of the two tools are rows of `intake 1`.
 
 ## Where untrusted text goes
 
@@ -392,8 +420,8 @@ The tables identify missing controls and their consequences at each boundary.
 | Rate and concurrency limits | `createContractServer` | Each run can last 150 s, with no bound on concurrent runs. Concurrent runs of the same message can race; the case system still opens one case |
 | Reading of `Retry-After` | `askModel` | The loop ignores the header and uses its own waits: 250 to 500 ms, then 500 to 1,000 ms. The local model server does not send the header |
 | A shared view of the model's health | Around `askModel` | Each run decides on its own. While the model server is down, every run in flight sends its three requests |
-| A record kept by the agent | The endings in `run/endings.ts` | If the caller goes away mid-run, the steps are lost. What remains is the case system's audit trail and the agent's error output |
-| Tracing and metrics | Around `complete` and `ToolSet.call` | No trace identifiers and no exported measurements. A step carries its own timing and token counts |
+| A record kept by the agent | The endings in `run/endings.ts` | If the caller goes away mid-run, the steps are lost. What remains is the case system's audit trail, the spans already exported, which hold no content, and the agent's error output |
+| Metrics | Around `complete` and `ToolSet.call` | No measurement is exported. A span carries its times and token counts, and a step its own timing and token counts |
 | The model's reasoning text | `createChatModel` | It is received and discarded. Only its cost appears, inside `output_tokens` |
 | The prompt's version in the response | The endings in `run/endings.ts` | The response names the model. It does not say which prompt, temperature or seed produced it |
 | A health check of what it depends on | `GET /ping` | `/ping` says `Healthy` when the model server or the case system is down |
@@ -427,6 +455,9 @@ The tables identify missing controls and their consequences at each boundary.
 | Token exchange | `EXCHANGE_TOKEN_ENDPOINT`, `EXCHANGE_CLIENT_SECRET`; the client id is `AGENT_ID` | `agents/compose.yaml`; the secret from `platform/identity/.env` |
 | Minimum life left on a token | 150 s, the run's time limit | `agentSettingsFrom` in `run/serve.ts`, with the limits from `intake/settings.ts` |
 | Wait before fetching the keys again | 30 s | `run/serve.ts` |
+| Where spans are exported | `TELEMETRY_ENDPOINT`, optional: unset or empty, nothing is exported. Not an http or https URL: the agent stops at start (exit 2) naming the setting | `agents/compose.yaml`, read in `run/serve.ts` |
+| Span queue | `LAB_QUEUE`: at most 2,048 waiting, batches of at most 512, sent at least every second, 5 s for an export | `shared/telemetry.ts` |
+| Time to send waiting spans at shutdown | 5 s | `run/serve.ts` |
 
 ## Who owns what
 

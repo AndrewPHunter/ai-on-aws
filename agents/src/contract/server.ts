@@ -6,6 +6,11 @@
 // AgentCore Runtime's JWT authorizer makes in front of the container, kept here as a second check so one
 // behaviour holds everywhere. A token lacking the agent's scope is 403, any other refusal 401. GET /ping
 // needs none.
+//
+// Each accepted request is one agent.run span, a child of the request's traceparent when it has a usable one, and
+// the handler runs inside it, so the spans it makes are the run's children. The span ends with the response's
+// outcome; a handler that throws, or answers outside the contract, ends it failed. The answer is the same with
+// telemetry on or off.
 
 import { createServer } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
@@ -14,6 +19,8 @@ import { refusalAnswer } from '../../../shared/access-token.ts';
 import type { AccessTokenCheck, Caller } from '../../../shared/access-token.ts';
 import { invocationRequestSchema, invocationResponseSchema } from '../../../shared/agent-contract.ts';
 import type { InboundMessage, InvocationResponse } from '../../../shared/agent-contract.ts';
+import type { Telemetry } from '../../../shared/telemetry.ts';
+import { attributeText } from '../run/spans.ts';
 
 export type AgentIdentity = { id: string; implementation: string };
 
@@ -53,10 +60,29 @@ function sendJson(response: ServerResponse, status: number, payload: unknown): v
   response.end(JSON.stringify(payload));
 }
 
+// The handler's answer, or the failed answer when it throws.
+async function answerOf(identity: AgentIdentity, handler: Handler, message: InboundMessage, caller: Caller): Promise<InvocationResponse> {
+  try {
+    return await handler(message, caller);
+  } catch (error) {
+    console.error('The handler threw:', error);
+    return {
+      agent: identity,
+      outcome: 'failed',
+      stop_reason: 'The agent failed unexpectedly.',
+      reply: '',
+      citations: [],
+      case_actions: [],
+      steps: [],
+    };
+  }
+}
+
 async function invoke(
   identity: AgentIdentity,
   handler: Handler,
   checkToken: AccessTokenCheck,
+  telemetry: Telemetry,
   request: IncomingMessage,
   response: ServerResponse,
 ): Promise<void> {
@@ -85,23 +111,17 @@ async function invoke(
 
   // From here the request is valid, so the answer is always inside the contract: a caller that sent
   // a good request gets an outcome and whatever steps were taken, never a bare error status.
-  let result: InvocationResponse;
-  try {
-    result = await handler(parsed.data.message, caller);
-  } catch (error) {
-    console.error('The handler threw:', error);
-    result = {
-      agent: identity,
-      outcome: 'failed',
-      stop_reason: 'The agent failed unexpectedly.',
-      reply: '',
-      citations: [],
-      case_actions: [],
-      steps: [],
-    };
-  }
-
-  const valid = invocationResponseSchema.safeParse(result);
+  const message = parsed.data.message;
+  const run = {
+    kind: 'server',
+    parent: telemetry.extract(request.headers),
+    attributes: { 'gen_ai.agent.id': attributeText(identity.id), 'lab.inquiry.id': attributeText(message.id) },
+  } as const;
+  const valid = await telemetry.span('agent.run', run, async (span) => {
+    const checked = invocationResponseSchema.safeParse(await answerOf(identity, handler, message, caller));
+    span.set({ 'lab.outcome': checked.success ? checked.data.outcome : 'failed' });
+    return checked;
+  });
   if (!valid.success) {
     // The agent's own answer is outside the contract. That is a defect here, not a property of the request.
     console.error('The agent produced a response outside the contract:', valid.error.issues[0]);
@@ -111,7 +131,7 @@ async function invoke(
   sendJson(response, 200, valid.data);
 }
 
-export function createContractServer(identity: AgentIdentity, handler: Handler, checkToken: AccessTokenCheck): Server {
+export function createContractServer(identity: AgentIdentity, handler: Handler, checkToken: AccessTokenCheck, telemetry: Telemetry): Server {
   return createServer((request, response) => {
     const path = new URL(request.url ?? '/', 'http://agent').pathname;
 
@@ -129,7 +149,7 @@ export function createContractServer(identity: AgentIdentity, handler: Handler, 
       return;
     }
 
-    invoke(identity, handler, checkToken, request, response).catch((error: unknown) => {
+    invoke(identity, handler, checkToken, telemetry, request, response).catch((error: unknown) => {
       if (response.headersSent) {
         response.destroy();
         return;

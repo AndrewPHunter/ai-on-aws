@@ -9,6 +9,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { z } from 'zod';
 
 import type { CaseAction, InboundMessage } from '../../../shared/agent-contract.ts';
+import type { Telemetry } from '../../../shared/telemetry.ts';
 import type { ToolDefinition } from '../model/chat.ts';
 import { connectionFailure as readConnectionFailure, payloadOf as readPayload, serviceSentences } from './mcp-answers.ts';
 import type { Connected, ToolOutcome } from './tool-set.ts';
@@ -70,16 +71,33 @@ export function payloadOf(result: unknown): unknown {
   return readPayload(result, SENTENCES);
 }
 
+// fetch, with the current span of `telemetry` written as traceparent on each request as it is sent. The headers
+// given when the connection is made are the same for every request; the trace context is not, so it is written
+// here: a tools/call request made inside a tool.call span carries that span (../run/spans.ts).
+function fetchCarryingTrace(telemetry: Telemetry): typeof fetch {
+  return (input, init) => {
+    const carried: Record<string, string> = {};
+    telemetry.inject(carried);
+    const headers = new Headers(init?.headers);
+    for (const [name, value] of Object.entries(carried)) {
+      headers.set(name, value);
+    }
+    return fetch(input, { ...init, headers });
+  };
+}
+
 export async function connectCaseTools(
   mcpUrl: string,
   message: InboundMessage,
   agentId: string,
   caseSystemToken: string,
   timeoutMs: number,
+  telemetry: Telemetry,
 ): Promise<Connected> {
   const client = new Client({ name: agentId, version: '1' });
   const transport = new StreamableHTTPClientTransport(new URL(mcpUrl), {
     requestInit: { headers: caseSystemHeaders(message, caseSystemToken) },
+    fetch: fetchCarryingTrace(telemetry),
   });
 
   let definitions: ToolDefinition[];

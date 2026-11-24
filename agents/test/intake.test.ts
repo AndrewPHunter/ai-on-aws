@@ -1,20 +1,28 @@
 // The hand-written intake agent's invariants ("Always true" in docs/architecture/intake-agent-handwritten.md),
 // one test each, at its handler, with every dependency a value and nothing on the network. The model and the
 // case system's tools are scripted in memory; each keeps to its contract and reports a failure as a value.
+// intake 15 to 17 pass a telemetry handle with an exporter in memory; intake 17 connects to the scripted MCP
+// server on loopback, because the header it shows is written by the MCP connection.
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { hrTimeToMilliseconds } from '@opentelemetry/core';
+import type { ReadableSpan } from '@opentelemetry/sdk-trace-base';
+import { z } from 'zod';
+
 import { invocationResponseSchema } from '../../shared/agent-contract.ts';
 import type { InboundMessage, InvocationResponse } from '../../shared/agent-contract.ts';
+import type { Telemetry } from '../../shared/telemetry.ts';
 import { handleInquiry } from '../src/intake/handwritten.ts';
 import { createReportCheck } from '../src/intake/report-check.ts';
 import type { Finding } from '../src/intake/report-check.ts';
 import { STOPPED_CHECK_NOT_MADE, STOPPED_FOUND_NOT_RECORDED, TOLD_ONCE } from '../src/intake/run.ts';
 import { LIMITS } from '../src/intake/settings.ts';
 import type { ChatMessage, ChatResult, ToolDefinition } from '../src/model/chat.ts';
+import { connectCaseTools } from '../src/tools/case-system.ts';
 import type { ToolOutcome } from '../src/tools/tool-set.ts';
-import { CALLER, clock, message, prop } from './support.ts';
+import { CALLER, TELEMETRY_OFF, clock, message, prop, recordingTelemetry, result, startMcp } from './support.ts';
 import type { Clock } from './support.ts';
 
 const IDENTITY = { id: 'intake-test', implementation: 'hand-written loop' };
@@ -59,7 +67,7 @@ const ask = (...calls: Array<[name: string, args: unknown]>): ChatResult => ({
     outputTokens: 1,
   },
 });
-const modelFails = (retryable: boolean): ChatResult => ({ ok: false, reason: 'The model could not be asked.', retryable });
+const modelFails = (retryable: boolean, lost = false): ChatResult => ({ ok: false, reason: 'The model could not be asked.', retryable, lost });
 const answered = (payload: unknown): ToolOutcome => ({ kind: 'answered', isError: false, payload });
 const noAnswer: ToolOutcome = { kind: 'no_answer', reason: 'Nothing came back.' };
 const created = (caseId: string): ToolOutcome => answered({ outcome: 'created', case: { case_id: caseId, status: 'incomplete' } });
@@ -67,9 +75,23 @@ const followedUp = (caseId: string): ToolOutcome => answered({ outcome: 'recorde
 // A follow-up to a case an earlier message opened, named by its id.
 const followUp = (event: string): [string, unknown] => ['add_follow_up', { case_id: 'C-9', event }];
 
+type RigOptions = {
+  connect?: 'refused' | 'short' | 'lookup';
+  clock?: Clock;
+  check?: Finding;
+  failure?: string;
+  telemetry?: Telemetry;
+  // The report check made by createReportCheck with a model that gives this answer, in place of the scripted finding.
+  checkAnswers?: ChatResult;
+  // The tools connected over MCP at this address with connectCaseTools, in place of the scripted ones.
+  mcpUrl?: string;
+};
+
 // The handler with scripted dependencies. The model's script is asked per conversation (by its user turn), so two
 // runs on the same dependencies each follow their own.
-function rig(script: Script, tools: Tools = (tool) => (tool === 'create_case' ? created('C-1') : followedUp('C-9')), options: { connect?: 'refused' | 'short' | 'lookup'; clock?: Clock; check?: Finding; failure?: string } = {}) {
+function rig(script: Script, tools: Tools = (tool) => (tool === 'create_case' ? created('C-1') : followedUp('C-9')), options: RigOptions = {}) {
+  const telemetry = options.telemetry ?? TELEMETRY_OFF;
+  const checkAnswers = options.checkAnswers;
   const time = options.clock ?? clock();
   const world: World = { events: [], calls: [], requests: [], connected: [], checks: 0 };
   const seen = new Map<string, number>();
@@ -89,8 +111,9 @@ function rig(script: Script, tools: Tools = (tool) => (tool === 'create_case' ? 
             return Promise.resolve(script(messages, nth));
           },
         },
-        connectTools(connectedMessage, token) {
+        connectTools(connectedMessage, token, timeoutMs) {
           world.connected.push({ message: connectedMessage, token });
+          if (options.mcpUrl !== undefined) return connectCaseTools(options.mcpUrl, connectedMessage, IDENTITY.id, token, timeoutMs, telemetry);
           if (options.connect === 'refused') return Promise.resolve({ ok: false, reason: 'The case system refused the caller.' });
           return Promise.resolve({
             ok: true,
@@ -113,8 +136,12 @@ function rig(script: Script, tools: Tools = (tool) => (tool === 'create_case' ? 
           return Promise.resolve();
         },
         random: () => 0.5,
-        reportCheck: () => Promise.resolve((world.checks++, { finding: options.check ?? 'none', failure: options.failure })),
+        reportCheck:
+          checkAnswers === undefined
+            ? () => Promise.resolve((world.checks++, { finding: options.check ?? 'none', failure: options.failure }))
+            : createReportCheck({ id: 'checker', complete: () => Promise.resolve((world.checks++, checkAnswers)) }, telemetry),
         limits: LIMITS,
+        telemetry,
       },
       inbound,
       CALLER,
@@ -328,10 +355,119 @@ test('intake 14. a run that recorded no case ends completed only when the report
   // The check itself: two messages, the message's text alone in its tags, no tools; yes, no, anything else; a failure.
   const sent: Array<{ messages: ChatMessage[]; tools: ToolDefinition[] }> = [];
   const answers = ['Yes.', ' no ', 'Maybe so.'];
-  const check = createReportCheck({ id: 'scripted', complete: (messages, tools) => (sent.push({ messages, tools }), Promise.resolve(say(answers[sent.length - 1] ?? ''))) });
+  const check = createReportCheck({ id: 'scripted', complete: (messages, tools) => (sent.push({ messages, tools }), Promise.resolve(say(answers[sent.length - 1] ?? ''))) }, TELEMETRY_OFF);
   const asked = message('msg-1', 'Patient JD had a rash.');
   const findings = [await check(asked, 1_000), await check(asked, 1_000), await check(asked, 1_000)].map((made) => made.finding);
   assert.deepEqual([findings, sent[0]?.messages.length, sent[0]?.messages[1]?.content, sent[0]?.tools], [['adverse_event', 'none', 'unknown'], 2, `<message>\n${asked.text}\n</message>`, []]);
-  const failing = createReportCheck({ id: 'scripted', complete: () => Promise.resolve(modelFails(true)) });
+  const failing = createReportCheck({ id: 'scripted', complete: () => Promise.resolve(modelFails(true)) }, TELEMETRY_OFF);
   assert.deepEqual(await failing(asked, 1_000), { finding: 'unknown', failure: 'The model could not be asked.' });
+});
+
+// --- Spans -----------------------------------------------------------------------------------------------------
+
+const attribute = (span: ReadableSpan, name: string): unknown => span.attributes[name];
+const callsIn = (spans: ReadableSpan[]): ReadableSpan[] => spans.filter((s) => s.name !== 'agent.run');
+
+// Runs the handler inside a span standing in for the run's span that contract/server.ts holds around it.
+const underRun = (telemetry: Telemetry, run: () => Promise<InvocationResponse>): Promise<'answered' | 'threw'> =>
+  telemetry.span('agent.run', { kind: 'server' }, () => run().then(() => 'answered' as const, () => 'threw' as const));
+
+test('intake 15. every request to the model, the report check\'s included, and every tool call is a span that ends when the call ends, so it is exported even when the run later throws', async () => {
+  const rows: Array<{ name: string; script: (endedAtThrow: number[], telemetry: Telemetry) => Script; checkAnswers?: ChatResult; ended: string; calls: unknown[][]; usage: unknown[] }> = [
+    {
+      name: 'the run throws after a model request and a tool call',
+      script: (endedAtThrow, telemetry) => (_messages, nth) => {
+        if (nth === 0) return ask(['create_case', { event: 'rash' }]);
+        endedAtThrow.push(telemetry.counts().ended);
+        throw new Error('The model client threw.');
+      },
+      ended: 'threw',
+      calls: [['model.call', 'model:turn-1', 1, 'executed'], ['tool.call', 'tool:turn-1:1', 1, 'executed'], ['model.call', 'model:turn-2', 1, 'failed']],
+      usage: ['model:turn-1', 'scripted', 'tool_calls', 1, 1],
+    },
+    {
+      name: 'a request sent again, then the report check, whose input count is not reported',
+      script: () => turns(modelFails(true, true), say('Nothing to record.')),
+      checkAnswers: { ok: true, completion: { content: 'No.', toolCalls: [], finishReason: 'stop', inputTokens: null, outputTokens: 3 } },
+      ended: 'answered',
+      calls: [['model.call', 'model:turn-1', 1, 'response_lost'], ['model.call', 'model:turn-1', 2, 'executed'], ['model.call', 'model:report-check', 1, 'executed']],
+      usage: ['model:report-check', 'checker', 'stop', undefined, 3],
+    },
+  ];
+  for (const row of rows) {
+    const { telemetry, exported } = recordingTelemetry();
+    const endedAtThrow: number[] = [];
+    const { run } = rig(row.script(endedAtThrow, telemetry), undefined, { telemetry, checkAnswers: row.checkAnswers });
+    assert.equal(await underRun(telemetry, () => run()), row.ended, row.name);
+    const spans = await exported();
+    const runSpan = spans.find((s) => s.name === 'agent.run');
+    const calls = callsIn(spans);
+    assert.deepEqual(calls.map((s) => [s.name, attribute(s, 'lab.operation.id'), attribute(s, 'lab.attempt'), attribute(s, 'lab.outcome')]), row.calls, row.name);
+    if (row.ended === 'threw') assert.deepEqual(endedAtThrow, [row.calls.length - 1], `${row.name}: the calls before the throw had not ended when it came`);
+    for (const [index, span] of calls.entries()) {
+      assert.equal(span.parentSpanContext?.spanId, runSpan?.spanContext().spanId, `${row.name}: ${span.name} is not a child of the run`);
+      const next = calls[index + 1];
+      if (next) assert.ok(hrTimeToMilliseconds(span.endTime) <= hrTimeToMilliseconds(next.startTime), `${row.name}: ${span.name} ended after the next call started`);
+    }
+    const [operation, ...usage] = row.usage;
+    const counted = calls.find((s) => attribute(s, 'lab.operation.id') === operation && attribute(s, 'lab.outcome') === 'executed');
+    assert.deepEqual(
+      counted && ['gen_ai.request.model', 'lab.finish_reason', 'gen_ai.usage.input_tokens', 'gen_ai.usage.output_tokens'].map((name) => attribute(counted, name)),
+      usage,
+      `${row.name}: the model, finish reason and counts`,
+    );
+    assert.equal(JSON.stringify(spans.map((s) => s.attributes)).includes('rash'), false, `${row.name}: a span holds content`);
+  }
+});
+
+test('intake 16. a call the rules refuse is a span with outcome refused and nothing is sent; a repeated write is a second span with the same operation and the next attempt', async () => {
+  const rows: Array<{ name: string; script: Script; tools?: Tools; spans: unknown[][]; sent: number }> = [
+    { name: 'a tool that does not exist', script: turns(ask(['delete_case', { case_id: 'C-1' }])), spans: [[undefined, 'model', 'tool:turn-1:1', 1, 'refused']], sent: 0 },
+    { name: 'arguments that are not JSON', script: turns(ask(['create_case', '{"event": '])), spans: [['create_case', 'model', 'tool:turn-1:1', 1, 'refused']], sent: 0 },
+    {
+      name: 'a second create_case',
+      script: turns(ask(['create_case', { event: 'a' }]), ask(['create_case', { event: 'b' }])),
+      spans: [['create_case', 'model', 'tool:turn-1:1', 1, 'executed'], ['create_case', 'model', 'tool:turn-2:1', 1, 'refused']],
+      sent: 1,
+    },
+    {
+      name: 'a write that got no answer, repeated',
+      script: turns(ask(['create_case', { event: 'rash' }])),
+      tools: (_tool, _args, nth) => (nth === 0 ? noAnswer : created('C-1')),
+      spans: [['create_case', 'model', 'tool:turn-1:1', 1, 'response_lost'], ['create_case', 'agent', 'tool:turn-1:1', 2, 'executed']],
+      sent: 2,
+    },
+  ];
+  for (const row of rows) {
+    const { telemetry, exported } = recordingTelemetry();
+    const { world, run } = rig(row.script, row.tools, { telemetry });
+    await run();
+    const tools = (await exported()).filter((s) => s.name === 'tool.call');
+    assert.deepEqual(
+      tools.map((s) => ['gen_ai.tool.name', 'lab.requested_by', 'lab.operation.id', 'lab.attempt', 'lab.outcome'].map((name) => attribute(s, name))),
+      row.spans,
+      row.name,
+    );
+    assert.equal(world.calls.length, row.sent, `${row.name}: calls that reached the case system`);
+  }
+});
+
+test('intake 17. a request to the case system for a tool call carries the traceparent of that call\'s own span', async (t) => {
+  const rows: Array<{ name: string; drops: number }> = [
+    { name: 'a write answered', drops: 0 },
+    { name: 'a write that got no answer, repeated', drops: 1 },
+  ];
+  for (const row of rows) {
+    const mcp = await startMcp(t, {
+      create_case: { shape: { event: z.string() }, answer: (_args, nth) => (nth < row.drops ? 'drop' : result({ outcome: 'created', case: { case_id: 'C-1', status: 'incomplete' } })) },
+      add_follow_up: { shape: { case_id: z.string(), event: z.string() }, answer: () => result({ error: 'not_scripted' }, true) },
+    });
+    const { telemetry, exported } = recordingTelemetry();
+    const { run } = rig(turns(ask(['create_case', { event: 'rash' }])), undefined, { telemetry, mcpUrl: mcp.url });
+    await run();
+    const tools = (await exported()).filter((s) => s.name === 'tool.call');
+    const carried = mcp.requests.filter((r) => prop(JSON.parse(r.body), 'method') === 'tools/call').map((r) => r.headers.traceparent);
+    assert.equal(tools.length, row.drops + 1, `${row.name}: tool.call spans`);
+    assert.deepEqual(carried, tools.map((s) => `00-${s.spanContext().traceId}-${s.spanContext().spanId}-01`), row.name);
+  }
 });

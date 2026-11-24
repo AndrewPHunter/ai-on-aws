@@ -14,14 +14,17 @@ import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { SpanKind } from '@opentelemetry/api';
+
 import type { AccessTokenCheck } from '../../shared/access-token.ts';
 import type { TokenExchangeRequest, TokenExchangeResult } from '../../shared/token-exchange.ts';
 import { invocationResponseSchema } from '../../shared/agent-contract.ts';
+import type { InvocationResponse } from '../../shared/agent-contract.ts';
 import { createLocalEdge } from '../src/contract/edge.ts';
 import { createContractServer } from '../src/contract/server.ts';
 import { createChatModel } from '../src/model/chat.ts';
 import { CASE_SYSTEM, connectWithToolToken } from '../src/tools/tool-token.ts';
-import { ask, listen, message, say, startModel, stop } from './support.ts';
+import { CALLER, TELEMETRY_OFF, ask, listen, message, recordingTelemetry, say, startModel, stop } from './support.ts';
 
 const IDENTITY = { id: 'runtime-test-agent', implementation: 'none' };
 const CHILD = fileURLToPath(new URL('./sdk-child.ts', import.meta.url));
@@ -105,6 +108,7 @@ test('runtime 1. a request with no accepted token is answered 401 before its bod
         return Promise.reject(new Error('not to be called'));
       },
       row.check,
+      TELEMETRY_OFF,
     );
     const contractUrl = await listen(contract);
     const edge = createLocalEdge({ upstream: { host: '127.0.0.1', port: Number(new URL(contractUrl).port) }, checkToken: row.check, newId: randomUUID, log: () => undefined });
@@ -206,5 +210,58 @@ test('runtime 5. an agent connects to its tool server only with a token it got f
     if (row.answer.kind === 'token') assert.deepEqual(limits, [6_000], `${row.name}: the connection was not given what the exchange left`);
     if (row.answer.kind === 'refused') assert.ok(!result.ok && result.reason.includes(row.answer.detail), `${row.name}: the reason does not carry the detail`);
     if (row.answer.kind === 'unavailable') assert.ok(!result.ok && !result.reason.includes(row.answer.detail) && !result.reason.includes('identity.example'), `${row.name}: the reason carries the detail or its address`);
+  }
+});
+
+test('runtime 6. the front door passes traceparent to the handler: one agent.run span per accepted request, the handler inside it, a child of a usable traceparent, ending with the outcome, failed when the handler throws', async (t) => {
+  const { telemetry, exported } = recordingTelemetry();
+  const answer: InvocationResponse = { agent: IDENTITY, outcome: 'completed', stop_reason: null, reply: 'Received.', citations: [], case_actions: [], steps: [] };
+  const contract = createContractServer(
+    IDENTITY,
+    async (m) => {
+      // A call the handler makes, as a model or tool call would be.
+      await telemetry.span('tool.call', { kind: 'client', attributes: { 'lab.inquiry.id': m.id } }, () => undefined);
+      return m.id.startsWith('throws') ? Promise.reject(new Error('The handler failed on purpose.')) : answer;
+    },
+    () => Promise.resolve({ kind: 'caller', caller: CALLER }),
+    telemetry,
+  );
+  const contractUrl = await listen(contract);
+  const edge = createLocalEdge({ upstream: { host: '127.0.0.1', port: Number(new URL(contractUrl).port) }, checkToken: () => Promise.resolve({ kind: 'caller', caller: CALLER }), newId: randomUUID, log: () => undefined });
+  const edgeUrl = await listen(edge);
+  t.after(() => {
+    stop(contract);
+    stop(edge);
+  });
+  const parent = { traceId: '0af7651916cd43dd8448eb211c80319c', spanId: 'b7ad6b7169203331' };
+  const valid = `00-${parent.traceId}-${parent.spanId}-01`;
+  const rows: Array<{ id: string; url: string; traceparent?: string; child: boolean; outcome: string }> = [
+    { id: 'contract-with-parent', url: contractUrl, traceparent: valid, child: true, outcome: 'completed' },
+    { id: 'throws-without-parent', url: contractUrl, child: false, outcome: 'failed' },
+    { id: 'contract-malformed-parent', url: contractUrl, traceparent: '00-not-a-trace-01', child: false, outcome: 'completed' },
+    { id: 'edge-with-parent', url: edgeUrl, traceparent: valid, child: true, outcome: 'completed' },
+  ];
+  for (const row of rows) {
+    const response = await fetch(`${row.url}/invocations`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer accepted', ...(row.traceparent === undefined ? {} : { traceparent: row.traceparent }) },
+      body: JSON.stringify({ message: message(row.id, 'Patient JD had a rash.') }),
+    });
+    const body = invocationResponseSchema.parse(await response.json());
+    assert.deepEqual([response.status, body.outcome], [200, row.outcome], `${row.id}: the answer`);
+  }
+  const spans = await exported();
+  for (const row of rows) {
+    const runs = spans.filter((s) => s.name === 'agent.run' && s.attributes['lab.inquiry.id'] === row.id);
+    assert.equal(runs.length, 1, `${row.id}: agent.run spans`);
+    const [run] = runs;
+    assert.deepEqual([run?.kind, run?.attributes['gen_ai.agent.id'], run?.attributes['lab.outcome']], [SpanKind.SERVER, IDENTITY.id, row.outcome], row.id);
+    assert.deepEqual(
+      [run?.spanContext().traceId === parent.traceId, run?.parentSpanContext?.spanId === parent.spanId, run?.parentSpanContext === undefined],
+      [row.child, row.child, !row.child],
+      `${row.id}: the parent`,
+    );
+    const inside = spans.find((s) => s.name === 'tool.call' && s.attributes['lab.inquiry.id'] === row.id);
+    assert.equal(inside?.parentSpanContext?.spanId, run?.spanContext().spanId, `${row.id}: the handler did not run inside the run's span`);
   }
 });

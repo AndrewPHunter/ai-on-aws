@@ -5,8 +5,10 @@
 // finding is the rule `afterReply` in run.ts.
 
 import type { InboundMessage, ReportFinding } from '../../../shared/agent-contract.ts';
+import type { Telemetry } from '../../../shared/telemetry.ts';
 import type { ChatModel } from '../model/chat.ts';
 import { timed } from '../run/record.ts';
+import { REPORT_CHECK_OPERATION, modelCallSpan } from '../run/spans.ts';
 import { recordError } from '../run/steps.ts';
 import { STOPPED_CHECK_NOT_MADE, afterReply } from './run.ts';
 import type { AfterReply, IntakeRun } from './run.ts';
@@ -33,16 +35,19 @@ export function findingFrom(answer: string | null): Finding {
   return word === 'yes' ? 'adverse_event' : word === 'no' ? 'none' : 'unknown';
 }
 
-// The check made with a chat model: one request, two messages, no tools, thinking off, never sent again.
-export function createReportCheck(model: ChatModel): ReportCheck {
+// The check made with a chat model: one request, two messages, no tools, thinking off, never sent again. The
+// request is a model.call span (../run/spans.ts) with its usage; the agent on Strands gives a handle that is off.
+export function createReportCheck(model: ChatModel, telemetry: Telemetry): ReportCheck {
   return async (message, timeoutMs) => {
-    const answer = await model.complete(
-      [
-        { role: 'system', content: REPORT_CHECK_PROMPT },
-        { role: 'user', content: `<message>\n${message.text}\n</message>` },
-      ],
-      [],
-      { timeoutMs, thinking: false },
+    const answer = await modelCallSpan(telemetry, model.id, { operation: REPORT_CHECK_OPERATION, attempt: 1 }, () =>
+      model.complete(
+        [
+          { role: 'system', content: REPORT_CHECK_PROMPT },
+          { role: 'user', content: `<message>\n${message.text}\n</message>` },
+        ],
+        [],
+        { timeoutMs, thinking: false },
+      ),
     );
     return answer.ok ? { finding: findingFrom(answer.completion.content) } : { finding: 'unknown', failure: answer.reason };
   };
