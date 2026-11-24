@@ -65,6 +65,16 @@ services:
       # two values this container takes from platform/identity/.env.
       CONTACT_FORM_CLIENT_SECRET: ${IDENTITY_CONTACT_FORM_CLIENT_SECRET:?run platform/identity/setup.sh}
       LAB_EXPLORER_CLIENT_SECRET: ${IDENTITY_LAB_EXPLORER_CLIENT_SECRET:?run platform/identity/setup.sh}
+      # The pieces the status checks by their health route alone, sent no key or token. Each is optional: one not set
+      # is reported as not set up. The retrieval service and the search engine by their service names on the shared
+      # network.
+      RETRIEVAL_URL: http://knowledge:8000
+      SEARCH_URL: http://search:9200
+      # The three model servers' base URLs, from model/.env, which the root compose.yaml reads for this file; empty
+      # where they are not set. Their key, MODEL_API_KEY, is not passed in: their health route needs none.
+      MODEL_BASE_URL: ${MODEL_BASE_URL:-}
+      MODEL_EMBED_BASE_URL: ${MODEL_EMBED_BASE_URL:-}
+      MODEL_RERANK_BASE_URL: ${MODEL_RERANK_BASE_URL:-}
     ports:
       # Published on this machine only.
       - "127.0.0.1:3000:3000"

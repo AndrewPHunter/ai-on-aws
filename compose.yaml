@@ -12,9 +12,12 @@ include:
   # The agents' compose file is read with platform/identity/.env, for each agent's client secret.
   - path: agents/compose.yaml
     env_file: platform/identity/.env
-  # The client's compose file is read with platform/identity/.env, for the secrets of its three clients.
+  # The client's compose file is read with platform/identity/.env, for the secrets of its three clients, and with
+  # model/.env, for the three model servers' base URLs its status checks.
   - path: client/compose.yaml
-    env_file: platform/identity/.env
+    env_file:
+      - platform/identity/.env
+      - model/.env
   - platform/identity/compose.yaml
   # The search engine and the retrieval service. The index is built into the running stack with knowledge/index.sh.
   - knowledge/compose.yaml

@@ -40,11 +40,12 @@ import type {
   TraceResponse,
   TracedRun,
 } from '../shared/api.ts';
-import { invokeAgent, ping, pingAgent } from './agents.ts';
+import { invokeAgent, isTimeout, ping, pingAgent, seconds } from './agents.ts';
 import type { PingResult } from './agents.ts';
 import { getCase, listCases, postReview } from './cases.ts';
 import type { Forwarded } from './cases.ts';
-import type { AgentConfig, Config, MachineClient } from './config.ts';
+import { HEALTH_SETTINGS } from './config.ts';
+import type { AgentConfig, Config, HealthChecked, MachineClient } from './config.ts';
 import { IdentityUnreachable, SignInRefused } from './identity.ts';
 import type { IdentityProvider, MachineTokenResult } from './identity.ts';
 import { SAMPLES } from './samples.ts';
@@ -123,6 +124,83 @@ const NO_AGENT: PieceStatus = {
   state: 'not_configured',
   detail: 'No agent is configured.',
 };
+
+// The pieces the status checks by their health route alone, after the ones above, in this order. Each is sent no
+// key or token: the client is never given the model servers' key, and their /health needs none.
+const HEALTH_PIECES: readonly { id: HealthChecked; name: string; role: string; check: (url: string, timeoutMs: number) => Promise<PingResult> }[] = [
+  {
+    id: 'retrieval',
+    name: 'Retrieval service',
+    role: 'Finds a label and searches its passages for the label expert.',
+    check: (url, timeoutMs) => answersHealth(`${url}/ping`, timeoutMs),
+  },
+  { id: 'search', name: 'Search engine', role: 'Holds the index of label passages.', check: clusterHealth },
+  {
+    id: 'model-chat',
+    name: 'Chat model',
+    role: 'The model every agent asks.',
+    check: (url, timeoutMs) => answersHealth(`${url}/health`, timeoutMs),
+  },
+  {
+    id: 'model-embedding',
+    name: 'Embedding model',
+    role: 'Turns a question into a vector for the search.',
+    check: (url, timeoutMs) => answersHealth(`${url}/health`, timeoutMs),
+  },
+  {
+    id: 'model-reranker',
+    name: 'Reranker',
+    role: 'Puts the passages found in order.',
+    check: (url, timeoutMs) => answersHealth(`${url}/health`, timeoutMs),
+  },
+];
+
+type HealthAnswer = { outcome: 'answered'; status: number; body: string } | { outcome: 'down'; reason: string };
+
+// A health check whose reason never holds the address: the model servers are a machine on the local network, and
+// fetch names the address in the cause of a failed connection. Only the cause's error code is kept. The body is read
+// under the same time limit as the answer.
+async function healthAnswer(target: string, timeoutMs: number): Promise<HealthAnswer> {
+  try {
+    const response = await fetch(target, { signal: AbortSignal.timeout(timeoutMs) });
+    return { outcome: 'answered', status: response.status, body: await response.text() };
+  } catch (error) {
+    if (isTimeout(error)) {
+      return { outcome: 'down', reason: `It did not answer the health check within ${seconds(timeoutMs)}.` };
+    }
+    const cause: unknown = error instanceof Error ? error.cause : undefined;
+    const code = typeof cause === 'object' && cause !== null && 'code' in cause && typeof cause.code === 'string' ? cause.code : undefined;
+    return { outcome: 'down', reason: code === undefined ? 'Could not reach it.' : `Could not reach it (${code}).` };
+  }
+}
+
+function notAnswered(status: number): PingResult {
+  return { outcome: 'down', reason: `It answered the health check with status ${status}.` };
+}
+
+// Up when the health route answers 2xx.
+async function answersHealth(target: string, timeoutMs: number): Promise<PingResult> {
+  const answer = await healthAnswer(target, timeoutMs);
+  if (answer.outcome === 'down') return answer;
+  return answer.status >= 200 && answer.status <= 299 ? { outcome: 'up' } : notAnswered(answer.status);
+}
+
+// The search engine is up when /_cluster/health answers 2xx with a cluster status of green or yellow.
+async function clusterHealth(url: string, timeoutMs: number): Promise<PingResult> {
+  const answer = await healthAnswer(`${url}/_cluster/health`, timeoutMs);
+  if (answer.outcome === 'down') return answer;
+  if (answer.status < 200 || answer.status > 299) return notAnswered(answer.status);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(answer.body);
+  } catch {
+    return { outcome: 'down', reason: 'Its health check answer is not JSON.' };
+  }
+  const cluster = typeof parsed === 'object' && parsed !== null && 'status' in parsed ? parsed.status : undefined;
+  if (cluster === 'green' || cluster === 'yellow') return { outcome: 'up' };
+  if (cluster === 'red') return { outcome: 'down', reason: "The cluster's status is red." };
+  return { outcome: 'down', reason: 'Its health check answer has no cluster status of green, yellow or red.' };
+}
 
 // A failure the caller caused or can act on, answered with its status and an ApiError body.
 class ApiFailure extends Error {
@@ -512,9 +590,20 @@ export function createClientServer(deps: ClientDeps): Server {
       .then((result) =>
         pieceFrom('identity', 'Identity provider', 'Signs desk staff in and issues the tokens sent to agents and the case system.', result),
       );
-    const [pinged, identityState] = await Promise.all([Promise.all([caseSystem, ...agents]), identityPiece]);
+    const checkedByHealth = HEALTH_PIECES.map(({ id, name, role, check }): Promise<PieceStatus> => {
+      const url = config.healthUrls?.[id];
+      if (url === undefined) {
+        return Promise.resolve({ id, name, role, state: 'not_configured', detail: `${HEALTH_SETTINGS[id]} is not set.` });
+      }
+      return check(url, PING_TIMEOUT_MS).then((result) => pieceFrom(id, name, role, result));
+    });
+    const [pinged, identityState, healthStates] = await Promise.all([
+      Promise.all([caseSystem, ...agents]),
+      identityPiece,
+      Promise.all(checkedByHealth),
+    ]);
     const noAgent = config.agents.length === 0 ? [NO_AGENT] : [];
-    return { checked_at: checkedAt, pieces: [...pinged, ...noAgent, identityState] };
+    return { checked_at: checkedAt, pieces: [...pinged, ...noAgent, identityState, ...healthStates] };
   }
 
   // Every API route is given the signed-in user's session.
