@@ -232,7 +232,7 @@ export async function readEmbedding(dataDir: string, chunkReport: Buffer): Promi
       const entry = vectorLineSchema.safeParse(parseLabelJson(line, `${shown} line ${at + 1}`));
       if (!entry.success) throw new IndexingError(`${shown} line ${at + 1} is not a chunk id and a vector: run knowledge/embed.sh`);
       const values = decodeVector(entry.data.vector);
-      if (values.length !== embed.dimensions) throw new IndexingError(`${shown} line ${at + 1} has a vector of other than ${embed.dimensions} numbers`);
+      if (values?.length !== embed.dimensions) throw new IndexingError(`${shown} line ${at + 1} has a vector of other than ${embed.dimensions} numbers`);
       vectors.set(entry.data.id, values);
     }
   }

@@ -1,4 +1,4 @@
-# The check container: typecheck, lint and tests for every TypeScript file. Run it with toolchain/check.sh.
+# The check container: typecheck, lint, tests and the build of the React app. Run it with toolchain/check.sh.
 name: ai-on-aws-toolchain
 
 services:

@@ -19,7 +19,7 @@
 // loop, its own MCP client. The model server is the local stand-in for Bedrock, which is Strands'
 // default model and takes this place on AWS.
 //
-// What Strands does differently from the hand-written loop, each seen in a test:
+// What Strands does differently from the hand-written loop:
 //
 //   - Its MCP tool makes the call with no time limit, so a lost reply would wait until the run's
 //     time limit. CaseTool below makes the same call through Strands' MCP client with the limit.
