@@ -26,7 +26,8 @@ export function describe(error: unknown): string {
 }
 
 // The fetch and the reading of the body share one timeout, so an agent that sends headers and then
-// stalls is treated the same as one that never answers. The call carries the signed-in user's access token.
+// stalls is treated the same as one that never answers. The call carries the access token got for the agent's
+// scope: the signed-in user's, or the contact form's or the lab explorer's own.
 export async function invokeAgent(
   url: string,
   request: InvocationRequest,

@@ -1,5 +1,6 @@
 // The desk's side of OpenID Connect: where sign-in starts, how it is completed, how an access token for
 // one scope is got by a refresh, and where sign-out goes. openid-client runs the protocol and validates the ID token.
+// Also the token a machine client (the contact form, the lab explorer) gets for itself by client credentials.
 //
 // The discovery document is fetched here, not by openid-client, and its issuer must equal OIDC_ISSUER
 // exactly. In the lab it is fetched at http://identity:8080 and names http://localhost:8090/realms/lab;
@@ -14,6 +15,7 @@
 
 import * as oidc from 'openid-client';
 
+import { MachineTokenFailed, machineToken } from '../../shared/machine-token.ts';
 import { describe, isTimeout, seconds } from './agents.ts';
 import type { PingResult } from './agents.ts';
 import type { OidcConfig } from './config.ts';
@@ -46,6 +48,10 @@ export type Refreshed = {
 };
 
 export type PendingSignIn = { state: string; nonce: string; verifier: string };
+
+// A token a machine client got for itself by client credentials, or why it could not. expiresAt is by this module's
+// clock, in milliseconds since the epoch. The reason is a sentence for a person and holds no secret or token.
+export type MachineTokenResult = { outcome: 'token'; token: string; expiresAt: number } | { outcome: 'failed'; reason: string };
 
 // The provider cannot be reached, answers discovery with something unusable, or names another issuer.
 // The message is a sentence for a person and holds nothing secret.
@@ -272,6 +278,29 @@ export class IdentityProvider {
       }
       console.error(`Renewing an access token was refused: ${summary(error)}`);
       throw new SignInRefused('The identity provider refused to renew the access token.');
+    }
+  }
+
+  // A token for a machine client, as itself, for one scope: the client-credentials grant (shared/machine-token.ts) at
+  // the token endpoint the discovery document names. One request, never retried. Never throws: a failure is returned
+  // as a sentence that holds neither the secret nor a token.
+  async clientCredentials(clientId: string, clientSecret: string, scope: string): Promise<MachineTokenResult> {
+    try {
+      const tokenEndpoint = (await this.metadataNow()).token_endpoint;
+      if (tokenEndpoint === undefined) {
+        return { outcome: 'failed', reason: "The identity provider's discovery document has no token_endpoint." };
+      }
+      const got = await machineToken(
+        { tokenEndpoint, clientId, clientSecret, scopes: [scope], timeoutMs: IDENTITY_TIMEOUT_MS },
+        { fetch, now: () => this.now().getTime() },
+      );
+      return { outcome: 'token', token: got.token, expiresAt: got.expiresAt };
+    } catch (error) {
+      if (error instanceof IdentityUnreachable || error instanceof MachineTokenFailed) {
+        return { outcome: 'failed', reason: error.message };
+      }
+      console.error(`Getting a token for the client ${clientId} failed: ${summary(error)}`);
+      return { outcome: 'failed', reason: "Getting the token failed unexpectedly. The cause is in the client's log." };
     }
   }
 

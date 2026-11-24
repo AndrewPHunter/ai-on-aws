@@ -2,16 +2,16 @@
 // each is a scripted server on loopback that records what it was sent. The client runs with an in-memory store, a
 // clock that moves only when a test moves it, and seeded randomness. Outside auth.test.ts the identity provider is
 // an IdentityProvider whose refresh is a function of the refresh token and the scope: no token is signed, nothing is
-// fetched.
+// fetched. A machine client's token is a function too (machineTokens).
 
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import type { IncomingMessage, Server } from 'node:http';
 
 import type { InvocationResponse } from '../../shared/agent-contract.ts';
-import type { AgentConfig, AgentScope, Config } from '../src/config.ts';
+import type { AgentConfig, AgentScope, Config, MachineClient } from '../src/config.ts';
 import { IdentityProvider, SignInRefused } from '../src/identity.ts';
-import type { Refreshed, SignedInUser } from '../src/identity.ts';
+import type { MachineTokenResult, Refreshed, SignedInUser } from '../src/identity.ts';
 import { SESSION_COOKIE, createClientServer } from '../src/server.ts';
 import { SessionStore } from '../src/sessions.ts';
 import { InquiryStore } from '../src/store.ts';
@@ -108,6 +108,23 @@ export class ScriptedRenewal extends IdentityProvider {
   }
 }
 
+// A machine client c's token for a scope s is "c for s", with ten minutes to live, unless `refuse` says the token
+// endpoint refuses it now.
+export type MachineTokens = { get: (client: MachineClient, scope: string) => Promise<MachineTokenResult>; refuse: boolean };
+
+export function machineTokens(now: () => Date): MachineTokens {
+  const tokens: MachineTokens = {
+    refuse: false,
+    get: (client, scope) =>
+      Promise.resolve(
+        tokens.refuse
+          ? { outcome: 'failed', reason: `the token endpoint answered 401, unauthorized_client to client ${client}` }
+          : { outcome: 'token', token: `${client} for ${scope}`, expiresAt: now().getTime() + 600_000 },
+      ),
+  };
+  return tokens;
+}
+
 // An agent for deskConfig; its scope is agents:intake and its wait 180 s unless given.
 export type TestAgent = Omit<AgentConfig, 'scope' | 'wait_seconds'> & { scope?: AgentScope; wait_seconds?: number };
 
@@ -127,6 +144,7 @@ export function deskConfig(options: { agents: TestAgent[]; caseReviewUrl: string
       postLogoutRedirectUri: `${APP_ORIGIN}/`,
       revocationEndpoint: options.revocationEndpoint ?? null,
     },
+    machineSecrets: { 'contact-form': 'stand-in-contact-form-secret', 'lab-explorer': 'stand-in-lab-explorer-secret' },
     appOrigin: APP_ORIGIN,
     rolesClaim: 'roles',
   };
@@ -134,7 +152,7 @@ export function deskConfig(options: { agents: TestAgent[]; caseReviewUrl: string
 
 export type Desk = { url: string; store: InquiryStore; sessions: SessionStore; clock: Clock };
 
-export async function startDesk(t: Hooks, config: Config, time: Clock, identity?: IdentityProvider): Promise<Desk> {
+export async function startDesk(t: Hooks, config: Config, time: Clock, identity?: IdentityProvider, machine?: MachineTokens): Promise<Desk> {
   const store = new InquiryStore(':memory:', time.now);
   const sessions = new SessionStore(time.now, seeded('desk'));
   let n = 0;
@@ -145,6 +163,7 @@ export async function startDesk(t: Hooks, config: Config, time: Clock, identity?
     newId: () => `id-${++n}`,
     identity: identity ?? new ScriptedRenewal(config, time.now),
     sessions,
+    machineToken: (machine ?? machineTokens(time.now)).get,
   });
   const url = await listen(server);
   t.after(() => {
