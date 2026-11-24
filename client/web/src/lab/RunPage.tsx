@@ -1,5 +1,6 @@
 // One run: the message as it was received, what the run came to, and every step drawn to scale on one time
-// axis. Choosing a step shows what it holds.
+// axis. Choosing a step shows what it holds. Beside it, every run of the same message, and a control to run
+// the message again.
 
 import { useState } from 'react';
 import { Link } from 'react-router';
@@ -14,8 +15,9 @@ import {
   pretty,
   stepTitle,
 } from '../format.ts';
-import { RUN_REFRESH_MS, useLabAgents, useLabRun } from './api.ts';
+import { RUN_REFRESH_MS, useLabAgents, useLabInquiry, useLabRun } from './api.ts';
 import { Empty, Failed, Loading, ResultTag } from './parts.tsx';
+import { RunControl } from './RunControl.tsx';
 
 // One line of the time axis: a step of the run, or a step of another agent's response drawn under the call
 // that asked for it.
@@ -406,7 +408,100 @@ function RunOutcome({ run }: { run: TracedRun }) {
   );
 }
 
-function RunView({ trace, agentName }: { trace: Trace; agentName: string }) {
+// What a completed run did, in words a reader can compare across agents: whether it acted on a case, and
+// whether it answered from the label.
+function didWords(response: InvocationResponse): string {
+  const acted = response.case_actions.length > 0;
+  const answered = response.label_answer === 'answered';
+  if (acted && answered) return 'Case and answer';
+  if (acted) return 'Case only';
+  if (answered) return 'Answer only';
+  return 'No case, no answer';
+}
+
+// Every run of this run's message, by any agent, with this one marked; and a control to run it again.
+function SameMessage({ run, agentName }: { run: TracedRun; agentName: (agentId: string) => string }) {
+  const inquiry = useLabInquiry(run.inquiry_id);
+  const runs = inquiry.data?.inquiry.runs ?? [];
+
+  return (
+    <section className="lab-panel" aria-labelledby="lab-same-title">
+      <h2 id="lab-same-title">The same message, every agent</h2>
+      {inquiry.isPending ? <Loading what="the runs of this message" /> : null}
+      {inquiry.isError ? <Failed what="the runs of this message" error={inquiry.error} /> : null}
+      {inquiry.data === undefined ? null : (
+        <div className="lab-scroll">
+          <table className="lab-table">
+            <thead>
+              <tr>
+                <th scope="col">Agent</th>
+                <th scope="col">Result</th>
+                <th scope="col" className="lab-table__num">
+                  Time
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {runs.map((other) => {
+                const current = other.id === run.id;
+                return (
+                  <tr key={other.id} className={current ? 'lab-row--current' : undefined}>
+                    <th scope="row">
+                      {current ? (
+                        <span aria-current="page">{agentName(other.agent_id)}</span>
+                      ) : (
+                        <Link to={`/lab/runs/${encodeURIComponent(other.id)}`}>{agentName(other.agent_id)}</Link>
+                      )}
+                      <span className="lab-mono lab-table__sub">
+                        {other.agent_id}
+                        {current ? ', this run' : ''}
+                      </span>
+                    </th>
+                    <td>
+                      <ResultTag state={other.state} outcome={other.response?.outcome ?? null} />
+                      {other.response === null ? null : (
+                        <span className="lab-table__sub">{didWords(other.response)}</span>
+                      )}
+                    </td>
+                    <td className="lab-mono lab-table__num">
+                      {other.duration_ms !== null
+                        ? formatDuration(other.duration_ms)
+                        : other.state === 'running'
+                          ? 'still timing'
+                          : '—'}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {runs.some((other) => other.state === 'running') ? (
+        <p className="lab-note" role="status">
+          A run is still going. The table asks again every {RUN_REFRESH_MS / 1000} seconds.
+        </p>
+      ) : null}
+      <RunControl
+        id="lab-run-again"
+        label="Run this message again through"
+        message={{ inquiry_id: run.inquiry_id }}
+        withAll={false}
+        preferred={run.agent_id}
+      />
+    </section>
+  );
+}
+
+function RunView({
+  trace,
+  agentName,
+  agentNameOf,
+}: {
+  trace: Trace;
+  agentName: string;
+  agentNameOf: (agentId: string) => string;
+}) {
   const { run, inquiry } = trace;
   const response = run.response;
   const runStartMs = Date.parse(run.started_at);
@@ -462,10 +557,13 @@ function RunView({ trace, agentName }: { trace: Trace; agentName: string }) {
 
       <div className="lab-pair">
         {selectedRow === undefined ? null : <StepDetail row={selectedRow} />}
-        <section className="lab-panel lab-result" aria-labelledby="lab-result-title">
-          <h2 id="lab-result-title">What the run came to</h2>
-          <RunOutcome run={run} />
-        </section>
+        <div className="lab-side">
+          <section className="lab-panel" aria-labelledby="lab-result-title">
+            <h2 id="lab-result-title">What the run came to</h2>
+            <RunOutcome run={run} />
+          </section>
+          <SameMessage run={run} agentName={agentNameOf} />
+        </div>
       </div>
     </>
   );
@@ -493,6 +591,9 @@ export function RunPage({ runId }: { runId: string }) {
     );
   }
   const { run } = trace.data.trace;
-  const agentName = agents.data?.agents.find((agent) => agent.id === run.agent_id)?.name ?? run.agent_id;
-  return <RunView key={run.id} trace={trace.data.trace} agentName={agentName} />;
+  const agentNameOf = (agentId: string) =>
+    agents.data?.agents.find((agent) => agent.id === agentId)?.name ?? agentId;
+  return (
+    <RunView key={run.id} trace={trace.data.trace} agentName={agentNameOf(run.agent_id)} agentNameOf={agentNameOf} />
+  );
 }

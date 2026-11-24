@@ -1,6 +1,6 @@
 // Wording and number formatting shared by the screens.
 
-import type { CaseStatus, ElementName, LabelAnswer, RunState, Step } from '../../shared/api.ts';
+import type { CaseStatus, ElementName, LabelAnswer, Step } from '../../shared/api.ts';
 
 const dateTime = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 const dateOnly = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' });
@@ -49,12 +49,6 @@ export const ELEMENT_LABEL: Record<ElementName, string> = {
   reporter: 'Reporter',
   suspect_drug: 'Suspect drug',
   event: 'Adverse event',
-};
-
-export const RUN_STATE_LABEL: Record<RunState, string> = {
-  running: 'Working',
-  completed: 'Finished',
-  failed: 'Did not run',
 };
 
 const AUDIT_LABEL: Record<string, string> = {
@@ -232,6 +226,22 @@ export function actorWords(actorKind: 'agent' | 'reviewer', actor: string): stri
     return actor;
   }
   return INTAKE_AGENTS.has(actor) ? 'the intake agent' : 'an agent';
+}
+
+// How a message reached the desk, in words, from who entered it: a person logged it, or it came in through the
+// contact form or the lab explorer, which the server names in place of a person. Null when nobody is recorded.
+export function arrivalWords(enteredBy: { name: string } | null): string | null {
+  if (enteredBy === null) {
+    return null;
+  }
+  switch (enteredBy.name) {
+    case 'Contact form':
+      return 'sent through the contact form';
+    case 'Lab explorer':
+      return 'sent from the lab explorer';
+    default:
+      return `logged by ${enteredBy.name}`;
+  }
 }
 
 export function pretty(value: unknown): string {

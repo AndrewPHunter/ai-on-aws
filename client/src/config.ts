@@ -56,12 +56,19 @@ export type OidcConfig = {
   revocationEndpoint: string | null;
 };
 
+// The two clients that call agents as themselves, nobody being signed in: the contact form and the lab explorer.
+// Their ids at the identity provider are fixed here; their secrets are settings.
+export const MACHINE_CLIENTS = ['contact-form', 'lab-explorer'] as const;
+export type MachineClient = (typeof MACHINE_CLIENTS)[number];
+
 export type Config = {
   dbPath: string;
   caseReviewUrl: string;
   agents: AgentConfig[];
   webRoot: string;
   oidc: OidcConfig;
+  // Each machine client's secret at the identity provider, by client id.
+  machineSecrets: Record<MachineClient, string>;
   // The origin the web app is served from. A POST from any other origin is refused.
   appOrigin: string;
   // The ID-token claim holding a flat list of role names.
@@ -169,6 +176,10 @@ export function configFrom(env: NodeJS.ProcessEnv): Config {
           'where the server revokes a refresh token at sign-out: a URL, or none when the provider has no such endpoint',
         ),
       ),
+    },
+    machineSecrets: {
+      'contact-form': required(env, 'CONTACT_FORM_CLIENT_SECRET', "the secret of the client contact-form at the identity provider, which the contact form's runs are sent as"),
+      'lab-explorer': required(env, 'LAB_EXPLORER_CLIENT_SECRET', "the secret of the client lab-explorer at the identity provider, which the lab explorer's runs are sent as"),
     },
     appOrigin: origin('APP_ORIGIN', required(env, 'APP_ORIGIN', 'the origin the web app is served from')),
     rolesClaim: required(env, 'ROLES_CLAIM', 'the ID-token claim holding a flat list of role names'),

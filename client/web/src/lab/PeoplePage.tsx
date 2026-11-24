@@ -14,14 +14,14 @@ const PEOPLE: readonly Person[] = [
     username: 'dana.desk',
     name: 'Dana Desk',
     role: 'desk',
-    may: 'Enter inquiries and send them to the two intake agents and the orchestrator. Sees only the inquiries this account entered.',
+    may: 'Log inquiries, which the orchestrator handles. Sees the desk’s inbox: every inquiry logged at the desk, and the messages that arrive through the contact form.',
     scopes: ['agents:intake', 'agents:orchestrator'],
   },
   {
     username: 'morgan.medinfo',
     name: 'Morgan Medinfo',
     role: 'medical-information',
-    may: 'Everything Dana may do, and send inquiries to the label expert too.',
+    may: 'Everything Dana may do, with the same view of the desk’s inbox, including the messages from the contact form; and ask the label expert directly.',
     scopes: ['agents:intake', 'agents:expert', 'agents:orchestrator'],
   },
   {
@@ -35,7 +35,7 @@ const PEOPLE: readonly Person[] = [
     username: 'avery.auditor',
     name: 'Avery Auditor',
     role: 'auditor',
-    may: 'Read cases and every person’s runs with their steps. Decides nothing and runs no agent.',
+    may: 'Read cases and their history. Decides nothing and runs no agent. The scope traces:read lets this account read every run on the desk’s trace routes; no desk screen uses them.',
     scopes: ['cases:read', 'traces:read'],
   },
 ];

@@ -6,7 +6,7 @@ import type { CaseAction, Inquiry, InquirySummary, Run } from '../../../shared/a
 import { RunAnswer } from '../Answer.tsx';
 import { ApiFailure, failureText, useFinishedInquiries, useInquiries, useInquiry } from '../api.ts';
 import { Empty, Loading, Paragraphs, Problem, Tag } from '../components.tsx';
-import { caseStatusWords, firstLine, formatDateTime, formatDuration, formatWhen } from '../format.ts';
+import { arrivalWords, caseStatusWords, firstLine, formatDateTime, formatDuration, formatWhen } from '../format.ts';
 import { inboxStatus, isLabelLookup, latestRun } from '../inbox.ts';
 import { useMay } from '../session.tsx';
 
@@ -42,7 +42,8 @@ function InboxList({ openId }: { openId: string | undefined }) {
       ) : null}
       {inquiries.data !== undefined && listed.length === 0 ? (
         <p className="inbox__none">
-          Inquiries you log appear here, newest first, each with its draft reply and any case it opened.
+          Inquiries to the desk appear here, newest first, whether logged by staff or sent through the contact form,
+          each with its draft reply and any case it opened.
         </p>
       ) : null}
 
@@ -147,7 +148,7 @@ function Reading({ inquiryId }: { inquiryId: string }) {
     return (
       <div className="reading">
         <Problem>
-          <p>{missing ? 'This inquiry is not in your inbox.' : failureText(inquiry.error)}</p>
+          <p>{missing ? 'This inquiry is not in the desk’s inbox.' : failureText(inquiry.error)}</p>
         </Problem>
       </div>
     );
@@ -155,6 +156,7 @@ function Reading({ inquiryId }: { inquiryId: string }) {
 
   const found = inquiry.data;
   const run = latestRun(found);
+  const arrival = arrivalWords(found.entered_by);
   return (
     <>
       <div className="reading">
@@ -163,7 +165,7 @@ function Reading({ inquiryId }: { inquiryId: string }) {
             <span className="message__from">{found.sender}</span>
             <span className="message__when">
               Received {formatDateTime(found.received_at)}.
-              {found.entered_by === null ? '' : ` Logged by ${found.entered_by.name}.`}
+              {arrival === null ? '' : ` ${arrival.charAt(0).toUpperCase()}${arrival.slice(1)}.`}
             </span>
           </div>
           <div className="writing">

@@ -32,6 +32,14 @@
       {
         "name": "knowledge-gate",
         "description": "Held only by the knowledge gate's service account."
+      },
+      {
+        "name": "contact-form",
+        "description": "Held only by the contact form's service account."
+      },
+      {
+        "name": "lab-explorer",
+        "description": "Held only by the lab explorer's service account."
       }
     ]
   },
@@ -325,23 +333,23 @@
   "scopeMappings": [
     {
       "clientScope": "agents:intake",
-      "roles": ["desk", "medical-information"]
+      "roles": ["desk", "medical-information", "contact-form", "lab-explorer"]
     },
     {
       "clientScope": "agents:expert",
-      "roles": ["medical-information", "evaluation"]
+      "roles": ["medical-information", "evaluation", "lab-explorer"]
     },
     {
       "clientScope": "agents:expert:delegated",
-      "roles": ["desk", "medical-information"]
+      "roles": ["desk", "medical-information", "contact-form", "lab-explorer"]
     },
     {
       "clientScope": "agents:orchestrator",
-      "roles": ["desk", "medical-information"]
+      "roles": ["desk", "medical-information", "contact-form", "lab-explorer"]
     },
     {
       "clientScope": "cases:write",
-      "roles": ["desk", "medical-information"]
+      "roles": ["desk", "medical-information", "contact-form", "lab-explorer"]
     },
     {
       "clientScope": "cases:read",
@@ -353,7 +361,7 @@
     },
     {
       "clientScope": "labels:search",
-      "roles": ["desk", "medical-information", "evaluation", "knowledge-gate"]
+      "roles": ["desk", "medical-information", "evaluation", "knowledge-gate", "contact-form", "lab-explorer"]
     },
     {
       "clientScope": "traces:read",
@@ -752,6 +760,116 @@
       ]
     },
     {
+      "clientId": "contact-form",
+      "name": "Contact form",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "bearerOnly": false,
+      "consentRequired": false,
+      "fullScopeAllowed": true,
+      "redirectUris": [],
+      "webOrigins": [],
+      "defaultClientScopes": ["basic", "profile", "email"],
+      "secret": "${IDENTITY_CONTACT_FORM_CLIENT_SECRET}",
+      "attributes": {
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "standard.token.exchange.enabled": "false"
+      },
+      "optionalClientScopes": ["agents:orchestrator"],
+      "protocolMappers": [
+        {
+          "name": "client_id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "config": {
+            "claim.name": "client_id",
+            "claim.value": "contact-form",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "lab-explorer",
+      "name": "Lab explorer",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "bearerOnly": false,
+      "consentRequired": false,
+      "fullScopeAllowed": true,
+      "redirectUris": [],
+      "webOrigins": [],
+      "defaultClientScopes": ["basic", "profile", "email"],
+      "secret": "${IDENTITY_LAB_EXPLORER_CLIENT_SECRET}",
+      "attributes": {
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "standard.token.exchange.enabled": "false"
+      },
+      "optionalClientScopes": ["agents:intake", "agents:expert", "agents:orchestrator"],
+      "protocolMappers": [
+        {
+          "name": "client_id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "config": {
+            "claim.name": "client_id",
+            "claim.value": "lab-explorer",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
       "clientId": "case-system",
       "name": "Case system, named as an audience only",
       "enabled": true,
@@ -876,6 +994,24 @@
       "firstName": "Knowledge",
       "lastName": "Gate",
       "realmRoles": ["default-roles-lab", "knowledge-gate"]
+    },
+    {
+      "id": "6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f07",
+      "username": "service-account-contact-form",
+      "enabled": true,
+      "serviceAccountClientId": "contact-form",
+      "firstName": "Contact",
+      "lastName": "Form",
+      "realmRoles": ["default-roles-lab", "contact-form"]
+    },
+    {
+      "id": "6b1f0c2e-5a3d-4e8f-9b71-2c4d8e0a1f08",
+      "username": "service-account-lab-explorer",
+      "enabled": true,
+      "serviceAccountClientId": "lab-explorer",
+      "firstName": "Lab",
+      "lastName": "Explorer",
+      "realmRoles": ["default-roles-lab", "lab-explorer"]
     }
   ]
 }

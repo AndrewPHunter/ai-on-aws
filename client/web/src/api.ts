@@ -4,6 +4,8 @@ import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/rea
 
 import type {
   CaseRecord,
+  ContactMessageRequest,
+  ContactMessageResponse,
   CaseStatus,
   FoundCases,
   Inquiry,
@@ -176,5 +178,12 @@ export function useReview(caseId: string) {
       void queryClient.invalidateQueries({ queryKey: ['case', caseId] });
       void queryClient.invalidateQueries({ queryKey: ['cases'] });
     },
+  });
+}
+
+// The contact form: a clinician's message, sent with nobody signed in. The answer says only when it was received.
+export function useSendContactMessage() {
+  return useMutation({
+    mutationFn: (payload: ContactMessageRequest) => post<ContactMessageResponse>('/contact/api/messages', payload),
   });
 }
