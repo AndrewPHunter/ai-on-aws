@@ -412,7 +412,8 @@ function RunOutcome({ run }: { run: TracedRun }) {
 // whether it answered from the label.
 function didWords(response: InvocationResponse): string {
   const acted = response.case_actions.length > 0;
-  const answered = response.label_answer === 'answered';
+  // The orchestrator sets no label_answer; its citations are those of the expert replies it shows.
+  const answered = response.label_answer === 'answered' || response.citations.length > 0;
   if (acted && answered) return 'Case and answer';
   if (acted) return 'Case only';
   if (answered) return 'Answer only';
