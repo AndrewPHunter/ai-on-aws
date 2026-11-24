@@ -288,7 +288,7 @@ What may be done is read from the scopes granted at sign-in, which the client ke
 | `GET /api/session` | `{ user: { name, username, roles }, may: { agents, read_cases, decide_cases, read_traces } }`: the ids of the agents whose scope was granted, and whether `cases:read`, `cases:review` and `traces:read` were. No token |
 | `GET /api/agents` | `{ agents: [{ id, name, description }] }`, only the agents whose scope was granted |
 | A call for anything the session may not do | 403 `not_allowed`, before the provider or the target is asked. An agent id that is not configured is 400 `unknown_agent` |
-| `GET /api/inquiries` | Only the inquiries the reader entered, matched by the subject who entered them |
+| `GET /api/inquiries` | Every inquiry of the desk, to a session that may run an agent; what the lab explorer entered is left out |
 | Reading an inquiry and its runs | Any session that may run an agent or read cases, whoever entered the inquiry. To a session that may do neither, 404 `inquiry_not_found`, the answer an inquiry that does not exist gets |
 | Starting a run on an inquiry | Any session that may run that agent, whoever entered the inquiry. A session that may read the inquiry but not run that agent gets 403 `not_allowed`; to a session that may do neither, the inquiry is answered as one that does not exist |
 | `GET /api/traces`, `GET /api/traces/<run_id>` | Every person's runs, with their steps, to a session granted `traces:read`; 403 `not_allowed` to any other, before the store is read. Every other route gives a run without its steps |

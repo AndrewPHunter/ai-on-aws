@@ -16,7 +16,7 @@ Strands is used the way it comes. Its default model is Amazon Bedrock; here the 
 | Rules of a run, its record, its endings | `intake/run.ts` (rules); `run/state.ts`, `run/steps.ts`, `run/turns.ts`, `run/endings.ts` (state, record, endings) | The same files |
 | Limits and sampling settings | `intake/settings.ts` (limits), `run/sampling.ts` (sampling) | The same files |
 | Startup and environment | `intake/serve.ts`, `run/serve.ts` | The same files, plus `LOCAL_RUNTIME_EDGE` |
-| Who may call, and where | `AUTH_ALLOWED_AUDIENCE` `intake-handwritten`, `AUTH_ALLOWED_CLIENTS` `desk`, published on port 8080 | `AUTH_ALLOWED_AUDIENCE` `intake-strands`, `AUTH_ALLOWED_CLIENTS` `desk,orchestrator` (the orchestrator calls it to screen every message), published on port 8081 |
+| Who may call, and where | `AUTH_ALLOWED_AUDIENCE` `intake-handwritten`, `AUTH_ALLOWED_CLIENTS` `desk,lab-explorer`, published on port 8080 | `AUTH_ALLOWED_AUDIENCE` `intake-strands`, `AUTH_ALLOWED_CLIENTS` `desk,orchestrator,lab-explorer` (the orchestrator calls it to screen every message), published on port 8081 |
 | HTTP surface | `contract/server.ts`, written by hand | `BedrockAgentCoreApp` (`contract/sdk-app.ts`), behind the local edge (`contract/edge.ts`), started by `contract/runtime.ts` |
 | The access-token check | `shared/access-token.ts`, in `contract/server.ts` | The same file, in the edge and again in `contract/sdk-app.ts` |
 | Exchanging the caller's token for the case-system token | `tools/tool-token.ts` (`connectWithToolToken`, wired in `intake/main-handwritten.ts`) | `tools/tool-token.ts` (`toolToken`), called in `handleInquiry`, with the exchange given in `StrandsDeps` |

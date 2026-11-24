@@ -269,7 +269,7 @@ These answers are not outcomes of a run: 401 for a refused token, 403 for a toke
 
 ## The caller's token
 
-Settings, read by `agentSettingsFrom` in `run/serve.ts` (through `settingsFrom` in `intake/serve.ts`): `AUTH_DISCOVERY_URL`, `AUTH_ISSUER`, `AUTH_ALLOWED_AUDIENCE` (`intake-handwritten`, the agent's own id), `AUTH_ALLOWED_CLIENTS` (`desk`), `AUTH_REQUIRED_SCOPES` (`agents:intake`), `AUTH_ROLES_CLAIM` (`roles`). The minimum remaining life is the run's time limit, 150 s. For the exchange: `EXCHANGE_TOKEN_ENDPOINT` and `EXCHANGE_CLIENT_SECRET`, with `AGENT_ID` as the client id; the secret is in no line the agent writes.
+Settings, read by `agentSettingsFrom` in `run/serve.ts` (through `settingsFrom` in `intake/serve.ts`): `AUTH_DISCOVERY_URL`, `AUTH_ISSUER`, `AUTH_ALLOWED_AUDIENCE` (`intake-handwritten`, the agent's own id), `AUTH_ALLOWED_CLIENTS` (`desk,lab-explorer`), `AUTH_REQUIRED_SCOPES` (`agents:intake`), `AUTH_ROLES_CLAIM` (`roles`). The minimum remaining life is the run's time limit, 150 s. For the exchange: `EXCHANGE_TOKEN_ENDPOINT` and `EXCHANGE_CLIENT_SECRET`, with `AGENT_ID` as the client id; the secret is in no line the agent writes.
 
 | Order | Check | Refused as |
 |---|---|---|
