@@ -1,55 +1,80 @@
 // Small pieces used on more than one screen.
 
 import { AlertTriangle } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 
-import type { CaseStatus, PieceState, RunState, TraceInquiry } from '../../shared/api.ts';
-import { RUN_STATE_LABEL, STATUS_LABEL, formatDateTime } from './format.ts';
+import type { CaseStatus } from '../../shared/api.ts';
+import { STATUS_LABEL, formatElapsed } from './format.ts';
+import type { Tone } from './inbox.ts';
 
-export function StatusBadge({ status }: { status: CaseStatus }) {
-  return <span className={`badge badge--${status}`}>{STATUS_LABEL[status]}</span>;
+// A status in words on its own colour. The words always differ, so colour is never the only signal.
+export function Tag({ tone, children }: { tone: Tone | CaseStatus; children: ReactNode }) {
+  return <span className={`tag tag--${tone}`}>{children}</span>;
 }
 
-export function RunBadge({ state }: { state: RunState }) {
+export function CaseStatusTag({ status }: { status: CaseStatus }) {
+  return <Tag tone={status}>{STATUS_LABEL[status]}</Tag>;
+}
+
+// Text a person wrote, split into its paragraphs.
+export function Paragraphs({ text }: { text: string }) {
   return (
-    <span className={`badge badge--run-${state}`}>
-      {state === 'running' ? <span className="pulse" aria-hidden="true" /> : null}
-      {RUN_STATE_LABEL[state]}
+    <>
+      {text.split(/\n{2,}/).map((paragraph, index) => (
+        <p key={index}>{paragraph}</p>
+      ))}
+    </>
+  );
+}
+
+// Time since `since`, counted on screen each second.
+export function Elapsed({ since }: { since: string }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return <span className="elapsed">{formatElapsed(now - new Date(since).getTime())}</span>;
+}
+
+type CopyState = 'idle' | 'copied' | 'failed';
+
+// Copies `text` to the clipboard, and says so for a moment once it has.
+export function CopyButton({ text, label }: { text: string; label: string }) {
+  const [state, setState] = useState<CopyState>('idle');
+  useEffect(() => {
+    if (state !== 'copied') {
+      return;
+    }
+    const timer = window.setTimeout(() => setState('idle'), 2000);
+    return () => window.clearTimeout(timer);
+  }, [state]);
+
+  function copy(): void {
+    navigator.clipboard.writeText(text).then(
+      () => setState('copied'),
+      () => setState('failed'),
+    );
+  }
+
+  return (
+    <span className="copy">
+      <button type="button" className="button button--primary" onClick={copy}>
+        {state === 'copied' ? 'Copied' : label}
+      </button>
+      <span className="copy__status" role="status">
+        {state === 'failed' ? 'The browser did not allow copying. Select the text and copy it instead.' : ''}
+      </span>
     </span>
   );
 }
 
-const PIECE_LABEL: Record<PieceState, string> = { up: 'Running', down: 'Not reachable', not_configured: 'Not configured' };
-
-export function PieceBadge({ state }: { state: PieceState }) {
-  return <span className={`badge badge--piece-${state}`}>{PIECE_LABEL[state]}</span>;
-}
-
-// An inquiry's message as it was received.
-export function Message({ inquiry }: { inquiry: TraceInquiry }) {
-  return (
-    <article className="message" aria-label="The inquiry">
-      <header className="message__head">
-        <p className="message__from">{inquiry.sender}</p>
-        <p className="message__when">
-          Received {formatDateTime(inquiry.received_at)}
-          {inquiry.entered_by === null ? '' : `, entered by ${inquiry.entered_by.name}`}
-        </p>
-      </header>
-      {inquiry.text.split(/\n{2,}/).map((paragraph, index) => (
-        <p key={index} className="document">
-          {paragraph}
-        </p>
-      ))}
-    </article>
-  );
-}
-
-// The heavy frame is used for one thing only: something a person has to look at or decide.
+// The heavy frame. Used for one thing on the desk: the decision on a case.
 export function Boxed({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="boxed">
-      <h3 className="boxed__title">{title}</h3>
+      <h2 className="boxed__title">{title}</h2>
       {children}
     </section>
   );
@@ -57,10 +82,10 @@ export function Boxed({ title, children }: { title: string; children: ReactNode 
 
 export function Problem({ children }: { children: ReactNode }) {
   return (
-    <p className="problem" role="alert">
-      <AlertTriangle size={16} aria-hidden="true" />
-      <span>{children}</span>
-    </p>
+    <div className="problem" role="alert">
+      <AlertTriangle size={18} aria-hidden="true" />
+      <div>{children}</div>
+    </div>
   );
 }
 

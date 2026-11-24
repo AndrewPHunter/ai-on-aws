@@ -1,9 +1,11 @@
 // The client's server. Under /auth it signs desk staff in and out through the identity provider. Under
 // /api, for a signed-in user only, it receives inquiries, sends them to agents, keeps every inquiry and
-// run, forwards case review to the case system and reports the state of each piece. A run's steps are
-// given only by the trace routes, to a session granted traces:read; every other route strips them. What a session may
-// do comes from the scopes granted at sign-in, and every call to an agent or the case system carries a
-// token got for that target alone. /ping and the built web app need no session.
+// run, forwards case review to the case system and reports the state of each piece. On /api a run's steps
+// are given only by the trace routes, to a session granted traces:read; every other /api route strips them.
+// What a session may do comes from the scopes granted at sign-in, and every call to an agent or the case
+// system carries a token got for that target alone. Under /lab/api the lab explorer reads, with no session
+// and by GET only, what the status, agent, sample and trace routes give; the server is published on its
+// own machine only. /ping and the built web app need no session.
 //
 // Tokens stay here: the browser holds only a session cookie.
 
@@ -122,8 +124,8 @@ function inquiryNotFound(): ApiFailure {
   return new ApiFailure(404, 'inquiry_not_found', 'There is no inquiry with that id.');
 }
 
-// A run as it leaves the server on every route but the trace routes: the agent's response without the key
-// steps.
+// A run as it leaves the server on every /api route but the trace routes: the agent's response without the
+// key steps.
 function withoutSteps(run: TracedRun): Run {
   if (run.response === null) {
     return { ...run, response: null };
@@ -374,6 +376,23 @@ export function createClientServer(deps: ClientDeps): Server {
   }
 
 
+  // What the status, agent, sample and trace routes give, called by both /api and /lab/api.
+  function agentList(agents: AgentConfig[]): AgentList {
+    return { agents: agents.map((agent) => ({ id: agent.id, name: agent.name, description: agent.description })) };
+  }
+
+  function sampleList(): SampleList {
+    return { samples: [...SAMPLES] };
+  }
+
+  function traceOf(runId: string): TraceResponse {
+    const trace = store.getTrace(runId);
+    if (trace === undefined) {
+      throw new ApiFailure(404, 'unknown_run', 'There is no run with that id.');
+    }
+    return { trace };
+  }
+
   async function status(): Promise<SystemStatus> {
     const checkedAt = now().toISOString();
     const caseSystem = ping(`${config.caseReviewUrl}/ping`, PING_TIMEOUT_MS).then((result) =>
@@ -414,18 +433,12 @@ export function createClientServer(deps: ClientDeps): Server {
     },
     agents: {
       GET: async (_request, response, _url, session) => {
-        const payload: AgentList = {
-          agents: config.agents
-            .filter((agent) => session.granted.has(agent.scope))
-            .map((agent) => ({ id: agent.id, name: agent.name, description: agent.description })),
-        };
-        sendJson(response, 200, payload);
+        sendJson(response, 200, agentList(config.agents.filter((agent) => session.granted.has(agent.scope))));
       },
     },
     samples: {
       GET: async (_request, response) => {
-        const payload: SampleList = { samples: [...SAMPLES] };
-        sendJson(response, 200, payload);
+        sendJson(response, 200, sampleList());
       },
     },
     inquiries: {
@@ -505,12 +518,7 @@ export function createClientServer(deps: ClientDeps): Server {
     return {
       GET: async (_request, response, _url, session) => {
         requireGranted(session, TRACES_READ);
-        const trace = store.getTrace(runId);
-        if (trace === undefined) {
-          throw new ApiFailure(404, 'unknown_run', 'There is no run with that id.');
-        }
-        const payload: TraceResponse = { trace };
-        sendJson(response, 200, payload);
+        sendJson(response, 200, traceOf(runId));
       },
     };
   }
@@ -589,6 +597,48 @@ export function createClientServer(deps: ClientDeps): Server {
       return;
     }
     await handler(request, response, url, session);
+  }
+
+  // --- The lab explorer -------------------------------------------------------------------------------
+
+  // The explorer's routes read no cookie and take only GET. They give what the /api routes of the same
+  // names give, with no session and no permission: every agent, and every person's runs with their steps.
+  type LabHandler = (response: ServerResponse) => Promise<void>;
+
+  function labRoute(pathname: string): LabHandler | undefined {
+    switch (pathname) {
+      case '/lab/api/status':
+        return async (response) => sendJson(response, 200, await status());
+      case '/lab/api/agents':
+        return async (response) => sendJson(response, 200, agentList(config.agents));
+      case '/lab/api/samples':
+        return async (response) => sendJson(response, 200, sampleList());
+      case '/lab/api/runs':
+        return async (response) => {
+          const payload: TraceList = store.listTraces();
+          sendJson(response, 200, payload);
+        };
+    }
+    const run = /^\/lab\/api\/runs\/([^/]+)$/.exec(pathname);
+    const runId = run?.[1] === undefined ? undefined : segment(run[1]);
+    if (runId !== undefined) {
+      return async (response) => sendJson(response, 200, traceOf(runId));
+    }
+    return undefined;
+  }
+
+  async function handleLab(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
+    const handler = labRoute(url.pathname);
+    if (handler === undefined) {
+      sendError(response, 404, 'not_found', `There is no lab API route ${url.pathname}.`);
+      return;
+    }
+    if (request.method !== 'GET') {
+      response.setHeader('allow', 'GET');
+      sendError(response, 405, 'method_not_allowed', `${url.pathname} accepts GET.`);
+      return;
+    }
+    await handler(response);
   }
 
   // --- Signing in and out ---------------------------------------------------------------------------
@@ -786,6 +836,10 @@ export function createClientServer(deps: ClientDeps): Server {
       }
       if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
         await handleApi(request, response, url);
+        return;
+      }
+      if (url.pathname === '/lab/api' || url.pathname.startsWith('/lab/api/')) {
+        await handleLab(request, response, url);
         return;
       }
       await handleWeb(request, response, url);

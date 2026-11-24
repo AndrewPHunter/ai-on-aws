@@ -1,4 +1,4 @@
-// The client's own API: what the React app asks the client's server for, under /api.
+// The client's own API: what the React app asks the client's server for, under /api, and under /lab/api for the lab explorer.
 // Types only, so the same file is read by the server (Node) and the app (browser).
 
 import type { InvocationResponse } from '../../shared/agent-contract.ts';
@@ -21,7 +21,7 @@ export type {
 // Errors passed through from the case system may carry only `error`.
 export type ApiError = { error: string; detail?: string };
 
-// GET /api/status
+// GET /api/status, and GET /lab/api/status with no session
 export type PieceState = 'up' | 'down' | 'not_configured';
 export type PieceStatus = {
   id: string;
@@ -34,11 +34,11 @@ export type PieceStatus = {
 };
 export type SystemStatus = { checked_at: string; pieces: PieceStatus[] };
 
-// GET /api/agents
+// GET /api/agents (the agents the session may run), and GET /lab/api/agents (every agent) with no session
 export type AgentInfo = { id: string; name: string; description: string };
 export type AgentList = { agents: AgentInfo[] };
 
-// GET /api/samples
+// GET /api/samples, and GET /lab/api/samples with no session
 export type SampleInquiry = {
   id: string;
   title: string;
@@ -70,7 +70,7 @@ export type ReviewDecisionRequest = { decision: ReviewDecision; note?: string };
 // One attempt by one agent to handle an inquiry.
 export type RunState = 'running' | 'completed' | 'failed';
 
-// What the agent returned, without its steps: how a run's result is given on every route but the trace routes.
+// What the agent returned, without its steps: how a run's result is given on every /api route but the trace routes.
 export type RunResult = Omit<InvocationResponse, 'steps'>;
 
 type RunOf<Result> = {
@@ -88,9 +88,10 @@ type RunOf<Result> = {
   response: Result | null;
 };
 
-// A run as every route but the trace routes gives it: the agent's response without its steps.
+// A run as every /api route but the trace routes gives it: the agent's response without its steps.
 export type Run = RunOf<RunResult>;
-// A run with the agent's whole response, steps included: given only on the trace routes.
+// A run with the agent's whole response, steps included: given only on the trace routes and on
+// GET /lab/api/runs/<run_id>.
 export type TracedRun = RunOf<InvocationResponse>;
 
 export type RunSummary = {
@@ -129,7 +130,8 @@ export type InquiryResponse = { inquiry: Inquiry };
 export type NewRunRequest = { agent_id: string };
 export type RunResponse = { run: Run };
 
-// GET /api/traces: every person's runs, newest first, to a session granted traces:read.
+// GET /api/traces: every person's runs, newest first, to a session granted traces:read. GET /lab/api/runs
+// gives the same with no session.
 export type TraceSummary = {
   run_id: string;
   inquiry_id: string;
@@ -143,7 +145,8 @@ export type TraceSummary = {
 };
 export type TraceList = { traces: TraceSummary[]; truncated: boolean };
 
-// GET /api/traces/<run_id>: the message as it was received, and the run with its steps.
+// GET /api/traces/<run_id>: the message as it was received, and the run with its steps. GET
+// /lab/api/runs/<run_id> gives the same with no session.
 export type TraceInquiry = Omit<Inquiry, 'runs'>;
 export type Trace = { inquiry: TraceInquiry; run: TracedRun };
 export type TraceResponse = { trace: Trace };

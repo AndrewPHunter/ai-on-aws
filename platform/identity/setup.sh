@@ -1,13 +1,17 @@
 #!/bin/sh
-# Writes platform/identity/.env: a random value for every variable named in platform/identity/.env.example
-# (the Keycloak bootstrap administrator, the secret of each client that holds one, and each realm user's password).
-# The values are made by the pinned Node image on the local Docker daemon, with no network.
+# Writes platform/identity/.env: a value for every variable named in platform/identity/.env.example. The Keycloak
+# bootstrap administrator and the secret of each client that holds one get a random value, made by the pinned Node
+# image on the local Docker daemon, with no network. Each realm user's password is that user's username
+# (IDENTITY_DANA_PASSWORD is dana.desk), with no Docker call: the people are synthetic, the lab is published on this
+# machine only, and their passwords are typed by hand at the sign-in page.
 #
 #   platform/identity/setup.sh
 #
 # Run again, it keeps every value already set and writes one for each variable that has none: a variable with no
-# line is appended, and a line with an empty value (NAME=) is given one. Every other line is kept as it is, in place.
-# If platform/identity/.env already holds every variable, nothing is changed. It never prints a value.
+# line is appended, and a line with an empty value (NAME=) is given one. A realm user's password line that holds
+# anything but the username is set to the username, in place. Every other line is kept as it is, in place.
+# If platform/identity/.env already holds every variable, with the usernames as the users' passwords, nothing is
+# changed. It never prints a value.
 #
 # Exit codes: 0 platform/identity/.env holds every variable (written or completed now, or already there),
 #             1 a value could not be made (a variable setup does not know, or the image failed), or the file could
@@ -40,17 +44,34 @@ if [ -z "$names" ]; then
   exit 2
 fi
 
-# ---------- the variables that have no value ----------
+# ---------- the variables to set ----------
 
-# A variable has a value when a line NAME=<something> holds it. With no file, none has.
-missing=''
+# Sets person to the username whose password $1 names; fails for every other variable.
+person_password() {
+  case $1 in
+    IDENTITY_DANA_PASSWORD) person=dana.desk ;;
+    IDENTITY_MORGAN_PASSWORD) person=morgan.medinfo ;;
+    IDENTITY_RILEY_PASSWORD) person=riley.reviewer ;;
+    IDENTITY_AVERY_PASSWORD) person=avery.auditor ;;
+    *) return 1 ;;
+  esac
+}
+
+# A realm user's password is set when the file has a line NAME=<username> and no line NAME= with anything else.
+# Any other variable is set when a line NAME=<something> holds it. With no file, none is.
+to_set=''
 for name in $names; do
-  if ! { [ -e "$env_file" ] && grep -q "^$name=." "$env_file"; }; then
-    missing="$missing $name"
+  if person_password "$name"; then
+    if ! { [ -e "$env_file" ] && grep -qFx "$name=$person" "$env_file" &&
+      ! grep "^$name=" "$env_file" | grep -qvFx "$name=$person"; }; then
+      to_set="$to_set $name"
+    fi
+  elif ! { [ -e "$env_file" ] && grep -q "^$name=." "$env_file"; }; then
+    to_set="$to_set $name"
   fi
 done
-missing=${missing# }
-if [ -z "$missing" ]; then
+to_set=${to_set# }
+if [ -z "$to_set" ]; then
   say "platform/identity/.env already holds every variable; nothing was changed."
   exit 0
 fi
@@ -64,12 +85,17 @@ random_hex() {
     node -e 'process.stdout.write(require("node:crypto").randomBytes(Number(process.argv[1])).toString("hex"))' "$1" </dev/null
 }
 
-# Sets value to a new random value of the kind $1 takes; stops the script for a name it does not know, or a failure.
+# Sets value to the value $1 takes: a realm user's username for that user's password, with no Docker call, and a
+# new random value of the kind $1 takes for every other variable. Stops the script for a name it does not know, or
+# a failure.
 make_value() {
+  if person_password "$1"; then
+    value=$person
+    return 0
+  fi
   case $1 in
     IDENTITY_ADMIN_USERNAME) value=$(random_hex 4) && value="admin-$value" || value='' ;;
-    IDENTITY_ADMIN_PASSWORD | IDENTITY_RILEY_PASSWORD | IDENTITY_DANA_PASSWORD | IDENTITY_MORGAN_PASSWORD | \
-      IDENTITY_AVERY_PASSWORD) value=$(random_hex 24) || value='' ;;
+    IDENTITY_ADMIN_PASSWORD) value=$(random_hex 24) || value='' ;;
     IDENTITY_DESK_CLIENT_SECRET | IDENTITY_INTAKE_HANDWRITTEN_CLIENT_SECRET | IDENTITY_INTAKE_STRANDS_CLIENT_SECRET | \
       IDENTITY_EXPERT_CLIENT_SECRET | IDENTITY_ORCHESTRATOR_CLIENT_SECRET | IDENTITY_EVALUATION_CLIENT_SECRET | \
       IDENTITY_KNOWLEDGE_GATE_CLIENT_SECRET)
@@ -84,8 +110,8 @@ make_value() {
   esac
 }
 
-is_missing() {
-  case " $missing " in
+is_to_set() {
+  case " $to_set " in
     *" $1 "*) return 0 ;;
     *) return 1 ;;
   esac
@@ -101,13 +127,14 @@ if ! (umask 077 && set -C && : >"$tmp_env"); then
 fi
 
 if [ -e "$env_file" ]; then
-  # Each line is copied as it is, except a line NAME= of a variable with no value, which is given one.
+  # Each line is copied as it is, except a line NAME=... of a variable to set: a line NAME= of a variable with no
+  # value, or a realm user's password line that does not hold the username. It is given the value in place.
   # A last line without a newline gets one, so an appended variable starts a line of its own.
   while IFS= read -r line || [ -n "$line" ]; do
     case $line in
-      *=)
-        name=${line%=}
-        if is_missing "$name"; then
+      *=*)
+        name=${line%%=*}
+        if is_to_set "$name"; then
           make_value "$name"
           printf '%s=%s\n' "$name" "$value"
           continue
@@ -121,7 +148,7 @@ else
 fi
 
 # A variable with no line at all is appended.
-for name in $missing; do
+for name in $to_set; do
   if ! { [ -e "$env_file" ] && grep -q "^$name=" "$env_file"; }; then
     make_value "$name"
     printf '%s=%s\n' "$name" "$value" >>"$tmp_env"
@@ -129,9 +156,9 @@ for name in $missing; do
 done
 
 if [ -e "$env_file" ]; then
-  done_message="added to platform/identity/.env (mode 600) a value for: $missing"
+  done_message="set in platform/identity/.env (mode 600) a value for: $to_set"
 else
-  done_message="wrote platform/identity/.env (mode 600) with a value for: $missing"
+  done_message="wrote platform/identity/.env (mode 600) with a value for: $to_set"
 fi
 if ! mv -f "$tmp_env" "$env_file"; then
   say "could not move $tmp_env to platform/identity/.env."

@@ -13,7 +13,7 @@ platform/identity/setup.sh
 docker compose up -d --build --wait
 ```
 
-Then open <http://localhost:3000>, by that name and not `127.0.0.1`: the identity provider sends the browser back to `localhost`, and the session cookie belongs to it. Sign in as one of the four people: `dana.desk` (who runs the intake agents and the orchestrator), `morgan.medinfo` (who also runs the label expert), `riley.reviewer` (who reads and decides cases) or `avery.auditor` (who reads cases and every run's trace); their passwords are `IDENTITY_DANA_PASSWORD`, `IDENTITY_MORGAN_PASSWORD`, `IDENTITY_RILEY_PASSWORD` and `IDENTITY_AVERY_PASSWORD` in `platform/identity/.env`, which the first command writes. What each person sees is set by the scopes their role is granted; see [what each person sees](#what-each-person-sees).
+Then open <http://localhost:3000>, by that name and not `127.0.0.1`: the identity provider sends the browser back to `localhost`, and the session cookie belongs to it. Sign in as one of the four people: `dana.desk` (who runs the intake agents and the orchestrator), `morgan.medinfo` (who also runs the label expert), `riley.reviewer` (who reads and decides cases) or `avery.auditor` (who reads cases, and may read every run's trace on the trace routes); each person's password is their username (the people are synthetic, the lab is local, and they are typed by hand), which the first command writes to `platform/identity/.env`. What each person sees is set by the scopes their role is granted; see [what each person sees](#what-each-person-sees).
 
 That starts the client together with the [agents](../agents/README.md), the [case system](../tools/case-system/README.md), the [identity provider](../platform/identity/README.md), and the search engine and retrieval service of [knowledge](../knowledge/README.md), on one network. All are published on this machine only. The agents need the model server, so [set that up](../model/README.md) first.
 
@@ -25,13 +25,15 @@ stops them and keeps the inquiries, the cases and the label index. Add `-v` to d
 
 ## The screens
 
+The header shows only the sections the session may use, with the person's name and role in words in a menu that holds "Sign out", and a link that opens the lab explorer in a new tab. The start page is the first section the person has.
+
 | Screen | What it is for |
 |---|---|
-| Sign in | The only screen without a session: one action, which goes to the identity provider. |
-| Inquiries | Receive a message, from a prepared one or your own, and send it to an agent you may run. Only the inquiries you entered are listed. Read the reply, the label passages it cites, and any case it opened. Citations are numbered from 1, so a `[2]` in the reply can be found; each gives the drug, the section, the label's version and date, the quote, and a link to that version's page. When the agent answers from labels, one line says whether the label answered the question, and if not why. Send the same message again, to the same agent or another, and compare the runs by result, cases and time. Each inquiry shows who entered it, and each run who started it. A run's steps are not shown here. |
-| Traces | For someone who may read traces: every run by anyone, newest first, with when, who, the agent, the result, the outcome and the time taken. Opening one shows the message as it was received, the run's result as the Inquiries screen shows it (the outcome when it was not completed, any case actions, whether the label answered, the reply and the label passages it cites), and, beside them, what the agent did: every step in order, with how long it took and what was sent and returned. Model calls, tool calls, label searches, an intake agent's report check (made by its code, with its finding in words) and calls to another agent each have their own read-out; each label-search hit shows the name the model was shown it by, and says when it matched but was not shown; a call to another agent shows what was sent, why there is no answer if there is none, and the other agent's outcome, reply and steps, listed inside it. |
-| Cases | The review queue. A case shows its four parts as a form, every earlier version, and its audit trail; an agent's entry says whom the agent acted for ("Agent intake-strands, for Dana Desk"). Someone who may decide cases approves, rejects or asks for information, recorded under the name they signed in with; anyone else who may read cases sees that their account cannot decide them. |
-| System | Each part the desk depends on, and whether it answers right now. |
+| Sign in | The only screen without a session: "Sign in", which goes to the identity provider, and a link to the lab explorer. |
+| Inbox (`/inquiries`) | For a session that may run the orchestrator. The inquiries the person logged, newest first, each with one status in words: Working, Needs attention (its latest run failed or did not complete), Case opened with the case numbers, Follow-up added with the case number, or Answered. Questions asked on "Ask the label" are not listed. Opening one shows the message and its latest run: while it runs, the time since it started, counted each second; when it failed or did not complete, what happened and why; when it completed, the draft reply with "Copy reply", and the label passages it relies on, numbered from 1 so a `[2]` in the reply can be found, each with the drug, the section, the label's version and date, the quote and a link to that version's page. Beside them, each case the run acted on, with what happened to it and its status then, linked to the case for someone who may read cases; and how long the run took and when it finished. |
+| Log an inquiry (`/inquiries/new`) | Who the inquiry is from and what they said. Logging it hands it to the orchestrator and opens it in the inbox. |
+| Ask the label (`/label`) | For a session that may run the label expert. A question, sent to the label expert under the person's name; the answer shows on the same page, with whether the label answered, the reply and the passages it cites, as the inbox shows them. The person's earlier questions are listed beside it, newest first. |
+| Cases (`/cases`, `/cases/<id>`) | For a session that may read cases. The queue, filtered by status, with the count awaiting review beside "Cases" in the header. A case shows its number and status, when it was received, the date 15 calendar days on, who opened it, its four parts as a ruled form, and its history: each audit entry in words, with the version it recorded and the recorded detail behind a disclosure. Someone who may decide cases approves, rejects or asks for information, recorded under the name they signed in with, and sees the next two cases awaiting review; anyone else who may read cases sees that their account cannot decide them. |
 
 ## What each person sees
 
@@ -39,15 +41,15 @@ stops them and keeps the inquiries, the cases and the label index. Add `-v` to d
 
 | Granted | The session may | The app shows |
 |---|---|---|
-| An agent's `scope` (`agents:intake`, `agents:expert`, `agents:orchestrator`) | Send an inquiry, or a new run of one of their own, to that agent | Inquiries, with that agent among those listed |
+| An agent's `scope` (`agents:intake`, `agents:expert`, `agents:orchestrator`) | Send an inquiry, or a new run of one of their own, to that agent | Inbox and Log an inquiry, for `agents:orchestrator`; Ask the label, for `agents:expert` |
 | `cases:read` | Read the case list and a case | Cases |
 | `cases:review` | Decide a case | The decision controls on a case |
-| `traces:read` | Read every person's runs with their steps, on the trace routes | Traces |
+| `traces:read` | Read every person's runs with their steps, on the trace routes | Nothing: the desk has no screen for traces. The [lab explorer](#the-lab-explorer) shows every run to anyone |
 | None of these | Nothing that reaches an agent, the case system or a trace; `/api/session`, `/api/status`, `/api/samples`, an empty `/api/agents` and an empty list of their own inquiries still answer | A sentence saying the account has nothing to do here |
 
 `/api/agents` lists only the agents the session may run. A call for anything else is answered 403 `not_allowed` before the identity provider or the target is asked. An inquiry, its runs and a new run on it are answered only to the person who entered it; to anyone else, exactly as an inquiry that does not exist (404 `inquiry_not_found`).
 
-A run's steps are given only on the trace routes. Every other route gives a run with the agent's response less its `steps`.
+On the desk's API a run's steps are given only on the trace routes. Every other `/api` route gives a run with the agent's response less its `steps`; the [lab explorer](#the-lab-explorer) gives them too.
 
 | Route | Answers |
 |---|---|
@@ -56,10 +58,21 @@ A run's steps are given only on the trace routes. Every other route gives a run 
 | `GET /api/cases`, `GET /api/cases/<id>`, `POST /api/cases/<id>/review` | The case system's own answers, passed back unchanged, to a session granted `cases:read` (and `cases:review` for a decision); 502 `case_system_unreachable` when it does not answer |
 | `GET /api/traces` | 200 `{ traces, truncated }`: every person's runs, newest first, at most 100, each with when it started, who started it, the agent, its state, its outcome and the time it took. 403 `not_allowed` without `traces:read` |
 | `GET /api/traces/<run_id>` | 200 `{ trace: { inquiry, run } }`: the message as it was received, and the run with the agent's whole response, steps included. A run still running is 200 with `state` `running` and no response yet. A stored response that no longer matches the agent contract is 200 with the run shown as `failed`, the store's reason as its `error`, and no response. 403 `not_allowed` without `traces:read`, decided before the store is read; 404 `unknown_run` for a run that does not exist |
+| `GET /lab/api/status` | 200, the same as `GET /api/status`. No session needed; see [the lab explorer](#the-lab-explorer) |
+| `GET /lab/api/agents` | 200 `{ agents }`: every configured agent, whoever asks. No session needed |
+| `GET /lab/api/samples` | 200, the same as `GET /api/samples`. No session needed |
+| `GET /lab/api/runs` | 200, the same as `GET /api/traces` gives a session granted `traces:read`: every person's runs, newest first. No session needed |
+| `GET /lab/api/runs/<run_id>` | 200, the same as `GET /api/traces/<run_id>` gives a session granted `traces:read`: the message and the run with its steps; 404 `unknown_run` for a run that does not exist. No session needed |
 
 Every `/api` route answers 401 `not_signed_in` without a session; a call naming an agent id that is not configured, 400 `unknown_agent`; a POST from another site, 403 `cross_site_request`.
 
 The steps arrive in the agent's response and are stored by the client with the rest of it. `traces:read` is a permission on reading them from that store; there is no separate store of traces.
+
+## The lab explorer
+
+A separate tool for whoever runs the lab on their own machine, at <http://localhost:3000/lab>. It shows what is under the hood: the state of each piece, every configured agent, the prepared inquiries, and every person's runs with their steps. It reads only.
+
+It needs no sign-in. The client is published on this machine only (`127.0.0.1:3000` in [`compose.yaml`](compose.yaml)), so only someone at this machine can reach it. Who may read what is a rule of the desk, the product that desk staff sign in to; it does not apply to the explorer. Its routes, under `/lab/api`, are in the table above: they read no cookie, answer any method but GET with 405 `method_not_allowed`, and an unknown path with 404 `not_found`, in the same JSON shape as `/api`. Any other path under `/lab` is the app's page, as every path outside `/api`, `/auth` and `/ping` is.
 
 ## Always true
 
@@ -73,8 +86,9 @@ The steps arrive in the agent's response and are stored by the client with the r
 8. Signing out removes the session and revokes the refresh token; a failed revocation does not stop it.
 9. A POST from another site is refused.
 10. What a session may do comes from the scopes it was granted at sign-in: which agents it may run, whether it may read cases, whether it may decide one, whether it may read traces. A call for anything else is answered 403 before the identity provider or the target is asked.
-11. An inquiry and its runs are read, and a run is started on it, only by the person who entered it. To anyone else it is answered as an unknown inquiry is. The one exception is the trace routes of invariant 12.
-12. A run's steps leave the server only on the trace routes, and only to a session granted `traces:read`. Any other session is answered 403 there before the store is read, so the answer says nothing about whether a run exists. Every other route returns a run without its steps, to anyone. The trace routes cover every person's runs; an id that names no run is 404.
+11. An inquiry and its runs are read, and a run is started on it, only by the person who entered it. To anyone else it is answered as an unknown inquiry is. The exceptions are the trace routes of invariant 12 and the lab explorer's routes of invariant 13.
+12. On the desk's API a run's steps leave the server only on the trace routes, and only to a session granted `traces:read`. Any other session is answered 403 there before the store is read, so the answer says nothing about whether a run exists. Every other `/api` route returns a run without its steps, to anyone. The trace routes cover every person's runs; an id that names no run is 404.
+13. The lab explorer's routes, under `/lab/api`, need no session and only read: they give the pieces' state, the agents, the prepared inquiries and every person's runs with their steps to anyone who can reach the server, and accept no method but GET. The server is published on this machine only.
 
 The server's tests in `test/` are one per item, named by its number, with one probe that the built app is served and that any other path is its page. The server's tests run through the server with scripted agents, a scripted case system and an identity provider whose refresh is a function, with three exceptions: invariant 4 and those beside it in `auth.test.ts` use the stand-in provider, invariant 5's two calls arriving together run on the token function in `src/tokens.ts`, and invariant 2's restart runs on the store.
 
@@ -137,5 +151,8 @@ The case system's two scopes, `cases:read` and `cases:review`, are fixed in the 
 - **What a session may do is fixed at sign-in.** A change to a person's role takes effect when they sign in again.
 - **The cookie is not marked `Secure`,** because the lab is served over plain HTTP on this machine.
 - **A run that is in progress when the server stops is marked as failed** when it starts again. The agent may still have acted.
+- **The inbox reads each listed inquiry whose latest run has finished once more, in full,** because the list gives a run's state and case numbers but not its outcome or what it did to each case. Up to 100 requests open the inbox the first time.
+- **The desk shows only an inquiry's latest run,** and has no way to send an inquiry to an agent again.
+- **The draft reply cannot be edited on the desk.** It is copied out to be sent.
 - **The React app has no tests.** The repository check typechecks, lints and builds it.
 - **Label search and evaluation have no screen.**

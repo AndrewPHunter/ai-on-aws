@@ -10,11 +10,11 @@ How it is put together: [docs/architecture/identity.md](../../docs/architecture/
 
 ## Always true
 
-1. No secret or password is in a tracked file: every one in the realm file is a placeholder that `setup.sh` generates, `.env.example` names, and the compose file passes to the provider.
+1. No secret is in a tracked file: every client secret and the administrator's password in the realm file is a placeholder that `setup.sh` generates at random, `.env.example` names, and the compose file passes to the provider. The four people's passwords are placeholders too, and `setup.sh` sets each to that person's username.
 2. A role that lets someone run an agent also grants every scope that agent's client may ask for.
 3. Only an agent's client can exchange a token, and no client takes a password in place of a sign-in.
 4. Every person and every machine account has a fixed identifier, so the subject in their tokens does not change when the provider starts again.
-5. Running set-up again changes no value that is already set, and writes a value for each variable that has none.
+5. Running set-up again changes no value that is already set, and writes a value for each variable that has none; the one exception is the four people's passwords, which it always sets to their usernames.
 
 The repository check runs one test for each, `identity 1` to `identity 5`, on the tracked files; `setup.sh` runs from a copy in a temporary directory. What the running provider issues and refuses is shown by the gate.
 
@@ -27,7 +27,7 @@ platform/identity/setup.sh
 docker compose -f platform/identity/compose.yaml up -d --wait
 ```
 
-`setup.sh` writes `platform/identity/.env` with a random value for every variable in [`.env.example`](.env.example): the Keycloak administrator's username and password, the secret of each client that has one (`desk`, the four agents, the two machines), and each person's password. It needs only a shell and Docker; the values are made in the pinned Node image, with no network. If the file already holds every variable it changes nothing. If it exists but lacks some, it writes a random value for each of those, appended or on its empty `NAME=` line, keeps every other line as it is, and names on standard error the variables it added; every secret and password already set stays the same. A variable in `.env.example` that it does not know how to make a value for stops it, named, with the file unchanged. It never prints a value.
+`setup.sh` writes `platform/identity/.env` with a value for every variable in [`.env.example`](.env.example). The Keycloak administrator's username and password and the secret of each client that has one (`desk`, the four agents, the two machines) are random, made in the pinned Node image with no network; it needs only a shell and Docker. Each person's password is that person's username (`dana.desk`'s is `dana.desk`): the people are synthetic, the lab is published on this machine only, and their passwords are typed by hand at the sign-in page. If the file already holds every variable, with the four people's usernames as their passwords, it changes nothing. Otherwise it writes a random value for each other variable that has none, appended or on its empty `NAME=` line, sets each person's password line to the username, in place or appended, keeps every other line as it is, and names on standard error the variables it set; every client secret and the administrator's username and password, once set, stay the same. A variable in `.env.example` that it does not know how to make a value for stops it, named, with the file unchanged. It never prints a value.
 
 `docker compose up --wait` returns once the realm's discovery document answers 200. The lab's root `compose.yaml` includes this service, so `docker compose up` at the root starts it with everything else, and also needs `platform/identity/.env`: without it nothing starts.
 
@@ -48,14 +48,14 @@ A realm file that names a variable `platform/identity/.env` lacks also needs `se
 
 ## Users
 
-Four synthetic people, each with one lab role and a permanent password, and two service accounts, one for each machine.
+Four synthetic people, each with one lab role and a permanent password that is their username, and two service accounts, one for each machine.
 
 | Username | Name | Email | Realm roles | Password |
 |---|---|---|---|---|
-| `dana.desk` | Dana Desk | `dana.desk@example.org` | `desk`, `default-roles-lab` | `IDENTITY_DANA_PASSWORD` in `platform/identity/.env` |
-| `morgan.medinfo` | Morgan Medinfo | `morgan.medinfo@example.org` | `medical-information`, `default-roles-lab` | `IDENTITY_MORGAN_PASSWORD` in `platform/identity/.env` |
-| `riley.reviewer` | Riley Reviewer | `riley.reviewer@example.org` | `safety-reviewer`, `default-roles-lab` | `IDENTITY_RILEY_PASSWORD` in `platform/identity/.env` |
-| `avery.auditor` | Avery Auditor | `avery.auditor@example.org` | `auditor`, `default-roles-lab` | `IDENTITY_AVERY_PASSWORD` in `platform/identity/.env` |
+| `dana.desk` | Dana Desk | `dana.desk@example.org` | `desk`, `default-roles-lab` | `dana.desk` |
+| `morgan.medinfo` | Morgan Medinfo | `morgan.medinfo@example.org` | `medical-information`, `default-roles-lab` | `morgan.medinfo` |
+| `riley.reviewer` | Riley Reviewer | `riley.reviewer@example.org` | `safety-reviewer`, `default-roles-lab` | `riley.reviewer` |
+| `avery.auditor` | Avery Auditor | `avery.auditor@example.org` | `auditor`, `default-roles-lab` | `avery.auditor` |
 | `service-account-evaluation` | Evaluation Harness | — | `evaluation`, `default-roles-lab` | None: it is the `evaluation` client, by its secret |
 | `service-account-knowledge-gate` | Knowledge Gate | — | `knowledge-gate`, `default-roles-lab` | None: it is the `knowledge-gate` client, by its secret |
 
