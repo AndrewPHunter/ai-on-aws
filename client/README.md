@@ -13,7 +13,7 @@ platform/identity/setup.sh
 docker compose up -d --build --wait
 ```
 
-Then open <http://localhost:3000>, by that name and not `127.0.0.1`: the identity provider sends the browser back to `localhost`, and the session cookie belongs to it. Sign in as one of the four people: `dana.desk` (who runs the intake agents and the orchestrator), `morgan.medinfo` (who also runs the label expert), `riley.reviewer` (who reads and decides cases) or `avery.auditor` (who reads cases and every run's trace); each person's password is their username (the people are synthetic, the lab is local, and they are typed by hand), which the first command writes to `platform/identity/.env`. What each person sees is set by the scopes their role is granted; see [what each person sees](#what-each-person-sees).
+Then open <http://localhost:3000>, by that name and not `127.0.0.1`: the identity provider sends the browser back to `localhost`, and the session cookie belongs to it. Sign in as one of the four people: `dana.desk` (who runs the intake agents and the orchestrator), `morgan.medinfo` (who also runs the label expert), `riley.reviewer` (who reads and decides cases) or `avery.auditor` (who reads cases, and may read every run's trace on the trace routes); each person's password is their username (the people are synthetic, the lab is local, and they are typed by hand), which the first command writes to `platform/identity/.env`. What each person sees is set by the scopes their role is granted; see [what each person sees](#what-each-person-sees).
 
 That starts the client together with the [agents](../agents/README.md), the [case system](../tools/case-system/README.md), the [identity provider](../platform/identity/README.md), and the search engine and retrieval service of [knowledge](../knowledge/README.md), on one network. All are published on this machine only. The agents need the model server, so [set that up](../model/README.md) first.
 
@@ -41,10 +41,10 @@ The header shows only the sections the session may use, with the person's name a
 
 | Granted | The session may | The app shows |
 |---|---|---|
-| An agent's `scope` (`agents:intake`, `agents:expert`, `agents:orchestrator`) | Send an inquiry, or a new run of one of their own, to that agent | Inquiries, with that agent among those listed |
+| An agent's `scope` (`agents:intake`, `agents:expert`, `agents:orchestrator`) | Send an inquiry, or a new run of one of their own, to that agent | Inbox and Log an inquiry, for `agents:orchestrator`; Ask the label, for `agents:expert` |
 | `cases:read` | Read the case list and a case | Cases |
 | `cases:review` | Decide a case | The decision controls on a case |
-| `traces:read` | Read every person's runs with their steps, on the trace routes | Traces |
+| `traces:read` | Read every person's runs with their steps, on the trace routes | Nothing: the desk has no screen for traces. The [lab explorer](#the-lab-explorer) shows every run to anyone |
 | None of these | Nothing that reaches an agent, the case system or a trace; `/api/session`, `/api/status`, `/api/samples`, an empty `/api/agents` and an empty list of their own inquiries still answer | A sentence saying the account has nothing to do here |
 
 `/api/agents` lists only the agents the session may run. A call for anything else is answered 403 `not_allowed` before the identity provider or the target is asked. An inquiry, its runs and a new run on it are answered only to the person who entered it; to anyone else, exactly as an inquiry that does not exist (404 `inquiry_not_found`).
