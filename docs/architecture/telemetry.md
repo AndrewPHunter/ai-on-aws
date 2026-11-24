@@ -2,7 +2,21 @@
 
 Execution evidence is a record of the work a piece did, exported by that piece as each operation ends. It does not wait for an agent's final response. Spans from different pieces are joined into one trace by the trace context that each call carries. The evidence holds metadata only. The `steps` of the agent contract carry content, and they are a separate record.
 
-Two parts make it up: [`shared/telemetry.ts`](../../shared/telemetry.ts), the module a piece uses to record and export spans, and the [trace store](../../platform/telemetry/README.md), the lab's own destination for them. No piece imports the module, so no piece sends spans.
+Two parts make it up: [`shared/telemetry.ts`](../../shared/telemetry.ts), the module a piece uses to record and export spans, and the [trace store](../../platform/telemetry/README.md), the lab's own destination for them. The pieces below send spans through the module.
+
+## Pieces that send spans
+
+| Piece | Service name | Spans | Trace context |
+|---|---|---|---|
+| [Client](../../client/README.md#execution-evidence) | `client` | `desk.run` (`internal`, the root of a new trace for every run, ended with `completed`, `stopped` or `failed`); `desk.run.accepted` (`internal`, child of `desk.run`, ended as the run is recorded); `agent.invoke` (`client`, child of `desk.run`, `lab.operation.id` the run's id, `lab.attempt` 1, ended with `executed`, `response_lost` or `failed`) | Starts the trace. Injects `traceparent` from `agent.invoke` on the request to the agent |
+
+A run whose trace holds `desk.run.accepted` and no `desk.run` has not finished, or did not finish while the client ran. Nothing exports an ending for it.
+
+## Who reads the evidence
+
+| Reader | Asks the store | Shows |
+|---|---|---|
+| The client's lab explorer, `GET /lab/api/runs/<run_id>/spans` | `GET /traces?run_id=<run_id>`, then `GET /traces/<trace_id>` for each trace found | Every span of those traces, of every piece, on the run page's "Exported evidence", beside the steps from the agent's answer |
 
 ## Terms
 
@@ -82,7 +96,6 @@ The module's items are 8 to 11 in [`shared/README.md`](../../shared/README.md); 
 
 ## Not present
 
-- No piece sends spans.
 - No sampling: every span is kept, within the store's limits.
 - No span links, events, `tracestate` or baggage. Only `traceparent` crosses a boundary.
 - No content lane: no prompt, completion, argument or result is exported anywhere.

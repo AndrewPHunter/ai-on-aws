@@ -156,6 +156,24 @@ export type TraceInquiry = Omit<Inquiry, 'runs'>;
 export type Trace = { inquiry: TraceInquiry; run: TracedRun };
 export type TraceResponse = { trace: Trace };
 
+// GET /lab/api/runs/<run_id>/spans: every span of the traces in the trace store that carry the run's id, in start
+// order, from every piece. `parent` is the parent's span id, or null for the first span of a trace; `start` and `end`
+// are ISO 8601 times. `evidence` says whether TELEMETRY_STORE_URL is not set, the store holds nothing for the run, or
+// spans were found.
+export type ExportedSpan = {
+  trace_id: string;
+  span_id: string;
+  parent: string | null;
+  service: string | null;
+  name: string;
+  kind: 'internal' | 'server' | 'client' | 'producer' | 'consumer' | 'unspecified';
+  start: string;
+  end: string;
+  status: 'unset' | 'ok' | 'error';
+  attributes: Record<string, string | number | boolean>;
+};
+export type RunSpansResponse = { evidence: 'not_configured' | 'none' | 'found'; spans: ExportedSpan[] };
+
 // POST /contact/api/messages: a clinician writes in through the public form. Nobody is signed in. Each of name,
 // role and contact is at most 200 characters, and text at most what POST /api/inquiries takes. The message becomes
 // an inquiry in the desk's inbox, entered by "Contact form", and is handled by the orchestrator. Answers 202; the

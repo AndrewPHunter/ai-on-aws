@@ -1,13 +1,15 @@
-// Starts the client: reads its settings, opens the store, settles runs a previous process left
+// Starts the client: reads its settings, starts telemetry, opens the store, settles runs a previous process left
 // running, and serves sign-in, the API, the contact form, the lab explorer and the web app on 3000. The identity
 // provider is not asked anything until someone signs in or a machine client needs a token, so the client starts
 // while it is down.
 
 import { randomBytes, randomUUID } from 'node:crypto';
 
+import { LAB_QUEUE, startTelemetry } from '../../shared/telemetry.ts';
 import { configFrom } from './config.ts';
 import type { Config } from './config.ts';
 import { IdentityProvider } from './identity.ts';
+import { traceStoreAt } from './evidence.ts';
 import { engineAt, retrievalAt } from './knowledge.ts';
 import { createClientServer } from './server.ts';
 import { SessionStore } from './sessions.ts';
@@ -15,6 +17,8 @@ import { InquiryStore } from './store.ts';
 
 const PORT = 3000;
 const HOST = '0.0.0.0';
+// How long telemetry is given at SIGTERM to send the spans that wait.
+const TELEMETRY_SHUTDOWN_MS = 5_000;
 
 let config: Config;
 try {
@@ -25,6 +29,11 @@ try {
 }
 
 const now = (): Date => new Date();
+// Off, and said so once in the log, when TELEMETRY_ENDPOINT is not set.
+const telemetry = startTelemetry(
+  { service: 'client', endpoint: config.telemetryEndpoint, queue: LAB_QUEUE },
+  { now: () => now().getTime(), log: (line) => console.log(line) },
+);
 const store = new InquiryStore(config.dbPath, now);
 const interrupted = store.failInterruptedRuns();
 if (interrupted > 0) {
@@ -46,6 +55,8 @@ const server = createClientServer({
     engine: config.healthUrls?.search === undefined ? null : engineAt(config.healthUrls.search),
     retrieval: config.healthUrls?.retrieval === undefined ? null : retrievalAt(config.healthUrls.retrieval),
   },
+  telemetry,
+  traceStore: config.healthUrls?.['trace-store'] === undefined ? null : traceStoreAt(config.healthUrls['trace-store']),
 });
 
 server.listen(PORT, HOST, () => {
@@ -53,11 +64,20 @@ server.listen(PORT, HOST, () => {
 });
 
 // An agent call still in flight would keep the process alive until it times out. It is not waited
-// for: its run stays running in the store and is marked failed by failInterruptedRuns at next start.
+// for: its run stays running in the store and is marked failed by failInterruptedRuns at next start, and its root span
+// never ends, so no ending is exported for it. The spans that have ended are given TELEMETRY_SHUTDOWN_MS to be sent;
+// what was not sent is logged as counts only.
 function stop(): void {
   server.close(() => {
-    store.close();
-    process.exit(0);
+    void telemetry.shutdown(TELEMETRY_SHUTDOWN_MS).then(({ counts, notSent, timedOut }) => {
+      if (telemetry.on) {
+        console.log(
+          `telemetry: at shutdown ${counts.ended} spans ended, ${counts.exported} exported, ${counts.failed} failed, ${counts.dropped} dropped, ${notSent} not sent${timedOut ? ', the time limit ran out' : ''}`,
+        );
+      }
+      store.close();
+      process.exit(0);
+    });
   });
   server.closeAllConnections();
 }

@@ -706,6 +706,36 @@
   border-color: var(--lab-blue);
 }
 
+/* The exported evidence: the same axis as the steps, one list per service, each span a line that is read, not chosen. */
+:where(.lab) .lab-spans + .lab-spans {
+  margin-top: 12px;
+}
+
+:where(.lab) .lab-span__label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  padding-right: 4px;
+}
+
+:where(.lab) .lab-span__name {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+:where(.lab) .lab-span__outcome {
+  color: var(--lab-ink-2);
+  font-size: 13px;
+}
+
+:where(.lab) .lab-span.is-failed .lab-span__name,
+:where(.lab) .lab-span.is-failed .lab-span__outcome {
+  color: var(--lab-down);
+}
+
 :where(.lab) .lab-pair {
   display: flex;
   flex-wrap: wrap;

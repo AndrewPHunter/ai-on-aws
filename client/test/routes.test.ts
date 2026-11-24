@@ -1,7 +1,7 @@
 // Invariants 5, 6 and 9 to 14 of client/README.md ("Always true"), and the probe that the built app is served. The
 // agent and the case system are scripted servers; the identity provider refreshes by a function, a machine client's
-// token is a function (support.ts), and the retrieval service is a value that records each call and answers from
-// invented labels.
+// token is a function (support.ts), the retrieval service is a value that records each call and answers from
+// invented labels, and the trace store is a value that holds two invented spans for one run.
 
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
@@ -11,6 +11,7 @@ import { after, test } from 'node:test';
 import { isDeepStrictEqual } from 'node:util';
 
 import type { Refreshed } from '../src/identity.ts';
+import type { TraceStore } from '../src/evidence.ts';
 import type { EngineAnswer, RetrievalService, SearchEngine } from '../src/knowledge.ts';
 import type { Session } from '../src/sessions.ts';
 import { tokenFor } from '../src/tokens.ts';
@@ -122,7 +123,20 @@ const engine: SearchEngine = {
     return Promise.resolve({ outcome: 'answered', status: 200, body: { 'labels-invented': { mappings: { _meta: { embedding: EMBEDDING } } } } });
   },
 };
-const desk = await startDesk({ after }, config, time, identity, machine, { engine, retrieval });
+// The trace store: one trace of two invented spans, the later-starting one first, for the run named in exportedRun;
+// nothing for any other.
+const exportedRun = { id: '' };
+const storedSpan = (spanId: string, parent: string | null, name: string, startMs: number) => ({
+  trace_id: 'trace-1', span_id: spanId, parent_span_id: parent, service: 'client', name, kind: 'internal', start_time_unix_nano: `${startMs}000000`, end_time_unix_nano: `${startMs + 5}000000`, status: 'ok', attributes: { 'lab.run.id': exportedRun.id }, resource: {}, schema_version: '1',
+});
+const traceStore: TraceStore = {
+  get: (path): Promise<EngineAnswer> => {
+    if (path === `/traces?run_id=${exportedRun.id}`) return Promise.resolve({ outcome: 'answered', status: 200, body: { run_id: exportedRun.id, trace_ids: ['trace-1'] } });
+    if (path === '/traces/trace-1') return Promise.resolve({ outcome: 'answered', status: 200, body: { trace_id: 'trace-1', spans: [storedSpan('span-b', 'span-a', 'desk.run.accepted', Date.parse('2026-03-01T09:00:01.000Z')), storedSpan('span-a', null, 'desk.run', Date.parse('2026-03-01T09:00:00.000Z'))] } });
+    return Promise.resolve({ outcome: 'answered', status: 200, body: { run_id: 'other', trace_ids: [] } });
+  },
+};
+const desk = await startDesk({ after }, config, time, identity, machine, { engine, retrieval }, { traceStore });
 const textOf = (r: Received): unknown => at(r.body, 'message', 'text');
 
 function inquire(cookie: string, text: string, origin?: string): Promise<{ status: number; body: unknown }> {
@@ -345,6 +359,7 @@ test("invariant 13: the lab explorer's routes need no session, give every inquir
   const danaInquiry = String(at((await inquire(dana, 'A message with steps')).body, 'inquiry', 'id'));
   const danaRun = String(at(await settled(desk, danaInquiry, dana), 'runs', 0, 'id'));
   const rileyRun = String(at(await settled(desk, String(at((await inquire(riley, "Riley's lab inquiry")).body, 'inquiry', 'id')), riley), 'runs', 0, 'id'));
+  exportedRun.id = danaRun;
   const desks = async (path: string): Promise<unknown> => (await call(`${desk.url}${path}`, { cookie: riley })).body;
   const runs = (body: unknown): unknown[] => [at(body, 'traces')].flat();
   // Each row is called with no cookie; its expected answer is what the contract says, or what the named /api route gives.
@@ -361,6 +376,22 @@ test("invariant 13: the lab explorer's routes need no session, give every inquir
     },
     { name: "one run's steps and its message", path: `/lab/api/runs/${danaRun}`, status: 200, shows: (b: unknown) => [at(b, 'trace', 'run', 'response', 'steps'), at(b, 'trace', 'inquiry', 'text')], expected: () => [WITH_STEP.steps, 'A message with steps'] },
     { name: 'an inquiry with every run of it, steps included', path: `/lab/api/inquiries/${danaInquiry}`, status: 200, shows: (b: unknown) => [at(b, 'inquiry', 'text'), [at(b, 'inquiry', 'runs')].flat().map((r) => [at(r, 'id'), at(r, 'response', 'steps')])], expected: () => ['A message with steps', [[danaRun, WITH_STEP.steps]]] },
+    {
+      name: "a run's spans from the trace store, every span of its traces in start order; nothing for a run the store does not hold",
+      path: `/lab/api/runs/${danaRun}/spans`,
+      status: 200,
+      shows: async (b: unknown) => [b, at((await call(`${desk.url}/lab/api/runs/${rileyRun}/spans`)).body, 'evidence')],
+      expected: () => [
+        {
+          evidence: 'found',
+          spans: [
+            { trace_id: 'trace-1', span_id: 'span-a', parent: null, service: 'client', name: 'desk.run', kind: 'internal', start: '2026-03-01T09:00:00.000Z', end: '2026-03-01T09:00:00.005Z', status: 'ok', attributes: { 'lab.run.id': danaRun } },
+            { trace_id: 'trace-1', span_id: 'span-b', parent: 'span-a', service: 'client', name: 'desk.run.accepted', kind: 'internal', start: '2026-03-01T09:00:01.000Z', end: '2026-03-01T09:00:01.005Z', status: 'ok', attributes: { 'lab.run.id': danaRun } },
+          ],
+        },
+        'none',
+      ],
+    },
     {
       name: "a new message run through an agent, with the token got as the lab explorer's client for that agent's scope, entered by the lab explorer",
       path: '/lab/api/runs',
