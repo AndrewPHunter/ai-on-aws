@@ -7,4 +7,7 @@ What was learned by building and measuring: the question, what was run, the resu
 - [Before the Model Can Answer](before-the-model-can-answer.md) — an essay on RAG preparation as ETL: source contracts, transformations, validation and publication, where Bedrock takes over, and the responsibilities a business adopts with the pipeline.
 - [From a Question to Useful Evidence](from-a-question-to-useful-evidence.md) — an essay on information retrieval for inference: source constraints, keyword and vector search, fusion, reranking, context assembly, and choosing which decisions to delegate to AWS.
 - [Whose Authority Is the Agent Using?](whose-authority-is-the-agent-using.md) — an essay on identity across distributed and asynchronous work, delegated authority, injection and disclosure, and how AgentCore carries those responsibilities into an AWS deployment.
+- [Following the Work](following-the-work.md) — an essay on distributed telemetry for agents: independent observations, execution context, asynchronous work, outcome comparison, and investigation through AWS and Honeycomb.
+- [Telemetry research](telemetry-research.md) — AWS, Honeycomb, and OpenTelemetry guidance behind the telemetry design.
+- [Telemetry demo alignment](telemetry-demo-alignment.md) — comparison with the current implementation and proposed changes to bring the playground into line with the design.
 - [Retrieval research](retrieval-research.md) — primary-source research and design recommendations recorded before the retrieval pipeline was built.
