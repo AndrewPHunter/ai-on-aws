@@ -1,7 +1,7 @@
 // The identity piece's invariants 1 and 5 ("Always true" in platform/identity/README.md).
 //
 // setup.sh is run for real, from a copy in a temporary directory: it writes .env beside itself, so the live
-// platform/identity/.env is never touched or read. It makes each value with `docker run <pinned node> node -e ...`;
+// platform/identity/.env is never touched or read. It makes each random value with `docker run <pinned node> node -e ...`;
 // the check has no Docker, so the copy is sourced by a shell that first defines a stand-in `docker` function,
 // labelled as one, which runs the command setup.sh hands to `docker run` with this process's own Node.
 import assert from 'node:assert/strict'
@@ -15,19 +15,21 @@ import { fileURLToPath } from 'node:url'
 const IDENTITY = fileURLToPath(new URL('..', import.meta.url))
 const read = (relative: string): string => readFileSync(join(IDENTITY, relative), 'utf8')
 
-const STAND_IN_DOCKER = `
+// A stand-in for the docker CLI. With `refuseRun`, `docker run` fails, so a run that needs no random value is shown
+// to make no Docker call for one.
+const standInDocker = (refuseRun: boolean): string => `
 # A stand-in for the docker CLI, for platform/identity/test/setup.test.ts only.
 docker() {
   case "$1" in
     version) return 0 ;;
-    run) while [ "$#" -gt 0 ]; do case "$1" in node@sha256:*) shift; "$@"; return ;; *) shift ;; esac; done; return 3 ;;
+    run) ${refuseRun ? 'return 3' : 'while [ "$#" -gt 0 ]; do case "$1" in node@sha256:*) shift; "$@"; return ;; *) shift ;; esac; done; return 3'} ;;
     *) return 3 ;;
   esac
 }
 `
 
 /** Runs a copy of setup.sh in a new directory, over `existing` as its .env when given; returns its exit and the .env after. */
-function runSetup(existing: string | null): { status: number | null; stderr: string; env: string } {
+function runSetup(existing: string | null, refuseRun = false): { status: number | null; stderr: string; env: string } {
   const root = mkdtempSync(join(tmpdir(), 'identity-setup-'))
   try {
     const dir = join(root, 'identity')
@@ -36,7 +38,7 @@ function runSetup(existing: string | null): { status: number | null; stderr: str
     copyFileSync(join(IDENTITY, '.env.example'), join(dir, '.env.example'))
     if (existing !== null) writeFileSync(join(dir, '.env'), existing, { mode: 0o600 })
     // $0 is the copy's path, which setup.sh reads to find its directory.
-    const result = spawnSync('sh', ['-c', `${STAND_IN_DOCKER}\n. "$0"\n`, join(dir, 'setup.sh')], {
+    const result = spawnSync('sh', ['-c', `${standInDocker(refuseRun)}\n. "$0"\n`, join(dir, 'setup.sh')], {
       env: { PATH: `${dirname(process.execPath)}:/usr/bin:/bin` },
       encoding: 'utf8',
     })
@@ -54,7 +56,7 @@ function runSetup(existing: string | null): { status: number | null; stderr: str
 
 const valueOf = (text: string, name: string): string => new RegExp(`^${name}=(.*)$`, 'm').exec(text)?.[1] ?? ''
 
-test('identity 1. every secret and password in the realm file is a placeholder that setup.sh generates, .env.example names and compose passes', () => {
+test('identity 1. every secret and password in the realm file is a placeholder that setup.sh knows, .env.example names and compose passes', () => {
   const realmText = read('realm/lab-realm.json')
 
   // Every secret and credential value, wherever it sits, is a ${NAME} placeholder.
@@ -79,13 +81,20 @@ test('identity 1. every secret and password in the realm file is a placeholder t
   const example = read('.env.example')
   const compose = read('compose.yaml')
   for (const name of names) {
-    assert.notEqual(valueOf(written, name), '', `setup.sh does not generate ${name}`)
+    assert.notEqual(valueOf(written, name), '', `setup.sh writes no value for ${name}`)
     assert.match(example, new RegExp(`^${name}=`, 'm'), `.env.example does not name ${name}`)
     assert.match(compose, new RegExp(`^\\s+${name}: \\$\\{${name}[:}]`, 'm'), `compose.yaml does not pass ${name} to the provider`)
   }
 })
 
-test('identity 5. running set-up again changes no value that is already set, and writes a value for each variable that has none', () => {
+const PEOPLE: Record<string, string> = {
+  IDENTITY_DANA_PASSWORD: 'dana.desk',
+  IDENTITY_MORGAN_PASSWORD: 'morgan.medinfo',
+  IDENTITY_RILEY_PASSWORD: 'riley.reviewer',
+  IDENTITY_AVERY_PASSWORD: 'avery.auditor',
+}
+
+test("identity 5. running set-up again changes no value that is already set, and writes a value for each variable that has none; the four people's passwords are always their usernames", () => {
   const names = [...read('.env.example').matchAll(/^([A-Z_][A-Z0-9_]*)=/gm)].map((match) => match[1] ?? '')
   // The file as compose reads it: each name's lines, the last of which gives its value.
   const linesOf = (text: string, name: string): string[] =>
@@ -105,7 +114,16 @@ test('identity 5. running set-up again changes no value that is already set, and
 
   const whole = runSetup(null).env
   assert.notEqual(whole, '', 'setup.sh wrote no .env')
+  for (const [name, username] of Object.entries(PEOPLE)) assert.equal(valueOf(whole, name), username, `${name} is not ${username}`)
   assert.equal(runAgainOver(whole), whole)
+
+  // The same file holding another value for one person's password: that line alone becomes the username, in place,
+  // with `docker run` refused.
+  const other = whole.replace(/^IDENTITY_MORGAN_PASSWORD=.*$/m, 'IDENTITY_MORGAN_PASSWORD=another-value')
+  assert.notEqual(other, whole)
+  const replaced = runSetup(other, true)
+  assert.equal(replaced.status, 0, `setup.sh exited ${String(replaced.status)}: ${replaced.stderr}`)
+  assert.equal(replaced.env, whole)
 
   // The same file lacking two variables, as a checkout from before they were added is.
   const lacking = ['IDENTITY_DANA_PASSWORD', 'IDENTITY_ORCHESTRATOR_CLIENT_SECRET']

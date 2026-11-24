@@ -12,7 +12,7 @@ Three programs sign a person in without a browser: the identity gate, the stack 
 |---|---|
 | Provider | The `identity` service: Keycloak 26.8.2, pinned by digest, started with `start-dev --import-realm` |
 | Realm | `lab`, defined by `platform/identity/realm/lab-realm.json` |
-| Identity secrets | `platform/identity/.env`: the administrator's username and password, the secret of each client that has one (`desk`, the four agents, the two machines), each person's password. Ignored by git |
+| Identity secrets | `platform/identity/.env`: the administrator's username and password, the secret of each client that has one (`desk`, the four agents, the two machines), each person's password (their username). Ignored by git |
 | Front channel | Requests a browser makes: the sign-in page and sign-out |
 | Back channel | Requests a server makes: discovery, the token endpoint (code, refresh, exchange, client credentials), keys, userinfo |
 | Scope | A capability, such as `cases:review`. Roles grant it, a client may ask for it, and it names the audiences a token for it carries |
@@ -71,10 +71,10 @@ A realm file that names a variable the identity secrets lack needs more than a r
 
 | Step | What it takes |
 |---|---|
-| New values | `platform/identity/setup.sh`, run again, writes a random value for each variable the existing `platform/identity/.env` lacks and names them; every value already there, every client secret and password among them, is kept |
+| New values | `platform/identity/setup.sh`, run again, writes a random value for each variable the existing `platform/identity/.env` lacks, sets each person's password to their username, and names the variables it set; every other value already there, every client secret and the administrator's password among them, is kept |
 | The stack started again | `docker compose down`, then `docker compose up -d --build --wait`, at the repository root. The provider starts with the new values and imports the realm file; `down` without `-v` keeps the volumes, the cases among them |
 | Every image built again | `--build` builds the agents, the case system, the client and the retrieval service from the checkout, so each runs the code that matches the realm, with the values its compose file passes |
-| Everyone signs in again | Tokens issued before are refused (`bad_signature`). People's passwords are the same as before |
+| Everyone signs in again | Tokens issued before are refused (`bad_signature`). People's passwords are their usernames |
 
 ## The realm
 
@@ -131,10 +131,10 @@ Clients. Every client is confidential, with no password grant, implicit flow, de
 
 | Account | Name | Email | Realm roles | Password |
 |---|---|---|---|---|
-| `riley.reviewer` | Riley Reviewer | `riley.reviewer@example.org` | `safety-reviewer`, `default-roles-lab` | Identity secrets, permanent |
-| `dana.desk` | Dana Desk | `dana.desk@example.org` | `desk`, `default-roles-lab` | Identity secrets, permanent |
-| `morgan.medinfo` | Morgan Medinfo | `morgan.medinfo@example.org` | `medical-information`, `default-roles-lab` | Identity secrets, permanent |
-| `avery.auditor` | Avery Auditor | `avery.auditor@example.org` | `auditor`, `default-roles-lab` | Identity secrets, permanent |
+| `riley.reviewer` | Riley Reviewer | `riley.reviewer@example.org` | `safety-reviewer`, `default-roles-lab` | Their username, permanent |
+| `dana.desk` | Dana Desk | `dana.desk@example.org` | `desk`, `default-roles-lab` | Their username, permanent |
+| `morgan.medinfo` | Morgan Medinfo | `morgan.medinfo@example.org` | `medical-information`, `default-roles-lab` | Their username, permanent |
+| `avery.auditor` | Avery Auditor | `avery.auditor@example.org` | `auditor`, `default-roles-lab` | Their username, permanent |
 | `service-account-evaluation` | Evaluation Harness | — | `evaluation`, `default-roles-lab` | None: the `evaluation` client's secret |
 | `service-account-knowledge-gate` | Knowledge Gate | — | `knowledge-gate`, `default-roles-lab` | None: the `knowledge-gate` client's secret |
 
@@ -551,10 +551,10 @@ sequenceDiagram
 | `desk` client secret | `setup.sh`, random | Identity secrets | The provider, through the realm import; the gate; the stack gate; the client, as `OIDC_CLIENT_SECRET`, the only value its container takes from the identity secrets |
 | The four agents' client secrets | `setup.sh`, random | Identity secrets | The provider, through the realm import; each agent its own, as `EXCHANGE_CLIENT_SECRET`; the gate (all four); the stack gate (`intake-handwritten`'s, `expert`'s and `orchestrator`'s) |
 | The two machines' client secrets | `setup.sh`, random | Identity secrets | The provider, through the realm import; the evaluation runner (`evaluation`'s only) and the knowledge gate (`knowledge-gate`'s only); the gate and the stack gate (both) |
-| The four people's passwords | `setup.sh`, random | Identity secrets | The provider, through the realm import; the gate, the stack gate and the attack runner (all four). No other program |
+| The four people's passwords | `setup.sh`, each the person's username: the people are synthetic, the lab is local, and the passwords are typed by hand | Identity secrets | The provider, through the realm import; the gate, the stack gate and the attack runner (all four). No other program |
 | Token signing keys | The provider, at start | The provider's database, on a tmpfs | Nobody outside; the public keys are at `jwks_uri` |
 
-The realm file holds a `${NAME}` placeholder where each secret goes, and no secret.
+The realm file holds a `${NAME}` placeholder where each secret and password goes, and no secret.
 
 ## How it fails
 
@@ -562,7 +562,8 @@ The realm file holds a `${NAME}` placeholder where each secret goes, and no secr
 |---|---|
 | `platform/identity/.env` missing | `docker compose up` stops before starting anything and names the missing variable |
 | `setup.sh` without Docker | Exits 2 and says so |
-| `platform/identity/.env` lacks a variable `setup.sh` knows | `setup.sh` adds it with a new value and keeps every other value |
+| `platform/identity/.env` lacks a variable `setup.sh` knows | `setup.sh` adds it with a new value (a person's password: their username) and keeps every other value |
+| `platform/identity/.env` holds a person's password other than their username | `setup.sh` sets that line to the username, in place |
 | `.env.example` names a variable `setup.sh` cannot make a value for | `setup.sh` exits 1, names it, and changes nothing |
 | The realm does not import | The service never becomes healthy; `docker compose up --wait` fails |
 | The realm file was edited and the provider not restarted | The provider keeps serving the realm it imported at start |
