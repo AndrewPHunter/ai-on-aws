@@ -1,5 +1,5 @@
 import { ArrowLeft } from 'lucide-react';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Link, NavLink, useParams } from 'react-router';
 
 import type { CaseAction, Inquiry, InquirySummary, Run } from '../../../shared/api.ts';
@@ -7,7 +7,7 @@ import { RunAnswer } from '../Answer.tsx';
 import { ApiFailure, failureText, useFinishedInquiries, useInquiries, useInquiry } from '../api.ts';
 import { Empty, Loading, Paragraphs, Problem, Tag } from '../components.tsx';
 import { arrivalWords, caseStatusWords, firstLine, formatDateTime, formatDuration, formatWhen } from '../format.ts';
-import { inboxStatus, isLabelLookup, latestRun } from '../inbox.ts';
+import { inboxStatus, isLabelLookup, latestRun, matchesSearch, searchWords } from '../inbox.ts';
 import { useMay } from '../session.tsx';
 
 function InboxList({ openId }: { openId: string | undefined }) {
@@ -22,6 +22,16 @@ function InboxList({ openId }: { openId: string | undefined }) {
   const wholes = useFinishedInquiries(finished);
   const wholeOf = new Map(finished.map((entry, index) => [entry.inquiryId, wholes[index]]));
   const [now] = useState(() => new Date());
+  const [search, setSearch] = useState('');
+  const searchField = useRef<HTMLInputElement>(null);
+  const words = searchWords(search);
+  const shown = listed.filter((inquiry) => matchesSearch(inquiry, words));
+  const truncated = inquiries.data?.truncated === true;
+
+  function clearSearch(): void {
+    setSearch('');
+    searchField.current?.focus();
+  }
 
   return (
     <aside className="inbox" aria-labelledby="inbox-title">
@@ -47,8 +57,42 @@ function InboxList({ openId }: { openId: string | undefined }) {
         </p>
       ) : null}
 
+      {inquiries.data !== undefined && listed.length > 0 ? (
+        <div className="inbox__search" role="search">
+          <div className="field">
+            <label htmlFor="inbox-search">Search</label>
+            <div className="search">
+              <input
+                ref={searchField}
+                id="inbox-search"
+                type="search"
+                placeholder="Sender, medicine or case number"
+                autoComplete="off"
+                spellCheck={false}
+                value={search}
+                aria-describedby={truncated ? 'inbox-search-limit' : undefined}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+              {search === '' ? null : (
+                <button type="button" className="button" onClick={clearSearch}>
+                  Clear search
+                </button>
+              )}
+            </div>
+            {truncated ? (
+              <p id="inbox-search-limit" className="field__hint">
+                Searches the 100 newest inquiries only.
+              </p>
+            ) : null}
+          </div>
+          <p className="inbox__found" role="status">
+            {foundWords(words.length === 0 ? null : search.trim(), shown.length, listed.length)}
+          </p>
+        </div>
+      ) : null}
+
       <ul className="inbox__list">
-        {listed.map((inquiry) => (
+        {shown.map((inquiry) => (
           <InboxItem
             key={inquiry.id}
             inquiry={inquiry}
@@ -58,9 +102,22 @@ function InboxList({ openId }: { openId: string | undefined }) {
           />
         ))}
       </ul>
-      {inquiries.data?.truncated === true ? <p className="inbox__none">Showing the 100 newest inquiries.</p> : null}
+      {truncated ? <p className="inbox__none">Showing the 100 newest inquiries.</p> : null}
     </aside>
   );
+}
+
+// How many of the listed inquiries are shown: all of them without a search; with one, how many it found, or that
+// it found none, naming what was searched for. Said in a live region, so clearing a search is announced too.
+function foundWords(searched: string | null, shown: number, listed: number): string {
+  const inquiries = listed === 1 ? 'inquiry' : 'inquiries';
+  if (searched === null) {
+    return `Showing all ${listed} ${inquiries}.`;
+  }
+  if (shown === 0) {
+    return `No inquiry matches “${searched}”.`;
+  }
+  return `Showing ${shown} of ${listed} ${inquiries} for “${searched}”.`;
 }
 
 function InboxItem({

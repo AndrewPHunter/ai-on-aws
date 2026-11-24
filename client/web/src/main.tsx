@@ -10,6 +10,7 @@ import { BrowserRouter } from 'react-router';
 
 import { SESSION_KEY, isSignedOut } from './api.ts';
 import { App } from './App.tsx';
+import { DraftEditsProvider } from './drafts.tsx';
 
 // Any request answered 401 not_signed_in means the session is gone: the app goes back to the sign-in
 // screen.
@@ -34,7 +35,9 @@ createRoot(root).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <App />
+        <DraftEditsProvider>
+          <App />
+        </DraftEditsProvider>
       </BrowserRouter>
     </QueryClientProvider>
   </StrictMode>,
