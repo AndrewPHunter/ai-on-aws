@@ -1,3 +1,5 @@
+// The stand-in issuer's invariant 1 ("Always true" in test-support/README.md), over its own loopback server.
+
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
@@ -11,7 +13,7 @@ const CLIENT = { clientId: 'desk', clientSecret: 'stand-in-secret', redirectUri:
 const VERIFIER = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk';
 const CHALLENGE = createHash('sha256').update(VERIFIER, 'ascii').digest('base64url');
 
-test('S1. the stand-in refuses a wrong client secret and a wrong verifier, and its signatures verify only with its own key', async (t) => {
+test('test-support 1. the stand-in refuses a wrong client secret and a wrong verifier, and its signatures verify only with its own key', async (t) => {
   const issuer = await startStandInIssuer({
     ...CLIENT,
     postLogoutRedirectUri: 'http://localhost:3000/',

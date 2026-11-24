@@ -76,7 +76,7 @@ The steps arrive in the agent's response and are stored by the client with the r
 11. An inquiry and its runs are read, and a run is started on it, only by the person who entered it. To anyone else it is answered as an unknown inquiry is. The one exception is the trace routes of invariant 12.
 12. A run's steps leave the server only on the trace routes, and only to a session granted `traces:read`. Any other session is answered 403 there before the store is read, so the answer says nothing about whether a run exists. Every other route returns a run without its steps, to anyone. The trace routes cover every person's runs; an id that names no run is 404.
 
-The server's tests in `test/` are one per item, named by its number, with one probe that the built app is served and that any other path is its page; `test/format.test.ts` tests the app's formatting helpers. The server's tests run through the server with scripted agents, a scripted case system and an identity provider whose refresh is a function, with three exceptions: invariant 4 and those beside it in `auth.test.ts` use the stand-in provider, invariant 5's two calls arriving together run on the token function in `src/tokens.ts`, and invariant 2's restart runs on the store.
+The server's tests in `test/` are one per item, named by its number, with one probe that the built app is served and that any other path is its page. The server's tests run through the server with scripted agents, a scripted case system and an identity provider whose refresh is a function, with three exceptions: invariant 4 and those beside it in `auth.test.ts` use the stand-in provider, invariant 5's two calls arriving together run on the token function in `src/tokens.ts`, and invariant 2's restart runs on the store.
 
 ## How it is put together
 
@@ -107,7 +107,7 @@ browser ── React app ──> client server ──> agents          POST /inv
 | `src/` | The server: routes, sign-in and sessions, the inquiry store, the calls to agents and to the case system |
 | `shared/api.ts` | The types of the server's API, read by both the server and the app |
 | `web/` | The React app, built by Vite to static files that the server hands out |
-| `test/` | Tests of the server, and of the app's formatting helpers |
+| `test/` | Tests of the server |
 
 ## Settings
 
@@ -137,5 +137,5 @@ The case system's two scopes, `cases:read` and `cases:review`, are fixed in the 
 - **What a session may do is fixed at sign-in.** A change to a person's role takes effect when they sign in again.
 - **The cookie is not marked `Secure`,** because the lab is served over plain HTTP on this machine.
 - **A run that is in progress when the server stops is marked as failed** when it starts again. The agent may still have acted.
-- **The React app's only tests are of its formatting helpers.** The repository check typechecks, lints and builds it.
+- **The React app has no tests.** The repository check typechecks, lints and builds it.
 - **Label search and evaluation have no screen.**
