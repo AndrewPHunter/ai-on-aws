@@ -31,6 +31,7 @@ Three programs sign a person in without a browser: the identity gate, the stack 
 flowchart LR
   env[platform/identity/.env] -- "environment at start" --> kc
   realm[realm/lab-realm.json] -- "imported at start, placeholders replaced" --> kc
+  theme[themes/medical-information-desk/] -- "mounted read-only: the sign-in page's stylesheet" --> kc
   subgraph net["The lab's network"]
     kc["identity: Keycloak, port 8080"]
     client["client"]
@@ -54,6 +55,7 @@ flowchart LR
 | Mode | Development (`start-dev`) |
 | Database | `dev-file` (H2) under `/opt/keycloak/data`, on a tmpfs |
 | Realm file | `platform/identity/realm/` mounted read-only at `/opt/keycloak/data/import`; imported when the container starts, and at no other time |
+| Login theme | `platform/identity/themes/medical-information-desk/` mounted read-only at `/opt/keycloak/themes/medical-information-desk`; the realm file names it as the realm's login theme ([The sign-in page](#the-sign-in-page)) |
 | Published | `127.0.0.1:8090` to container port `8080`; nothing else |
 | Ready | When `GET /realms/lab/.well-known/openid-configuration` answers 200 inside the container |
 | State between starts | None. Each start imports the realm from the file and makes new signing keys |
@@ -222,6 +224,21 @@ sequenceDiagram
 |---|---|
 | `KC_HOSTNAME=http://localhost:8090` | Issuer and every front-channel URL, whatever address the request came in on |
 | `KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true` | Back-channel URLs use the address the request came in on |
+
+## The sign-in page
+
+The first page a person sees after the desk's "Sign in" is Keycloak's own, in the desk's look: headed with the realm's display name, **Medical Information Desk**, on the desk's colours.
+
+| Part | What it is |
+|---|---|
+| Theme | `medical-information-desk`, login type only, in `platform/identity/themes/medical-information-desk/login/` |
+| How the provider gets it | `platform/identity/compose.yaml` mounts the theme's directory read-only at `/opt/keycloak/themes/medical-information-desk`; the realm file sets `loginTheme` to `medical-information-desk` |
+| `theme.properties` | `parent=keycloak.v2` (Keycloak's stock login theme); `styles` lists the parent's `css/styles.css` and then the theme's `css/desk.css`; `darkMode=false` |
+| What it changes | Styles only: one stylesheet, loaded after Keycloak's own. No template, message bundle or `kc*Class` property is overridden, so the page's markup and text are the stock theme's |
+| Look | Page `#F1F3F4`, no background image; a white card with a 1px `#C4CDD1` border and square corners; ink `#111820`, secondary text `#46535E`; inputs with a 1px `#8A979F` border, square, at least 44px tall; the primary button `#5A2D82` with white text, square, at least 44px tall; links `#5A2D82`; a 3px `#5A2D82` focus outline; `'Helvetica Neue', Arial, sans-serif`, from the machine's own fonts |
+| Light or dark | Light whatever the browser prefers: `darkMode=false` leaves out the stock theme's dark variant |
+
+Styles only, because the identity gate, the stack gate and the attack runner sign people in by reading this page: they find the form `kc-form-login`, take its `action`, and post `username`, `password` and `credentialId` to it (`platform/identity/src/login-form.ts`, `platform/identity/src/provider.ts`). The theme leaves that form, its field names, ids and action, exactly as the stock theme renders it.
 
 ## Signing in through the client
 

@@ -1,0 +1,147 @@
+/*
+  The sign-in page in the Medical Information Desk's look (client/web/src/styles.css, the desk's sign-in card).
+
+  Loaded after Keycloak's stock login stylesheets (PatternFly 5 and keycloak.v2's styles.css), so where
+  both set a thing this file wins. It sets PatternFly's own component variables where the stock rules read
+  them, and plain properties elsewhere. Light only: theme.properties turns the dark variant off.
+*/
+
+:root {
+  --desk-page: #f1f3f4;
+  --desk-paper: #ffffff;
+  --desk-ink: #111820;
+  --desk-ink-2: #46535e;
+  --desk-rule: #c4cdd1;
+  --desk-field-rule: #8a979f;
+  --desk-accent: #5a2d82;
+  --desk-accent-deep: #44206a;
+  --desk-sans: 'Helvetica Neue', Arial, sans-serif;
+
+  --pf-v5-global--FontFamily--text: var(--desk-sans);
+  --pf-v5-global--FontFamily--heading: var(--desk-sans);
+  --pf-v5-global--Color--100: var(--desk-ink);
+  --pf-v5-global--Color--200: var(--desk-ink-2);
+  --pf-v5-global--link--Color: var(--desk-accent);
+  --pf-v5-global--link--Color--hover: var(--desk-accent-deep);
+}
+
+/* ---------- Page ---------- */
+
+.login-pf body {
+  background: var(--desk-page) none;
+  color: var(--desk-ink);
+  font-family: var(--desk-sans);
+}
+
+/* The realm's display name over the card, as the desk writes it. */
+#kc-header-wrapper {
+  color: var(--desk-ink) !important;
+  font-family: var(--desk-sans);
+  font-weight: 700;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+/* ---------- Card ---------- */
+
+.pf-v5-c-login__main {
+  --pf-v5-c-login__main--BackgroundColor: var(--desk-paper);
+  --pf-v5-c-login__main--BoxShadow: none;
+  border: 1px solid var(--desk-rule);
+  border-radius: 0;
+  color: var(--desk-ink);
+}
+
+.pf-v5-c-login__main-header {
+  border-top: 0;
+}
+
+#kc-page-title {
+  color: var(--desk-ink);
+  font-family: var(--desk-sans);
+}
+
+.pf-v5-c-login__main-footer-band,
+.pf-v5-c-login__main-footer-band-item,
+.pf-v5-c-form__helper-text,
+.pf-v5-c-helper-text__item-text:not(.pf-m-error) {
+  color: var(--desk-ink-2);
+}
+
+/* ---------- Text, links, focus ---------- */
+
+.pf-v5-c-form__label,
+.pf-v5-c-form__label-text {
+  color: var(--desk-ink);
+}
+
+a,
+.pf-v5-c-button.pf-m-link {
+  --pf-v5-c-button--m-link--Color: var(--desk-accent);
+  --pf-v5-c-button--m-link--hover--Color: var(--desk-accent-deep);
+  color: var(--desk-accent);
+}
+
+a:hover {
+  color: var(--desk-accent-deep);
+}
+
+:focus-visible {
+  outline: 3px solid var(--desk-accent);
+  outline-offset: 2px;
+}
+
+/* ---------- Inputs ---------- */
+
+/* PatternFly draws a field's border with ::before (top, sides) and ::after (bottom). */
+.pf-v5-c-form-control {
+  --pf-v5-c-form-control--BackgroundColor: var(--desk-paper);
+  --pf-v5-c-form-control--Color: var(--desk-ink);
+  --pf-v5-c-form-control--before--BorderTopColor: var(--desk-field-rule);
+  --pf-v5-c-form-control--before--BorderRightColor: var(--desk-field-rule);
+  --pf-v5-c-form-control--before--BorderLeftColor: var(--desk-field-rule);
+  --pf-v5-c-form-control--after--BorderBottomColor: var(--desk-field-rule);
+  --pf-v5-c-form-control--hover--after--BorderBottomColor: var(--desk-field-rule);
+  --pf-v5-c-form-control--focus--after--BorderBottomColor: var(--desk-accent);
+  border-radius: 0;
+}
+
+.pf-v5-c-form-control > :is(input, select, textarea) {
+  min-height: 44px;
+  border-radius: 0;
+  font-family: var(--desk-sans);
+}
+
+/* The password field's show/hide button sits beside its input and is as tall. */
+.pf-v5-c-input-group .pf-v5-c-button.pf-m-control {
+  --pf-v5-c-button--BorderRadius: 0;
+  --pf-v5-c-button--after--BorderRadius: 0;
+  --pf-v5-c-button--m-control--after--BorderTopColor: var(--desk-field-rule);
+  --pf-v5-c-button--m-control--after--BorderRightColor: var(--desk-field-rule);
+  --pf-v5-c-button--m-control--after--BorderBottomColor: var(--desk-field-rule);
+  --pf-v5-c-button--m-control--after--BorderLeftColor: var(--desk-field-rule);
+  min-height: 44px;
+  border-radius: 0;
+}
+
+/* ---------- Buttons ---------- */
+
+.pf-v5-c-button {
+  --pf-v5-c-button--BorderRadius: 0;
+  --pf-v5-c-button--after--BorderRadius: 0;
+  font-family: var(--desk-sans);
+}
+
+.pf-v5-c-button.pf-m-primary {
+  --pf-v5-c-button--m-primary--BackgroundColor: var(--desk-accent);
+  --pf-v5-c-button--m-primary--Color: #ffffff;
+  --pf-v5-c-button--m-primary--hover--BackgroundColor: var(--desk-accent-deep);
+  --pf-v5-c-button--m-primary--hover--Color: #ffffff;
+  --pf-v5-c-button--m-primary--focus--BackgroundColor: var(--desk-accent-deep);
+  --pf-v5-c-button--m-primary--focus--Color: #ffffff;
+  --pf-v5-c-button--m-primary--active--BackgroundColor: var(--desk-accent-deep);
+  --pf-v5-c-button--m-primary--active--Color: #ffffff;
+  min-height: 44px;
+  border-radius: 0;
+  font-weight: 650;
+}
