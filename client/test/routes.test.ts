@@ -1,4 +1,4 @@
-// Invariants 5, 6 and 9 to 12 of client/README.md ("Always true"), and the probe that the built app is served. The
+// Invariants 5, 6 and 9 to 13 of client/README.md ("Always true"), and the probe that the built app is served. The
 // agent and the case system are scripted servers; the identity provider refreshes by a function (support.ts).
 
 import assert from 'node:assert/strict';
@@ -206,6 +206,38 @@ test("invariant 12: a run's steps leave the server only on the trace routes, to 
       const { status, body } = await call(`${desk.url}${row.path}`, { cookie: row.cookie });
       assert.equal(status, row.status);
       if (row.shows !== undefined) assert.deepEqual(row.shows(body), row.expected);
+    });
+  }
+});
+
+test("invariant 13: the lab explorer's routes need no session, give every person's runs with their steps, and take only GET", async (t) => {
+  const dana = signedIn(desk, DANA, 'access-lab-dana', 3_600_000, 'refresh-lab-dana');
+  const riley = signedIn(desk, RILEY, 'access-lab-riley', 3_600_000, 'refresh-lab-riley');
+  const danaRun = String(at(await settled(desk, String(at((await inquire(dana, 'A message with steps')).body, 'inquiry', 'id')), dana), 'runs', 0, 'id'));
+  const rileyRun = String(at(await settled(desk, String(at((await inquire(riley, "Riley's lab inquiry")).body, 'inquiry', 'id')), riley), 'runs', 0, 'id'));
+  const desks = async (path: string): Promise<unknown> => (await call(`${desk.url}${path}`, { cookie: riley })).body;
+  const runs = (body: unknown): unknown[] => [at(body, 'traces')].flat();
+  // Each row is called with no cookie; its expected answer is what the contract says, or what the named /api route gives.
+  const rows = [
+    { name: 'the pieces\' state', path: '/lab/api/status', status: 200, shows: (b: unknown) => b, expected: () => desks('/api/status') },
+    { name: 'every agent, whoever asks', path: '/lab/api/agents', status: 200, shows: (b: unknown) => [at(b, 'agents')].flat().map((a) => at(a, 'id')), expected: () => agents.map((a) => a.id) },
+    { name: 'the prepared inquiries', path: '/lab/api/samples', status: 200, shows: (b: unknown) => b, expected: () => desks('/api/samples') },
+    {
+      name: "both people's runs",
+      path: '/lab/api/runs',
+      status: 200,
+      shows: (b: unknown) => [danaRun, rileyRun].map((id) => at(runs(b).find((r) => at(r, 'run_id') === id), 'started_by', 'name')),
+      expected: () => [DANA.name, RILEY.name],
+    },
+    { name: "one run's steps and its message", path: `/lab/api/runs/${danaRun}`, status: 200, shows: (b: unknown) => [at(b, 'trace', 'run', 'response', 'steps'), at(b, 'trace', 'inquiry', 'text')], expected: () => [WITH_STEP.steps, 'A message with steps'] },
+    { name: 'a POST', path: '/lab/api/runs', method: 'POST', status: 405, shows: (b: unknown, allow: string | null) => [at(b, 'error'), allow], expected: () => ['method_not_allowed', 'GET'] },
+  ];
+  for (const row of rows) {
+    await t.test(row.name, async () => {
+      const response = await fetch(`${desk.url}${row.path}`, { method: row.method ?? 'GET' });
+      const body: unknown = await response.json();
+      assert.equal(response.status, row.status);
+      assert.deepEqual(row.shows(body, response.headers.get('allow')), await row.expected());
     });
   }
 });
