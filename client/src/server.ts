@@ -1,11 +1,15 @@
 // The client's server. Under /auth it signs desk staff in and out through the identity provider. Under
 // /api, for a signed-in user only, it receives inquiries, sends them to agents, keeps every inquiry and
-// run, forwards case review to the case system and reports the state of each piece. On /api a run's steps
-// are given only by the trace routes, to a session granted traces:read; every other /api route strips them.
-// What a session may do comes from the scopes granted at sign-in, and every call to an agent or the case
-// system carries a token got for that target alone. Under /lab/api the lab explorer reads, with no session
-// and by GET only, what the status, agent, sample and trace routes give; the server is published on its
-// own machine only. /ping and the built web app need no session.
+// run in the desk's shared inbox, forwards case review to the case system and reports the state of each
+// piece. On /api a run's steps are given only by the trace routes, to a session granted traces:read; every
+// other /api route strips them. What a session may do comes from the scopes granted at sign-in, and every
+// call to an agent or the case system carries a token got for that target alone.
+//
+// Two routes have nobody signed in, and call agents with a token got by client credentials as their own
+// client: POST /contact/api/messages, where a clinician writes in and the message goes to the orchestrator,
+// and, under /lab/api, the lab explorer, which reads what the status, agent, sample and trace routes give,
+// reads an inquiry with its runs' steps, and runs a message through any agent. The server is published on
+// its own machine only. /ping and the built web app need no session.
 //
 // Tokens stay here: the browser holds only a session cookie.
 
@@ -18,8 +22,12 @@ import type { InvocationRequest } from '../../shared/agent-contract.ts';
 import type {
   AgentList,
   ApiError,
+  ContactMessageResponse,
   Inquiry,
+  InquiryList,
   InquiryResponse,
+  LabInquiryResponse,
+  LabRunResponse,
   PieceStatus,
   Run,
   RunResponse,
@@ -36,9 +44,9 @@ import { invokeAgent, ping, pingAgent } from './agents.ts';
 import type { PingResult } from './agents.ts';
 import { getCase, listCases, postReview } from './cases.ts';
 import type { Forwarded } from './cases.ts';
-import type { AgentConfig, Config } from './config.ts';
+import type { AgentConfig, Config, MachineClient } from './config.ts';
 import { IdentityUnreachable, SignInRefused } from './identity.ts';
-import type { IdentityProvider } from './identity.ts';
+import type { IdentityProvider, MachineTokenResult } from './identity.ts';
 import { SAMPLES } from './samples.ts';
 import type { Session, SessionStore } from './sessions.ts';
 import type { Actor, InquiryStore, StoredInquiry } from './store.ts';
@@ -53,7 +61,28 @@ export type ClientDeps = {
   newId: () => string;
   identity: IdentityProvider;
   sessions: SessionStore;
+  // A token for a machine client, as itself, for one scope, by client credentials (IdentityProvider.clientCredentials
+  // in the running server). Never throws: a failure comes back with its reason.
+  machineToken: (client: MachineClient, scope: string) => Promise<MachineTokenResult>;
 };
+
+// The token a run is sent with, or why there is none.
+type Access = { outcome: 'token'; token: string } | { outcome: 'failed'; reason: string };
+
+// Who enters an inquiry and starts a run when nobody is signed in: the machine client, by its client id.
+export const MACHINE_ACTORS: Record<MachineClient, Actor> = {
+  'contact-form': { sub: 'contact-form', name: 'Contact form' },
+  'lab-explorer': { sub: 'lab-explorer', name: 'Lab explorer' },
+};
+
+// The subject whose inquiries and runs the desk's /api inquiry routes leave out: the lab explorer's. The trace routes
+// and /lab/api give everything.
+const DESK_LEAVES_OUT = MACHINE_ACTORS['lab-explorer'].sub;
+
+// The agent a message from the contact form is handed to.
+export const ORCHESTRATOR_ID = 'orchestrator';
+// The most characters each of the contact form's name, role and contact may hold.
+export const MAX_CONTACT_FIELD_LENGTH = 200;
 
 // How long a user's access token must still live when it is sent to the case system: a margin over its
 // 10-second timeout. A token sent to an agent must outlive the wait for that agent (agentWaitMs).
@@ -119,9 +148,13 @@ function notAllowed(detail: string): ApiFailure {
   return new ApiFailure(403, 'not_allowed', detail);
 }
 
-// Another person's inquiry is answered exactly as one that does not exist.
+// An inquiry a session may not read is answered exactly as one that does not exist.
 function inquiryNotFound(): ApiFailure {
   return new ApiFailure(404, 'inquiry_not_found', 'There is no inquiry with that id.');
+}
+
+function unknownAgent(id: string): ApiFailure {
+  return new ApiFailure(400, 'unknown_agent', `No agent with the id "${id}" is configured.`);
 }
 
 // A run as it leaves the server on every /api route but the trace routes: the agent's response without the
@@ -256,6 +289,15 @@ function requiredString(body: unknown, name: string): string {
   return value.trim();
 }
 
+// A required string of at most `limit` characters once trimmed.
+function boundedString(body: unknown, name: string, limit: number): string {
+  const value = requiredString(body, name);
+  if (value.length > limit) {
+    throw badRequest(`"${name}" is longer than ${limit} characters.`);
+  }
+  return value;
+}
+
 function pieceFrom(id: string, name: string, role: string, result: PingResult): PieceStatus {
   return result.outcome === 'up'
     ? { id, name, role, state: 'up', detail: 'Answered the health check.' }
@@ -280,7 +322,7 @@ function segment(raw: string): string | undefined {
 }
 
 export function createClientServer(deps: ClientDeps): Server {
-  const { config, store, now, newId, identity, sessions } = deps;
+  const { config, store, now, newId, identity, sessions, machineToken } = deps;
 
   // Asked for at sign-in: each distinct agent scope configured, the case system's two and traces:read. The
   // provider leaves out any the person's role does not grant.
@@ -319,22 +361,54 @@ export function createClientServer(deps: ClientDeps): Server {
   }
 
   // An agent the session may run. An unknown id is 400; an agent whose scope was not granted is 403.
-  function runnableAgent(session: Session, id: string): AgentConfig {
+  function configuredAgent(id: string): AgentConfig {
     const agent = config.agents.find((candidate) => candidate.id === id);
     if (agent === undefined) {
-      throw new ApiFailure(400, 'unknown_agent', `No agent with the id "${id}" is configured.`);
+      throw unknownAgent(id);
     }
+    return agent;
+  }
+
+  function runnableAgent(session: Session, id: string): AgentConfig {
+    const agent = configuredAgent(id);
     requireGranted(session, agent.scope);
     return agent;
   }
 
-  // An inquiry the session's user entered, as the store holds it. Anyone else's is answered as an unknown one.
-  function ownInquiry(session: Session, inquiryId: string): StoredInquiry {
-    const inquiry = store.getInquiry(inquiryId, session.user.sub);
+  function mayRunAnAgent(session: Session): boolean {
+    return config.agents.some((agent) => session.granted.has(agent.scope));
+  }
+
+  // An inquiry as the store holds it, with every run of it. Undefined is answered as an unknown inquiry.
+  function storedInquiry(inquiryId: string): StoredInquiry {
+    return found(store.getInquiry(inquiryId, null));
+  }
+
+  // An inquiry as the desk's /api inquiry routes give it: what the lab explorer entered or ran is not part of the
+  // desk, so an inquiry it entered is answered as an unknown one and the runs it started are left out.
+  function deskInquiry(inquiryId: string): StoredInquiry {
+    return found(store.getInquiry(inquiryId, DESK_LEAVES_OUT));
+  }
+
+  function found(inquiry: StoredInquiry | undefined): StoredInquiry {
     if (inquiry === undefined) {
       throw inquiryNotFound();
     }
     return inquiry;
+  }
+
+  // The inbox is the desk's: an inquiry is read by a session that may run an agent or read cases. To any other
+  // session it is answered as an unknown one, before the store is read.
+  function readableInquiry(session: Session, inquiryId: string): StoredInquiry {
+    if (!mayRunAnAgent(session) && !session.granted.has(CASES_READ)) {
+      throw inquiryNotFound();
+    }
+    return deskInquiry(inquiryId);
+  }
+
+  // The message text, as POST /api/inquiries takes it.
+  function messageText(body: unknown): string {
+    return boundedString(body, 'text', MAX_TEXT_LENGTH);
   }
 
   function may(session: Session): SessionMay {
@@ -346,24 +420,51 @@ export function createClientServer(deps: ClientDeps): Server {
     };
   }
 
-  // Runs in the background after the 202 has been sent. Everything that can throw is inside the try,
-  // so a failure here is logged and never becomes an unhandled rejection.
-  async function settleRun(runId: string, agent: AgentConfig, request: InvocationRequest, token: string): Promise<void> {
+  // The token a machine client sends to an agent: got for that agent's scope alone, with at least the wait for that
+  // agent left. Anything else is a reason the run fails with, and nothing is sent.
+  async function machineAccess(client: MachineClient, agent: AgentConfig): Promise<Access> {
+    const got = await machineToken(client, agent.scope);
+    if (got.outcome === 'failed') {
+      return { outcome: 'failed', reason: `The client ${client} could not get a token for ${agent.scope}: ${got.reason}` };
+    }
+    if (got.expiresAt - now().getTime() < agentWaitMs(agent)) {
+      return {
+        outcome: 'failed',
+        reason: `The token the client ${client} got for ${agent.scope} lives less than the ${agent.wait_seconds} seconds the client waits for this agent, so it was not sent.`,
+      };
+    }
+    return { outcome: 'token', token: got.token };
+  }
+
+  // Runs in the background after the 202 has been sent: gets the token, if it is not already got, and calls the
+  // agent. A run always ends: anything that throws fails it with a reason, and the cause is logged.
+  async function settleRun(runId: string, agent: AgentConfig, request: InvocationRequest, access: () => Promise<Access>): Promise<void> {
     try {
-      const result = await invokeAgent(agent.url, request, agentWaitMs(agent), token);
+      const token = await access();
+      if (token.outcome === 'failed') {
+        store.failRun(runId, token.reason);
+        return;
+      }
+      const result = await invokeAgent(agent.url, request, agentWaitMs(agent), token.token);
       if (result.outcome === 'ok') {
         store.completeRun(runId, result.response);
       } else {
         store.failRun(runId, result.reason);
       }
     } catch (error) {
-      console.error(`Could not record the result of run ${runId}:`, error);
+      console.error(`Run ${runId} failed in the client:`, error);
+      try {
+        store.failRun(runId, 'The client failed while making this run. The cause is in its log.');
+      } catch (recording) {
+        console.error(`Could not record the failure of run ${runId}:`, recording);
+      }
     }
   }
 
-  // Sends the stored message, with the id and receipt time it was given when it was received, and the
-  // token got for the agent's scope for the user who started the run.
-  function startRun(inquiry: StoredInquiry, agent: AgentConfig, startedBy: Actor, token: string): TracedRun {
+  // Records a run of the stored message and sends it, with the id and receipt time it was given when it was
+  // received, carrying the token `access` gives: one already got for a signed-in user, or one a machine client
+  // gets once the run is recorded.
+  function startRun(inquiry: StoredInquiry, agent: AgentConfig, startedBy: Actor, access: () => Promise<Access>): TracedRun {
     const run = store.startRun(newId(), inquiry.id, agent.id, startedBy);
     if (run === undefined) {
       throw inquiryNotFound();
@@ -371,8 +472,13 @@ export function createClientServer(deps: ClientDeps): Server {
     const request: InvocationRequest = {
       message: { id: inquiry.id, received_at: inquiry.received_at, sender: inquiry.sender, text: inquiry.text },
     };
-    void settleRun(run.id, agent, request, token);
+    void settleRun(run.id, agent, request, access);
     return run;
+  }
+
+  // A token already got for a signed-in user, as startRun takes it.
+  function got(token: string): () => Promise<Access> {
+    return () => Promise.resolve({ outcome: 'token', token });
   }
 
 
@@ -442,22 +548,21 @@ export function createClientServer(deps: ClientDeps): Server {
       },
     },
     inquiries: {
+      // Every inquiry, to a session that may run an agent; to any other, none.
       GET: async (_request, response, _url, session) => {
-        sendJson(response, 200, store.listInquiries(session.user.sub));
+        const payload: InquiryList = mayRunAnAgent(session) ? store.listInquiries(DESK_LEAVES_OUT) : { inquiries: [], truncated: false };
+        sendJson(response, 200, payload);
       },
       POST: async (request, response, _url, session) => {
         const body = await readJson(request);
         const sender = requiredString(body, 'sender');
-        const text = requiredString(body, 'text');
-        if (text.length > MAX_TEXT_LENGTH) {
-          throw badRequest(`"text" is longer than ${MAX_TEXT_LENGTH} characters.`);
-        }
+        const text = messageText(body);
         const agent = runnableAgent(session, requiredString(body, 'agent_id'));
         const token = await accessToken(session, agent.scope, agentWaitMs(agent));
         const id = newId();
         store.createInquiry({ id, receivedAt: now().toISOString(), sender, text, enteredBy: actorOf(session) });
-        startRun(ownInquiry(session, id), agent, actorOf(session), token);
-        const payload: InquiryResponse = { inquiry: inquiryView(ownInquiry(session, id)) };
+        startRun(storedInquiry(id), agent, actorOf(session), got(token));
+        const payload: InquiryResponse = { inquiry: inquiryView(deskInquiry(id)) };
         sendJson(response, 202, payload);
       },
     },
@@ -466,21 +571,22 @@ export function createClientServer(deps: ClientDeps): Server {
   function inquiryRoute(inquiryId: string): Route {
     return {
       GET: async (_request, response, _url, session) => {
-        const payload: InquiryResponse = { inquiry: inquiryView(ownInquiry(session, inquiryId)) };
+        const payload: InquiryResponse = { inquiry: inquiryView(readableInquiry(session, inquiryId)) };
         sendJson(response, 200, payload);
       },
     };
   }
 
+  // On any inquiry, by a session that may run the agent named. Whether the session may run it is decided first,
+  // so a session that may not is answered the same for an inquiry that exists and one that does not.
   function runsRoute(inquiryId: string): Route {
     return {
       POST: async (request, response, _url, session) => {
         const body = await readJson(request);
-        const agentId = requiredString(body, 'agent_id');
-        const inquiry = ownInquiry(session, inquiryId);
-        const agent = runnableAgent(session, agentId);
+        const agent = runnableAgent(session, requiredString(body, 'agent_id'));
+        const inquiry = deskInquiry(inquiryId);
         const token = await accessToken(session, agent.scope, agentWaitMs(agent));
-        const payload: RunResponse = { run: withoutSteps(startRun(inquiry, agent, actorOf(session), token)) };
+        const payload: RunResponse = { run: withoutSteps(startRun(inquiry, agent, actorOf(session), got(token))) };
         sendJson(response, 202, payload);
       },
     };
@@ -601,44 +707,129 @@ export function createClientServer(deps: ClientDeps): Server {
 
   // --- The lab explorer -------------------------------------------------------------------------------
 
-  // The explorer's routes read no cookie and take only GET. They give what the /api routes of the same
-  // names give, with no session and no permission: every agent, and every person's runs with their steps.
-  type LabHandler = (response: ServerResponse) => Promise<void>;
+  // The explorer's routes read no cookie. They give what the /api routes of the same names give, with no session and
+  // no permission: every agent, every inquiry and every person's runs with their steps. POST /lab/api/runs is the
+  // one route that takes POST: it runs a message through any agent as the client lab-explorer.
+  type Handled = (request: IncomingMessage, response: ServerResponse) => Promise<void>;
+  type LabRoute = Partial<Record<'GET' | 'POST', Handled>>;
 
-  function labRoute(pathname: string): LabHandler | undefined {
+  // A stored inquiry sent again unchanged (inquiry_id), or a new one (sender and text), entered by the lab explorer.
+  function labInquiry(body: unknown): StoredInquiry {
+    const again = field(body, 'inquiry_id') !== undefined;
+    const fresh = field(body, 'sender') !== undefined || field(body, 'text') !== undefined;
+    if (again && fresh) {
+      throw badRequest('Send "inquiry_id" to run an inquiry again, or "sender" and "text" for a new one, not both.');
+    }
+    if (again) {
+      return storedInquiry(requiredString(body, 'inquiry_id'));
+    }
+    const sender = requiredString(body, 'sender');
+    const text = messageText(body);
+    const id = newId();
+    store.createInquiry({ id, receivedAt: now().toISOString(), sender, text, enteredBy: MACHINE_ACTORS['lab-explorer'] });
+    return storedInquiry(id);
+  }
+
+  const labRuns: LabRoute = {
+    GET: async (_request, response) => {
+      const payload: TraceList = store.listTraces();
+      sendJson(response, 200, payload);
+    },
+    POST: async (request, response) => {
+      const body = await readJson(request);
+      const agent = configuredAgent(requiredString(body, 'agent_id'));
+      const inquiry = labInquiry(body);
+      const run = startRun(inquiry, agent, MACHINE_ACTORS['lab-explorer'], () => machineAccess('lab-explorer', agent));
+      const payload: LabRunResponse = { inquiry_id: inquiry.id, run_id: run.id };
+      sendJson(response, 202, payload);
+    },
+  };
+
+  function labRoute(pathname: string): LabRoute | undefined {
     switch (pathname) {
       case '/lab/api/status':
-        return async (response) => sendJson(response, 200, await status());
+        return { GET: async (_request, response) => sendJson(response, 200, await status()) };
       case '/lab/api/agents':
-        return async (response) => sendJson(response, 200, agentList(config.agents));
+        return { GET: async (_request, response) => sendJson(response, 200, agentList(config.agents)) };
       case '/lab/api/samples':
-        return async (response) => sendJson(response, 200, sampleList());
+        return { GET: async (_request, response) => sendJson(response, 200, sampleList()) };
       case '/lab/api/runs':
-        return async (response) => {
-          const payload: TraceList = store.listTraces();
-          sendJson(response, 200, payload);
-        };
+        return labRuns;
     }
     const run = /^\/lab\/api\/runs\/([^/]+)$/.exec(pathname);
     const runId = run?.[1] === undefined ? undefined : segment(run[1]);
     if (runId !== undefined) {
-      return async (response) => sendJson(response, 200, traceOf(runId));
+      return { GET: async (_request, response) => sendJson(response, 200, traceOf(runId)) };
+    }
+    const inquiry = /^\/lab\/api\/inquiries\/([^/]+)$/.exec(pathname);
+    const inquiryId = inquiry?.[1] === undefined ? undefined : segment(inquiry[1]);
+    if (inquiryId !== undefined) {
+      return {
+        GET: async (_request, response) => {
+          const payload: LabInquiryResponse = { inquiry: storedInquiry(inquiryId) };
+          sendJson(response, 200, payload);
+        },
+      };
     }
     return undefined;
   }
 
   async function handleLab(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
-    const handler = labRoute(url.pathname);
-    if (handler === undefined) {
+    const route = labRoute(url.pathname);
+    if (route === undefined) {
       sendError(response, 404, 'not_found', `There is no lab API route ${url.pathname}.`);
       return;
     }
-    if (request.method !== 'GET') {
-      response.setHeader('allow', 'GET');
-      sendError(response, 405, 'method_not_allowed', `${url.pathname} accepts GET.`);
+    const handler = request.method === 'GET' ? route.GET : request.method === 'POST' ? route.POST : undefined;
+    if (handler === undefined) {
+      const allowed = Object.keys(route).join(', ');
+      response.setHeader('allow', allowed);
+      sendError(response, 405, 'method_not_allowed', `${url.pathname} accepts ${allowed}.`);
       return;
     }
-    await handler(response);
+    await handler(request, response);
+  }
+
+  // --- The contact form -------------------------------------------------------------------------------
+
+  // A clinician writes in, with nobody signed in. The message is stored, entered by the contact form, with a run of
+  // the orchestrator recorded, and the sender is answered 202 with when it was received and nothing else. The run
+  // gets its token as the client contact-form after the answer; one that cannot be got, or no orchestrator
+  // configured, fails the run with the reason, where the desk sees it.
+  async function contactMessage(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const body = await readJson(request);
+    const name = boundedString(body, 'name', MAX_CONTACT_FIELD_LENGTH);
+    const role = boundedString(body, 'role', MAX_CONTACT_FIELD_LENGTH);
+    const contact = boundedString(body, 'contact', MAX_CONTACT_FIELD_LENGTH);
+    const text = messageText(body);
+    const actor = MACHINE_ACTORS['contact-form'];
+    const id = newId();
+    const receivedAt = now().toISOString();
+    store.createInquiry({ id, receivedAt, sender: `${name}, ${role}, ${contact}`, text, enteredBy: actor });
+    const orchestrator = config.agents.find((agent) => agent.id === ORCHESTRATOR_ID);
+    if (orchestrator === undefined) {
+      const run = store.startRun(newId(), id, ORCHESTRATOR_ID, actor);
+      if (run !== undefined) {
+        store.failRun(run.id, `No agent with the id "${ORCHESTRATOR_ID}" is configured, so the message was handed to none.`);
+      }
+    } else {
+      startRun(storedInquiry(id), orchestrator, actor, () => machineAccess('contact-form', orchestrator));
+    }
+    const payload: ContactMessageResponse = { received_at: receivedAt };
+    sendJson(response, 202, payload);
+  }
+
+  async function handleContact(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
+    if (url.pathname !== '/contact/api/messages') {
+      sendError(response, 404, 'not_found', `There is no contact API route ${url.pathname}.`);
+      return;
+    }
+    if (request.method !== 'POST') {
+      response.setHeader('allow', 'POST');
+      sendError(response, 405, 'method_not_allowed', `${url.pathname} accepts POST.`);
+      return;
+    }
+    await contactMessage(request, response);
   }
 
   // --- Signing in and out ---------------------------------------------------------------------------
@@ -840,6 +1031,10 @@ export function createClientServer(deps: ClientDeps): Server {
       }
       if (url.pathname === '/lab/api' || url.pathname.startsWith('/lab/api/')) {
         await handleLab(request, response, url);
+        return;
+      }
+      if (url.pathname === '/contact/api' || url.pathname.startsWith('/contact/api/')) {
+        await handleContact(request, response, url);
         return;
       }
       await handleWeb(request, response, url);

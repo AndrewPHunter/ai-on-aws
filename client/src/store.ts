@@ -50,8 +50,7 @@ create index if not exists runs_by_inquiry on runs(inquiry_id, n);
 `;
 
 // Columns added after the first release. A database written before them gets them, empty, when it is
-// opened; its existing runs read back with no author, and its existing inquiries, having no author, are
-// read by nobody.
+// opened; its existing inquiries and runs read back with no author.
 const ADDED_COLUMNS: readonly { table: string; column: string }[] = [
   { table: 'inquiries', column: 'entered_by_sub' },
   { table: 'inquiries', column: 'entered_by_name' },
@@ -61,8 +60,8 @@ const ADDED_COLUMNS: readonly { table: string; column: string }[] = [
 
 const STATES = ['running', 'completed', 'failed'] as const;
 
-// Who did something: the identity provider's subject and the name it gives. Both are stored; the API
-// shows the name.
+// Who did something: the identity provider's subject and the name it gives, or one of the two machine clients
+// (the contact form, the lab explorer) by its client id and a name in words. Both are stored; the API shows the name.
 export type Actor = { sub: string; name: string };
 
 export type NewInquiry = { id: string; receivedAt: string; sender: string; text: string; enteredBy: Actor };
@@ -240,22 +239,25 @@ export class InquiryStore {
     return row === undefined ? undefined : runOf(row);
   }
 
-  // The inquiry as its reader may see it: undefined when there is none with that id or another person
-  // entered it. An inquiry with no author is nobody's.
-  getInquiry(inquiryId: string, readerSub: string): StoredInquiry | undefined {
-    const row = this.db.prepare('select * from inquiries where id = ? and entered_by_sub = ?').get(inquiryId, readerSub);
+  // One inquiry and its runs: undefined when there is none with that id. With `leaveOut`, an inquiry that subject
+  // entered is taken as none, and the runs that subject started are left out; with null, every inquiry and run is
+  // given. The server decides who may read it.
+  getInquiry(inquiryId: string, leaveOut: string | null): StoredInquiry | undefined {
+    const row = this.db
+      .prepare("select * from inquiries where id = ? and (? is null or coalesce(entered_by_sub, '') <> ?)")
+      .get(inquiryId, leaveOut, leaveOut);
     if (row === undefined) {
       return undefined;
     }
-    return { ...inquiryOf(row), runs: this.runsOf(inquiryId) };
+    return { ...inquiryOf(row), runs: this.runsOf(inquiryId, leaveOut) };
   }
 
-  // The inquiries the reader entered, newest first. One more row than the limit is read to know whether
-  // the list is truncated.
-  listInquiries(readerSub: string): InquiryList {
+  // Every inquiry, newest first, leaving out what `leaveOut` entered or started as getInquiry does. One more row than
+  // the limit is read to know whether the list is truncated.
+  listInquiries(leaveOut: string | null): InquiryList {
     const rows = this.db
-      .prepare('select * from inquiries where entered_by_sub = ? order by n desc limit ?')
-      .all(readerSub, LIST_LIMIT + 1);
+      .prepare("select * from inquiries where (? is null or coalesce(entered_by_sub, '') <> ?) order by n desc limit ?")
+      .all(leaveOut, leaveOut, LIST_LIMIT + 1);
     const inquiries: InquirySummary[] = rows.slice(0, LIST_LIMIT).map((row) => {
       const id = text(row, 'id');
       return {
@@ -263,7 +265,7 @@ export class InquiryStore {
         received_at: text(row, 'received_at'),
         sender: text(row, 'sender'),
         text: text(row, 'text'),
-        runs: this.runsOf(id).map(summaryOf),
+        runs: this.runsOf(id, leaveOut).map(summaryOf),
       };
     });
     return { inquiries, truncated: rows.length > LIST_LIMIT };
@@ -301,8 +303,11 @@ export class InquiryStore {
     return { inquiry: inquiryOf(row), run };
   }
 
-  private runsOf(inquiryId: string): TracedRun[] {
-    return this.db.prepare('select * from runs where inquiry_id = ? order by n').all(inquiryId).map(runOf);
+  private runsOf(inquiryId: string, leaveOut: string | null): TracedRun[] {
+    return this.db
+      .prepare("select * from runs where inquiry_id = ? and (? is null or coalesce(started_by_sub, '') <> ?) order by n")
+      .all(inquiryId, leaveOut, leaveOut)
+      .map(runOf);
   }
 
   private settle(runId: string, state: RunState, error: string | null, response: string | null): boolean {

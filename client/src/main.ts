@@ -1,6 +1,7 @@
 // Starts the client: reads its settings, opens the store, settles runs a previous process left
-// running, and serves sign-in, the API and the web app on 3000. The identity provider is not asked
-// anything until someone signs in, so the client starts while it is down.
+// running, and serves sign-in, the API, the contact form, the lab explorer and the web app on 3000. The identity
+// provider is not asked anything until someone signs in or a machine client needs a token, so the client starts
+// while it is down.
 
 import { randomBytes, randomUUID } from 'node:crypto';
 
@@ -39,6 +40,7 @@ const server = createClientServer({
   newId: randomUUID,
   identity,
   sessions,
+  machineToken: (client, scope) => identity.clientCredentials(client, config.machineSecrets[client], scope),
 });
 
 server.listen(PORT, HOST, () => {

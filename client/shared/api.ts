@@ -1,4 +1,5 @@
-// The client's own API: what the React app asks the client's server for, under /api, and under /lab/api for the lab explorer.
+// The client's own API: what the React app asks the client's server for, under /api, under /lab/api for the lab
+// explorer, and under /contact/api for the contact form.
 // Types only, so the same file is read by the server (Node) and the app (browser).
 
 import type { InvocationResponse } from '../../shared/agent-contract.ts';
@@ -49,8 +50,9 @@ export type SampleInquiry = {
 };
 export type SampleList = { samples: SampleInquiry[] };
 
-// The member of staff who entered an inquiry or started a run, as the identity provider named them.
-// Null for rows written before staff signed in.
+// The member of staff who entered an inquiry or started a run, as the identity provider named them, or
+// "Contact form" or "Lab explorer" for the two clients nobody signs in to. Null for rows written before staff
+// signed in.
 export type Author = { name: string };
 
 // GET /api/session: who is signed in, and what the scopes granted at sign-in let them do: the ids of the
@@ -90,8 +92,8 @@ type RunOf<Result> = {
 
 // A run as every /api route but the trace routes gives it: the agent's response without its steps.
 export type Run = RunOf<RunResult>;
-// A run with the agent's whole response, steps included: given only on the trace routes and on
-// GET /lab/api/runs/<run_id>.
+// A run with the agent's whole response, steps included: given only on the trace routes, on
+// GET /lab/api/runs/<run_id> and on GET /lab/api/inquiries/<id>.
 export type TracedRun = RunOf<InvocationResponse>;
 
 export type RunSummary = {
@@ -119,14 +121,17 @@ export type InquirySummary = {
   runs: RunSummary[];
 };
 
-// GET /api/inquiries: the ones the reader entered, newest first.
+// GET /api/inquiries: the desk's inbox, every inquiry, newest first, to a session that may run an agent; empty to
+// any other.
 export type InquiryList = { inquiries: InquirySummary[]; truncated: boolean };
 
-// POST /api/inquiries: receives a new message and starts one run. Answers 202 with the inquiry.
+// POST /api/inquiries: receives a new message and starts one run. Answers 202 with the inquiry. GET
+// /api/inquiries/<id> answers 200 with the same, to a session that may run an agent or read cases.
 export type NewInquiryRequest = { sender: string; text: string; agent_id: string };
 export type InquiryResponse = { inquiry: Inquiry };
 
-// POST /api/inquiries/<id>/runs: sends the same message, unchanged, to an agent again. Answers 202.
+// POST /api/inquiries/<id>/runs: sends the same message, unchanged, to an agent again, on any inquiry, by a session
+// that may run that agent. Answers 202.
 export type NewRunRequest = { agent_id: string };
 export type RunResponse = { run: Run };
 
@@ -151,9 +156,10 @@ export type TraceInquiry = Omit<Inquiry, 'runs'>;
 export type Trace = { inquiry: TraceInquiry; run: TracedRun };
 export type TraceResponse = { trace: Trace };
 
-// POST /contact/api/messages: a clinician writes in through the public form. Nobody is signed in. The message
-// becomes an inquiry in the desk's inbox and is handled by the orchestrator. Answers 202; the sender is told only
-// when it was received.
+// POST /contact/api/messages: a clinician writes in through the public form. Nobody is signed in. Each of name,
+// role and contact is at most 200 characters, and text at most what POST /api/inquiries takes. The message becomes
+// an inquiry in the desk's inbox, entered by "Contact form", and is handled by the orchestrator. Answers 202; the
+// sender is told only when it was received.
 export type ContactMessageRequest = { name: string; role: string; contact: string; text: string };
 export type ContactMessageResponse = { received_at: string };
 
@@ -162,6 +168,7 @@ export type LabInquiry = TraceInquiry & { runs: TracedRun[] };
 export type LabInquiryResponse = { inquiry: LabInquiry };
 
 // POST /lab/api/runs: the lab explorer runs a message through an agent, as its own client. Either a message
-// already received (`inquiry_id`), sent again unchanged, or a new one (`sender` and `text`). Answers 202.
+// already received (`inquiry_id`), sent again unchanged, or a new one (`sender` and `text`), entered by "Lab
+// explorer"; a body with both is 400. Answers 202; the run is started by "Lab explorer".
 export type LabRunRequest = { agent_id: string } & ({ inquiry_id: string } | { sender: string; text: string });
 export type LabRunResponse = { inquiry_id: string; run_id: string };
