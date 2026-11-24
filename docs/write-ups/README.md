@@ -1,3 +1,13 @@
 # Write-ups
 
 What was learned, by research and by building and measuring: the question, what was read or run, the result, and the sources. A write-up that reports a measurement names the hardware and the revision it was measured on.
+
+- [Actors, Agents and Strands](actors-agents-and-strands.md) — an essay on the actor model, inference-driven behavior, handwritten and Strands agent loops, and the AgentCore Runtime hosting boundary.
+- [The Tool Call Is a Distributed Transaction](tool-calling-and-reliability.md) — an essay on applying distributed-systems lessons to tool calls, and how inference changes capability selection, retries, and the interpretation of results.
+- [Before the Model Can Answer](before-the-model-can-answer.md) — an essay on RAG preparation as ETL: source contracts, transformations, validation and publication, where Bedrock takes over, and the responsibilities a business adopts with the pipeline.
+- [From a Question to Useful Evidence](from-a-question-to-useful-evidence.md) — an essay on information retrieval for inference: source constraints, keyword and vector search, fusion, reranking, context assembly, and choosing which decisions to delegate to AWS.
+- [Whose Authority Is the Agent Using?](whose-authority-is-the-agent-using.md) — an essay on identity across distributed and asynchronous work, delegated authority, injection and disclosure, and how AgentCore carries those responsibilities into an AWS deployment.
+- [Following the Work](following-the-work.md) — an essay on distributed telemetry for agents: independent observations, execution context, asynchronous work, outcome comparison, and investigation through AWS and Honeycomb.
+- [Telemetry research](telemetry-research.md) — AWS, Honeycomb, and OpenTelemetry guidance behind the telemetry design.
+- [Telemetry demo alignment](telemetry-demo-alignment.md) — comparison with the current implementation and proposed changes to bring the playground into line with the design.
+- [Retrieval research](retrieval-research.md) — primary-source research and design recommendations recorded before the retrieval pipeline was built.
