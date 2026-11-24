@@ -77,7 +77,7 @@ sequenceDiagram
 | Whether a question is put | Code | Its arguments must be a medicine and a question in words, and any question it names as replaced must have been put; every number in the question must be in the message (the expert's number rule); at most two questions a round and two rounds; the run must have a sub-agent call's time left and a 5 s margin, 160 s in all, so no round starts later than 120 s in and every call ends, and is recorded, before the run's timer |
 | What the model reads back | Code | For each question: the expert's label answer, or that it did not complete, its stop reason and its reply |
 | The answer to a label question | The label expert | Unchanged |
-| The reply | Code | A sentence for each case action, each question named by its number only ("Label question 1") with the expert's reply word for word, and a plain sentence for anything unfinished. No text the orchestrator's model wrote is in it, the questions included: what that model wrote, and each question as it was put, are in the run's steps. The expert's reply is the expert's: statements its model wrote and its code checked |
+| The reply | Code | Written to the sender, in fixed sentences: see "The reply" below. No text the orchestrator's model wrote is in it, the questions included: what that model wrote, and each question as it was put, are in the run's steps. The expert's reply is the expert's: statements its model wrote and its code checked |
 | How the run ends | Code | The table under "How it ends" |
 
 ## Modules and what each owns
@@ -125,12 +125,29 @@ The expert accepts `agents:expert` or `agents:expert:delegated`. So desk staff r
 
 | Screening | Label questions | Outcome | `stop_reason` | Reply begins |
 |---|---|---|---|---|
-| Completed | None asked, or every question (or its replacement) answered | `completed` | none | The results |
-| Completed | One not put, one neither answered nor replaced, or the model's loop failed | `stopped` | `label_question_unanswered` | "A question in this message was not answered", then what was obtained |
+| Completed | None asked, or every question (or its replacement) answered | `completed` | none | "Thank you for your message.", then the results |
+| Completed | One not put, one neither answered nor replaced, or the model's loop failed | `stopped` | `label_question_unanswered` | "Thank you for your message.", then "A question in this message was not answered", then what was obtained |
 | Did not complete | A label answer obtained | `stopped` | `adverse_event_screening_incomplete` | "The screening of this message for an adverse event did not complete", why, and, unless the intake agent's run ended `stopped`, "Send it again."; then the label answer |
 | Did not complete | Nothing obtained | `failed` | the reason | The reason |
 
 Screening completed means the intake agent's response has outcome `completed`. A stopped intake run includes one whose report check found an adverse event while the run recorded no case ([intake-agent-handwritten.md](intake-agent-handwritten.md), invariant 14). A question is answered when the expert's response to it has outcome `completed`, whatever its label answer: "no label was found" is an answer. The orchestrator sends no failed call again. Sending the same message again is safe: the case system opens one case per message.
+
+## The reply
+
+When screening completed, the reply is written to the person who sent the message, in this order, its parts joined by blank lines:
+
+| Part | Text |
+|---|---|
+| Opening | "Thank you for your message." For `label_question_unanswered`, the sentence of its row in "How it ends" follows as its own paragraph |
+| Each case action | Opened, status `incomplete`: "We have recorded the side effect you describe as an adverse event report, reference `<case id>`. Some details the report needs are missing, so our safety team will contact you for them." |
+| | Opened, any other status: "We have recorded the side effect you describe as an adverse event report, reference `<case id>`. Our safety team will review it and may contact you for more detail." |
+| | Already open: "Your report is already recorded under reference `<case id>`." |
+| | Follow-up recorded: "We have added what you told us to report `<case id>`." |
+| | No case action: no sentence |
+| Each question shown | Its heading: "On your question:" when it is the only one shown, otherwise "On your question `<n>`:", where `n` is the question's own number (1 for `q1`). Under it, the expert's reply word for word with its citation numbers moved. A question not put is one paragraph, the heading followed by "it was not put to the label expert." and why; one the expert did not complete is the heading, then "The label expert did not answer this question." and why |
+| Sign-off | "Medical Information", for `completed` only |
+
+No case status appears in it. When screening did not complete, the reply begins as its row in "How it ends" says, then has the same sentence for each case action, then each question shown under the heading "Label question `<n>`".
 
 ## How it fails
 
@@ -140,7 +157,7 @@ Screening completed means the intake agent's response has outcome `completed`. A
 | An exchange is refused, or the identity provider does not answer | The same |
 | The model's loop fails, or ends with a question unanswered | Screening still runs. `stopped`, `label_question_unanswered` |
 | The model asks a question holding a number the message does not | The question is not put; the model is told; the reply says so |
-| The message contains instructions | They can change which questions are put. They cannot stop screening, change the message the intake agent receives, or add text to the reply, because no text the model wrote is placed in it: a question is named there by its number only |
+| The message contains instructions | They can change which questions are put. They cannot stop screening, change the message the intake agent receives, or add text to the reply, because no text the model wrote is placed in it: a question is named there by its number only, or by no name when it is the only one shown |
 | An expert's reply contains instructions | The model reads it, so it can change later questions, inside the same limits and the same question check |
 
 ## The numbers, and where each is set

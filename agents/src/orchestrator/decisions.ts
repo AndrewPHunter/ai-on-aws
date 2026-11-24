@@ -130,26 +130,33 @@ export function howItEnds(run: RunResult): Pick<InvocationResponse, 'outcome' | 
   return { outcome: 'failed', stop_reason: screeningReason(run.screening) };
 }
 
+// A sentence to the sender for each case action, naming the case by its id and never by its status value.
 function caseActionSentences(run: RunResult): string[] {
-  const actions = run.screening.response?.case_actions ?? [];
-  if (actions.length === 0) {
-    return screeningCompleted(run.screening) ? ['No adverse event case was recorded for this message.'] : [];
-  }
-  return actions.map((action) => {
-    if (action.kind === 'case_opened') return `Case ${action.case_id} was opened for the adverse event this message reports. Its status is ${action.status}.`;
-    if (action.kind === 'case_already_open') return `Case ${action.case_id} was already open for this message. Its status is ${action.status}.`;
-    return `A follow-up was added to case ${action.case_id}. Its status is ${action.status}.`;
+  return (run.screening.response?.case_actions ?? []).map((action) => {
+    if (action.kind === 'case_opened') {
+      const recorded = `We have recorded the side effect you describe as an adverse event report, reference ${action.case_id}.`;
+      return action.status === 'incomplete'
+        ? `${recorded} Some details the report needs are missing, so our safety team will contact you for them.`
+        : `${recorded} Our safety team will review it and may contact you for more detail.`;
+    }
+    if (action.kind === 'case_already_open') return `Your report is already recorded under reference ${action.case_id}.`;
+    return `We have added what you told us to report ${action.case_id}.`;
   });
 }
 
-// The reply, written by code, and its citations. It begins as the ending's row says; then a sentence for each case
-// action; then each question shown, named by its number only ("Label question 1" for q1), followed by the expert's
-// reply word for word with its citation numbers moved by the number of citations before it, or a plain sentence
-// when it was not put or not answered. Nothing the orchestrator's model wrote is in it: a question as it was put is
-// in the run's steps only.
+// The reply, written by code, and its citations: the section "The reply" in docs/architecture/orchestrator.md. When
+// screening completed it is written to the sender: "Thank you for your message.", then the ending's sentence for
+// label_question_unanswered; a sentence for each case action; each question shown, headed "On your question:" when it
+// is the only one shown and "On your question 2:" (for q2) otherwise; and "Medical Information" when the run
+// completed. Otherwise it begins as the ending's row says, with the same case-action sentences and each question
+// headed "Label question 2". Under each heading, the expert's reply word for word with its citation numbers moved by
+// the number of citations before it, or a plain sentence when it was not put or not answered. Nothing the
+// orchestrator's model wrote is in it: a question as it was put is in the run's steps only.
 export function replyWithCitations(run: RunResult): { reply: string; citations: Citation[] } {
   const ending = howItEnds(run);
+  const toSender = screeningCompleted(run.screening);
   const parts: string[] = [];
+  if (toSender) parts.push('Thank you for your message.');
   if (ending.outcome === 'failed') {
     parts.push(screeningReason(run.screening));
   } else if (ending.stop_reason === SCREENING_INCOMPLETE) {
@@ -165,10 +172,12 @@ export function replyWithCitations(run: RunResult): { reply: string; citations: 
   parts.push(...caseActionSentences(run));
 
   const citations: Citation[] = [];
-  for (const question of shownQuestions(run.questions)) {
-    const heading = `Label question ${question.id.slice(1)}`;
+  const shown = shownQuestions(run.questions);
+  for (const question of shown) {
+    const number = question.id.slice(1);
+    const heading = !toSender ? `Label question ${number}` : shown.length === 1 ? 'On your question:' : `On your question ${number}:`;
     if (!question.put) {
-      parts.push(`${heading} was not put to the label expert. ${question.reason}`);
+      parts.push(`${heading} ${toSender ? 'it was' : 'was'} not put to the label expert. ${question.reason}`);
       continue;
     }
     const response = question.call?.response;
@@ -180,5 +189,6 @@ export function replyWithCitations(run: RunResult): { reply: string; citations: 
     const why = toldToModel(question)['stop_reason'];
     parts.push(`${heading}\n\nThe label expert did not answer this question. ${typeof why === 'string' ? why : ''}`.trimEnd());
   }
+  if (ending.outcome === 'completed') parts.push('Medical Information');
   return { reply: parts.join('\n\n'), citations };
 }

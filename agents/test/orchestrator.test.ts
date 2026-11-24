@@ -142,7 +142,7 @@ test('orchestrator', async (t) => {
 
     assert.equal(shared.calls.some((call) => call.request.message.text.includes('40 mg')), false, 'a refused question reached the label expert');
     assert.ok(requestsFor(model, TWO_ROUNDS)[2]?.outputs.some((output) => output.output.includes('not_put')), 'the model was not told');
-    assert.ok(twoRounds.response.reply.includes('Label question 4 was not put'), 'the reply does not name it');
+    assert.ok(twoRounds.response.reply.includes('On your question 4: it was not put'), 'the reply does not name it');
     const askedTwice = shared.calls.filter((call) => call.to.id === 'expert').map((call) => call.request.message.id);
     assert.deepEqual(askedTwice, [...new Set(askedTwice)], 'a question was sent again');
   });
@@ -158,8 +158,8 @@ test('orchestrator', async (t) => {
   await t.test('orchestrator 4. the reply is code\'s: no model text, each expert reply word for word with its numbers moved, a replaced question not shown', () => {
     assert.equal(twoRounds.response.reply.includes('MODEL-WROTE-THIS'), false, 'the model\'s text is in the reply');
     const { reply } = replyWithCitations(result([put('q1', expertSaid('Alpha.', 'Beta.')), put('q2', expertSaid('Gamma.')), put('q3', expertSaid('Delta.')), put('q4', expertSaid('Epsilon.'), 'q3')]));
-    assert.ok(reply.includes('Label question 2\n\nGamma. [3]'), 'a reply after another is not word for word with its number moved');
-    assert.equal(reply.includes('Label question 3') || reply.includes('Delta.'), false, 'a replaced question is shown');
+    assert.ok(reply.includes('On your question 2:\n\nGamma. [3]'), 'a reply after another is not word for word with its number moved');
+    assert.equal(reply.includes('On your question 3') || reply.includes('Delta.'), false, 'a replaced question is shown');
     assert.deepEqual(['Model-named-medicine', 'Model-written question'].filter((text) => reply.includes(text)), [], 'text the model wrote for a question is in the reply');
   });
 
