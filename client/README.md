@@ -72,7 +72,7 @@ The steps arrive in the agent's response and are stored by the client with the r
 
 A separate tool for whoever runs the lab on their own machine, at <http://localhost:3000/lab>. It shows what is under the hood: the state of each piece, every configured agent, the prepared inquiries, and every person's runs with their steps. It reads only.
 
-It needs no sign-in. The client is published on this machine only (`127.0.0.1:3000` in [`compose.yaml`](compose.yaml)), so only someone at this machine can reach it. Who may read what is a rule of the desk, the product that desk staff sign in to; it does not apply to the explorer. Its routes, under `/lab/api`, are in the table above: they read no cookie, answer any method but GET with 405 `method_not_allowed`, and an unknown path with 404 `not_found`, in the same JSON shape as `/api`. Any other path under `/lab` is the app's page, as every path outside `/api`, `/auth` and `/ping` is.
+It needs no sign-in. The client is published on this machine only (`127.0.0.1:3000` in [`compose.yaml`](compose.yaml)), so only someone at this machine can reach it. Who may read what is a rule of the desk, the product that desk staff sign in to; it does not apply to the explorer. Its routes, under `/lab/api`, are in the table above: they read no cookie, answer any method but GET with 405 `method_not_allowed`, and an unknown path with 404 `not_found`, in the same JSON shape as `/api`. Any other path under `/lab` is the app's page, as every path outside `/api`, `/auth`, `/ping` and `/lab/api` is.
 
 ## Always true
 

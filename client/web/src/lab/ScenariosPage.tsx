@@ -1,4 +1,4 @@
-// The prepared inquiries the desk offers, each with what sending it should show. Read-only.
+// The prepared inquiries, each with what sending it should show. Read-only.
 
 import { useLabSamples } from './api.ts';
 import { Empty, Failed, Loading } from './parts.tsx';
@@ -12,8 +12,7 @@ export function ScenariosPage() {
         <div>
           <h1>Scenarios</h1>
           <p className="lab-lede">
-            The prepared inquiries the desk offers. Each says what sending it should show. Send one from the desk;
-            its run then appears under Runs.
+            Prepared messages, each written to show one behaviour. Each says what sending it should show.
           </p>
         </div>
       </div>

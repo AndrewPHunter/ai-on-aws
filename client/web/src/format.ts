@@ -1,6 +1,6 @@
 // Wording and number formatting shared by the screens.
 
-import type { CaseStatus, ElementName, LabelAnswer, RunState, Step } from '../../shared/api.ts';
+import type { CaseStatus, ElementName, LabelAnswer, Step } from '../../shared/api.ts';
 
 const dateTime = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 const dateOnly = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' });
@@ -49,12 +49,6 @@ export const ELEMENT_LABEL: Record<ElementName, string> = {
   reporter: 'Reporter',
   suspect_drug: 'Suspect drug',
   event: 'Adverse event',
-};
-
-export const RUN_STATE_LABEL: Record<RunState, string> = {
-  running: 'Working',
-  completed: 'Finished',
-  failed: 'Did not run',
 };
 
 const AUDIT_LABEL: Record<string, string> = {

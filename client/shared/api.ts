@@ -150,3 +150,18 @@ export type TraceList = { traces: TraceSummary[]; truncated: boolean };
 export type TraceInquiry = Omit<Inquiry, 'runs'>;
 export type Trace = { inquiry: TraceInquiry; run: TracedRun };
 export type TraceResponse = { trace: Trace };
+
+// POST /contact/api/messages: a clinician writes in through the public form. Nobody is signed in. The message
+// becomes an inquiry in the desk's inbox and is handled by the orchestrator. Answers 202; the sender is told only
+// when it was received.
+export type ContactMessageRequest = { name: string; role: string; contact: string; text: string };
+export type ContactMessageResponse = { received_at: string };
+
+// GET /lab/api/inquiries/<id>: one inquiry with every run of it, steps included, for the lab explorer.
+export type LabInquiry = TraceInquiry & { runs: TracedRun[] };
+export type LabInquiryResponse = { inquiry: LabInquiry };
+
+// POST /lab/api/runs: the lab explorer runs a message through an agent, as its own client. Either a message
+// already received (`inquiry_id`), sent again unchanged, or a new one (`sender` and `text`). Answers 202.
+export type LabRunRequest = { agent_id: string } & ({ inquiry_id: string } | { sender: string; text: string });
+export type LabRunResponse = { inquiry_id: string; run_id: string };
