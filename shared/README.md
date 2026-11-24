@@ -21,6 +21,25 @@ What an answer from drug labels carries:
 
 `access-token.ts` is configured with the values AgentCore Runtime's JWT authorizer takes (a discovery URL, an allowed audience, allowed client IDs read from `client_id`, allowed scopes), and is given its clock and settings rather than reading them. `token-exchange.ts` is given its settings, `fetch`, its clock and its time limit; on AWS, AgentCore Identity takes its place.
 
+## Telemetry
+
+[`telemetry.ts`](telemetry.ts) is how a piece records execution evidence: spans, exported as each ends, over OTLP/HTTP JSON to the endpoint it is given. [`telemetry-attributes.ts`](telemetry-attributes.ts) declares the attribute names a span may carry, their value types, the closed list of outcomes and the evidence schema version. The trace store reads the run id's name from it too. [`docs/architecture/telemetry.md`](../docs/architecture/telemetry.md) describes the evidence: its identifiers, the content rule, and what happens when the destination is down.
+
+`startTelemetry(settings, options)` is given `{ service, endpoint, queue: { maxSpans, maxBatch, delayMs, exportTimeoutMs } }`, a clock and a log function. Tests also give it an exporter. It reads no environment variable and registers no OpenTelemetry global. It returns a handle:
+
+| Call | What it does |
+|---|---|
+| `span(name, { kind, attributes?, parent? }, work)` | Runs `work` inside a span and returns what it returns. The span is a child of the current span when `parent` is left out, of a parent from `extract` when one is given, and a new trace when it is `null`. `work` gets `set(attributes)` for the outcome and anything learned on the way. The span always ends. A throw ends it with status `error` and outcome `failed`, unless an outcome was set, with no message, and is thrown again |
+| `inject(headers)` | Writes the current context as `traceparent` |
+| `extract(headers)` | Reads `traceparent` (lower-case key, as Node gives it). A missing or malformed one gives `null` and never throws |
+| `counts()` | Spans ended, exported, failed to export, and dropped because the queue was full |
+| `shutdown(timeoutMs)` | Flushes for at most `timeoutMs`, then stops, and reports the counts, how many spans were not sent, and whether time ran out. An export still unanswered at the limit is given up and counted as failed afterwards. Its HTTP request is not cancelled: it can still reach the store, within `exportTimeoutMs`, and its answer is ignored |
+| `on` | False when `endpoint` was `null`. Every call then works, records nothing, and still refuses an undeclared attribute; the start says once that telemetry is off |
+
+Settings that are not positive whole numbers, a `maxBatch` above `maxSpans`, an empty service or an endpoint that is not an `http` or `https` URL stop it at start, naming the setting. Each failed batch is logged once with its size, and each run of drops once with its count. No log line holds span content.
+
+The exporter is the OpenTelemetry one. For any option the module does not pass, it falls back to `OTEL_EXPORTER_OTLP_*` variables. The module passes every option except headers. Headers named in `OTEL_EXPORTER_OTLP_HEADERS` or `OTEL_EXPORTER_OTLP_TRACES_HEADERS` are added to each export.
+
 [`machine-token.ts`](machine-token.ts) is how a machine gets a token as its own client, by client credentials with its own secret: one request, never retried, the scopes left to the service to check. The evaluation harness, the knowledge gate, and the client's contact form and lab explorer use it.
 
 Four agents in [`agents/`](../agents/README.md) implement the agent contract: the intake agent, built once with a hand-written loop and once on Strands, the label expert and the orchestrator, both on Strands. The label expert produces citations, `label_answer` and retrieval steps. A `delegation` step is one call from an agent to another: `id`, `to_agent`, `requested_by`, `message` (`{ id, text }`), `replaces`, `failure` and `response`, the other agent's whole response or null. That response's steps are of the kinds an agent that calls no other produces (`model`, `tool`, `retrieval`, `error`, `report_check`), so a delegation never holds a delegation. The orchestrator produces them. A `report_check` step is an intake agent's check of the message for an adverse event, made by its code: `model` and `finding` (`adverse_event`, `none` or `unknown`), and no text from the model. Both intake agents produce them.
@@ -34,5 +53,9 @@ Four agents in [`agents/`](../agents/README.md) implement the agent contract: th
 5. A request or a response outside the agent contract's schema is refused, and one inside it is returned unchanged.
 6. A token is accepted only if it carries at least one of the scopes the service requires. One that carries none is refused as `insufficient_scope`, and the answer every front door gives for that refusal is 403 naming the scopes; every other refusal stays 401.
 7. The token exchange returns a token only when the provider granted every scope asked for. A provider's refusal, a grant that leaves a scope out, and a provider that does not answer are three different results, and none of their sentences holds a token or the client secret.
+8. A span run by the telemetry module always ends. Work that throws ends it with status `error` and outcome `failed`, with no part of the error's message in the span, and the error is thrown again. With telemetry off the same calls run the work and record nothing.
+9. `inject` writes the current span as `traceparent`, and a span started under what `extract` reads from it is in the same trace, with that span as its parent, even after an `await`. A missing or malformed `traceparent` gives no parent, a new trace starts, and nothing throws.
+10. A span carries only the declared attribute names, each with a value of its declared type, length and range. Anything else is refused when it is set, in tests as in production, and is not recorded. A token count given as unknown is left out, never written as 0.
+11. Loss is counted and bounded: no more than `maxSpans` spans wait. A span that finds the queue full is counted as dropped, a batch the exporter fails is counted as failed, and `shutdown` returns within its time limit naming how many spans were not sent.
 
 `shared/test/` has one test for each, named `shared` and its number. Tests 1 to 4 and 6 use real signed tokens from the stand-in issuer in [`test-support/`](../test-support/README.md).

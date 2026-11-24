@@ -93,7 +93,7 @@ The stack gate checks sign-in, permissions, and agent calls across the applicati
 docker compose down
 ```
 
-This stops the services and keeps the inquiries, the cases, and the label index. Adding `-v` deletes all three, and the index then has to be built again with `knowledge/index.sh`.
+This stops the services and keeps the inquiries, the cases, the stored traces and the label index. Adding `-v` deletes all four, and the index then has to be built again with `knowledge/index.sh`.
 
 To empty the inbox and the review queue but keep the label index, run:
 
@@ -122,7 +122,7 @@ It typechecks, lints, tests, and builds the React app in an isolated container. 
 | [`tools/`](tools/README.md) | Agent-facing tools, including the case service and its review API |
 | [`knowledge/`](knowledge/README.md) | Label ingestion, parsing, chunking, indexing, and retrieval |
 | [`model/`](model/README.md) | vLLM chat, embedding, and reranker servers, setup, and capacity checks |
-| [`platform/`](platform/README.md) | Local supporting services, currently Keycloak identity and token exchange |
+| [`platform/`](platform/README.md) | Local supporting services: Keycloak identity and token exchange, and the trace store for execution evidence |
 | [`shared/`](shared/README.md) | Agent and service contracts, schemas, and access-token validation |
 | [`evaluation/`](evaluation/README.md) | Quality evaluation, datasets, and security and fault scenarios |
 | [`toolchain/`](toolchain/README.md) | Container builds, dependency management, and repository checks |
