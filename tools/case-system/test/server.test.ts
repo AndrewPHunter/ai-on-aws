@@ -1,4 +1,4 @@
-// The case system's invariant 8 ("Always true" in tools/case-system/README.md), and three probes of the wiring
+// The case system's invariants 8 and 11 ("Always true" in tools/case-system/README.md), and three probes of the wiring
 // the store's tests cannot show (P1 to P3), on the real servers over loopback. The access token check is a
 // function that names a caller, refuses, or is unavailable: these tests are not about verifying a token.
 
@@ -11,9 +11,11 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 import type { AccessTokenCheck, Caller } from '../../../shared/access-token.ts';
+import type { Telemetry } from '../../../shared/telemetry.ts';
 import { CONTEXT_HEADERS, createAgentServer, createReviewServer } from '../src/http.ts';
 import { CaseStore } from '../src/store.ts';
 import type { CallContext } from '../src/store.ts';
+import { recordingTelemetry, telemetryOff } from './telemetry-rig.ts';
 
 const NOW = new Date('2026-01-01T09:00:00.000Z');
 const RIVERA = 'Dr A. Rivera, a.rivera@example.org';
@@ -48,9 +50,9 @@ async function listen(server: Server): Promise<string> {
   return `http://127.0.0.1:${address.port}`;
 }
 
-async function start(t: TestContext): Promise<{ store: CaseStore; agent: string; review: string }> {
+async function start(t: TestContext, telemetry: Telemetry = telemetryOff()): Promise<{ store: CaseStore; agent: string; review: string }> {
   const store = new CaseStore(':memory:', () => NOW);
-  const servers = [createAgentServer(store, () => NOW, checkToken), createReviewServer(store, checkToken)];
+  const servers = [createAgentServer(store, () => NOW, checkToken, telemetry), createReviewServer(store, checkToken, telemetry)];
   t.after(() => {
     for (const server of servers) {
       server.closeAllConnections();
@@ -152,4 +154,33 @@ test("case-system P3. over MCP, another sender's case is answered as one that do
   const none = await call(kato, 'add_follow_up', { case_id: 'AE-999999', event: 'fever' });
   assert.deepEqual([theirs.isError, theirs.payload['error']], [none.isError, none.payload['error']]);
   assert.equal(store.versions('AE-000001').length, 1);
+});
+
+test("case-system 11. a tool call's span is a child of the request's traceparent, or starts a new trace, and holds nothing from the request", async (t) => {
+  const { telemetry, spans } = recordingTelemetry();
+  const { agent } = await start(t, telemetry);
+  const CALLER_TRACE = '4bf92f3577b34da6a3ce929d0e0e4736';
+  const CALLER_SPAN = '00f067aa0ba902b7';
+  // One row per tool call: its message, the traceparent it carries, the tool and arguments, and the parent expected.
+  const rows: { messageId: string; traceparent?: string; tool: string; args: Record<string, unknown>; parent?: string }[] = [
+    { messageId: 'm1', traceparent: `00-${CALLER_TRACE}-${CALLER_SPAN}-01`, tool: 'create_case', args: COMPLETE, parent: CALLER_SPAN },
+    { messageId: 'm2', tool: 'add_follow_up', args: { case_id: 'AE-000001', event: 'fever', note: 'seen again at the clinic' } },
+    { messageId: 'm3', traceparent: 'garbage', tool: 'create_case', args: { ...COMPLETE, event: 'rash' } },
+  ];
+  for (const row of rows) {
+    const headers = row.traceparent === undefined ? headersFor(row.messageId, RIVERA) : { ...headersFor(row.messageId, RIVERA), traceparent: row.traceparent };
+    assert.equal((await call(await connect(t, agent, headers), row.tool, row.args)).isError, false, row.messageId);
+  }
+  const ended = await spans();
+  for (const row of rows) {
+    const tool = ended.find((span) => span.name === 'case.tool' && span.attributes['lab.inquiry.id'] === row.messageId);
+    assert.ok(tool !== undefined, row.messageId);
+    assert.deepEqual(tool.attributes, { 'gen_ai.tool.name': row.tool, 'gen_ai.agent.id': 'intake-handwritten', 'lab.inquiry.id': row.messageId, 'lab.outcome': 'executed' });
+    assert.equal(tool.parentSpanContext?.spanId, row.parent, row.messageId);
+    assert.equal(tool.spanContext().traceId === CALLER_TRACE, row.parent !== undefined, row.messageId);
+  }
+  // The elements, the note, the sender, and the token ('dana', also the user's name and part of their subject).
+  const forbidden = [...Object.values(COMPLETE), 'fever', 'seen again at the clinic', 'rash', RIVERA, 'dana'];
+  const values = ended.flatMap((span) => Object.values(span.attributes).map(String));
+  assert.deepEqual(forbidden.filter((text) => values.some((value) => value.includes(text))), []);
 });

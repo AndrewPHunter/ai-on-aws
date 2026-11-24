@@ -22,6 +22,9 @@ services:
       AUTH_AGENT_SERVER_CLIENTS: intake-handwritten,intake-strands
       AUTH_REVIEW_SERVER_CLIENTS: desk
       AUTH_ROLES_CLAIM: roles
+      # Spans go to the lab's trace store by its service name on the shared network. When it is not running
+      # the exports fail and are counted; every answer is the same.
+      TELEMETRY_ENDPOINT: http://telemetry:4318/v1/traces
     ports:
       # Published on this machine only. 8000 is for agents (MCP), 8001 is for reviewers.
       - "127.0.0.1:8000:8000"

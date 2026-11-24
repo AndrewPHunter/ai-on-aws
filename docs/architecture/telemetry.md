@@ -2,7 +2,13 @@
 
 Execution evidence is a record of the work a piece did, exported by that piece as each operation ends. It does not wait for an agent's final response. Spans from different pieces are joined into one trace by the trace context that each call carries. The evidence holds metadata only. The `steps` of the agent contract carry content, and they are a separate record.
 
-Two parts make it up: [`shared/telemetry.ts`](../../shared/telemetry.ts), the module a piece uses to record and export spans, and the [trace store](../../platform/telemetry/README.md), the lab's own destination for them. No piece imports the module, so no piece sends spans.
+Two parts make it up: [`shared/telemetry.ts`](../../shared/telemetry.ts), the module a piece uses to record and export spans, and the [trace store](../../platform/telemetry/README.md), the lab's own destination for them.
+
+## Pieces that send spans
+
+| Piece | Service name | Spans | Described in |
+|---|---|---|---|
+| Case system | `case-system` | `case.tool` (server) for each tool call, a child of the request's `traceparent`; `case.commit` (internal) around each create or follow-up, saying `created`, `replayed` or `conflict`, ended before the answer is sent; `case.review` (server) for each review decision | [its README](../../tools/case-system/README.md#telemetry) |
 
 ## Terms
 
@@ -82,7 +88,6 @@ The module's items are 8 to 11 in [`shared/README.md`](../../shared/README.md); 
 
 ## Not present
 
-- No piece sends spans.
 - No sampling: every span is kept, within the store's limits.
 - No span links, events, `tracestate` or baggage. Only `traceparent` crosses a boundary.
 - No content lane: no prompt, completion, argument or result is exported anywhere.

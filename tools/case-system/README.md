@@ -64,6 +64,8 @@ The four elements are an identifiable patient, an identifiable reporter, a suspe
 8. No call but `GET /ping` is accepted without knowing who is calling, and the token is judged before anything else is read.
 9. A tool or a route is reached only with a token that carries its scope: `create_case` and `add_follow_up` need `cases:write`, `find_case` needs `cases:lookup`, reading cases needs `cases:read`, deciding one needs `cases:review`. A tool whose scope the token lacks is not offered, and calling it changes nothing.
 10. A tool that changes a case answers with a receipt: the case's id, status, version and what it still lacks. It never answers with what the case holds.
+11. A tool call's `case.tool` span is a child of the request's `traceparent`, so it joins the caller's trace; a request with no usable `traceparent` starts a new trace. No span attribute holds an element, a note, a sender or a token from the request.
+12. A write's `case.commit` span says `created`, `replayed` or `conflict`, as the store's result says, and is ended before the tool's answer is sent. A repeat of the same message shows `replayed`, with the same `lab.inquiry.id` and tool, and no second case.
 
 The tests in `test/` are named `case-system` and the item's number, one for each item, with three probes, P1 to P3, that drive both servers over loopback. P1 and P2 show the token's part of items 7 and 5: the agent recorded is the token's client whatever header a request carries, and the reviewer is the token's holder. P3 shows item 6 over MCP: another sender's case is answered there as one that does not exist.
 
@@ -109,13 +111,28 @@ An `x-agent-id` header is not read. The access token comes first, before the hea
 | 409 `not_allowed` | The review server: a decision on a case whose status does not allow it |
 | 404 | The agent server, for any path but `/mcp` and `/ping` |
 
+## Telemetry
+
+The case system exports spans through the lab's [telemetry module](../../shared/README.md#telemetry), as service `case-system`, to the endpoint in `TELEMETRY_ENDPOINT`. The audit trail remains the record of what happened to a case. The spans are diagnostic evidence beside it: they put the case system's part of a call in the caller's trace, so a write whose answer never reached the caller shows as committed here, and a repeat of the same message shows as a replay rather than a second case. The audit trail is not written by telemetry and does not depend on it.
+
+| Span | Kind | Made in | Parent | Attributes | Outcome |
+|---|---|---|---|---|---|
+| `case.tool` | `server` | Each tool's handler, [`src/mcp.ts`](src/mcp.ts) | The request's `traceparent`, or none (a new trace) | `gen_ai.tool.name`; `gen_ai.agent.id`, the token's client; `lab.inquiry.id`, the `x-message-id` header | `executed`: the tool answered with a result. `refused`: the request or the rules refused it, so the case is unchanged (no context headers, no filter, nothing to add, no such case, a conflict) |
+| `case.commit` | `internal` | Around the store's create or follow-up call, inside `case.tool`, [`src/mcp.ts`](src/mcp.ts) | `case.tool` | `lab.inquiry.id` | `created` (a case opened or a follow-up recorded), `replayed` or `conflict`, from the store's result. None when the store declined before writing (no such case, nothing to add) |
+| `case.review` | `server` | The review route, [`src/http.ts`](src/http.ts) | The request's `traceparent`, or none | None but the outcome | `executed`: the decision was recorded. `refused`: missing scope, a bad body, no such case, or a status that does not allow it |
+
+A span whose work throws ends with status `error`, and with outcome `failed` unless it had already said otherwise: a review refused for its body (400) ends `refused` with status `error`. Each span ends when its operation ends: `case.commit` before the tool's answer is written, so it is exported whether or not the answer reaches the caller.
+
+No span holds an element of a case (patient, reporter, drug, event), a note, a sender, a person's name or subject, a case's number or a token. An `x-message-id` or client id longer than 256 characters is left off the span rather than refusing the call. A failure to export is counted and logged by the module and changes no answer. On SIGTERM the case system gives telemetry five seconds to send what is waiting and logs the counts.
+
 ## Settings
 
-Set in [`compose.yaml`](compose.yaml). Every one is required; the case system stops at start-up naming any that is missing.
+Set in [`compose.yaml`](compose.yaml). Every one but `TELEMETRY_ENDPOINT` is required; the case system stops at start-up naming any that is missing.
 
 | Setting | Meaning |
 |---|---|
 | `CASE_DB_PATH` | The SQLite file |
+| `TELEMETRY_ENDPOINT` | Optional. Where spans are sent: `http://telemetry:4318/v1/traces`, the [trace store](../../platform/telemetry/README.md). Absent or empty: telemetry is off, and the start says so once. Not an http or https URL: the case system stops at start-up naming the setting |
 | `AUTH_DISCOVERY_URL` | Where the identity provider's discovery document is: `http://identity:8080/realms/lab/.well-known/openid-configuration` |
 | `AUTH_ISSUER` | The issuer it and every token must name, exactly: `http://localhost:8090/realms/lab` |
 | `AUTH_ALLOWED_AUDIENCE` | A value the token's `aud` must contain: `case-system` |
@@ -148,4 +165,6 @@ curl -s -X POST http://127.0.0.1:8001/cases/AE-000001/review -H "authorization: 
 - **A token with `cases:read` can list and read every case** on the review server, from every sender.
 - **One case per message.** A message that reports two patients produces one case.
 - **SQLite support in Node 22 is marked experimental** and prints a warning at start. It was chosen because it adds no dependency that needs compiling.
+- **A tool call the MCP library answers itself has no span.** A call to a tool not offered to the token, or with arguments that do not fit the tool's schema, is refused by the library before a handler runs, and no `case.tool` span is made for it.
+- **The caller's `lab.operation.id` and `lab.attempt` are not on the case system's spans.** Only `traceparent` crosses to it. A caller's attempt and the case system's commit are joined by the trace and by `lab.inquiry.id`.
 - **The storage does not carry to AgentCore Runtime as it is.** Runtime sessions do not keep a local disk; the interface (stateless MCP over HTTP at `/mcp` on port 8000) is what matches.
