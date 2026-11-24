@@ -47,7 +47,7 @@ stops them and keeps the inquiries, the cases and the label index. Add `-v` to d
 
 `/api/agents` lists only the agents the session may run. A call for anything else is answered 403 `not_allowed` before the identity provider or the target is asked. An inquiry, its runs and a new run on it are answered only to the person who entered it; to anyone else, exactly as an inquiry that does not exist (404 `inquiry_not_found`).
 
-A run's steps are given only on the trace routes. Every other route gives a run with the agent's response less its `steps`.
+On the desk's API a run's steps are given only on the trace routes. Every other `/api` route gives a run with the agent's response less its `steps`; the [lab explorer](#the-lab-explorer) gives them too.
 
 | Route | Answers |
 |---|---|
@@ -56,10 +56,21 @@ A run's steps are given only on the trace routes. Every other route gives a run 
 | `GET /api/cases`, `GET /api/cases/<id>`, `POST /api/cases/<id>/review` | The case system's own answers, passed back unchanged, to a session granted `cases:read` (and `cases:review` for a decision); 502 `case_system_unreachable` when it does not answer |
 | `GET /api/traces` | 200 `{ traces, truncated }`: every person's runs, newest first, at most 100, each with when it started, who started it, the agent, its state, its outcome and the time it took. 403 `not_allowed` without `traces:read` |
 | `GET /api/traces/<run_id>` | 200 `{ trace: { inquiry, run } }`: the message as it was received, and the run with the agent's whole response, steps included. A run still running is 200 with `state` `running` and no response yet. A stored response that no longer matches the agent contract is 200 with the run shown as `failed`, the store's reason as its `error`, and no response. 403 `not_allowed` without `traces:read`, decided before the store is read; 404 `unknown_run` for a run that does not exist |
+| `GET /lab/api/status` | 200, the same as `GET /api/status`. No session needed; see [the lab explorer](#the-lab-explorer) |
+| `GET /lab/api/agents` | 200 `{ agents }`: every configured agent, whoever asks. No session needed |
+| `GET /lab/api/samples` | 200, the same as `GET /api/samples`. No session needed |
+| `GET /lab/api/runs` | 200, the same as `GET /api/traces` gives a session granted `traces:read`: every person's runs, newest first. No session needed |
+| `GET /lab/api/runs/<run_id>` | 200, the same as `GET /api/traces/<run_id>` gives a session granted `traces:read`: the message and the run with its steps; 404 `unknown_run` for a run that does not exist. No session needed |
 
 Every `/api` route answers 401 `not_signed_in` without a session; a call naming an agent id that is not configured, 400 `unknown_agent`; a POST from another site, 403 `cross_site_request`.
 
 The steps arrive in the agent's response and are stored by the client with the rest of it. `traces:read` is a permission on reading them from that store; there is no separate store of traces.
+
+## The lab explorer
+
+A separate tool for whoever runs the lab on their own machine, at <http://localhost:3000/lab>. It shows what is under the hood: the state of each piece, every configured agent, the prepared inquiries, and every person's runs with their steps. It reads only.
+
+It needs no sign-in. The client is published on this machine only (`127.0.0.1:3000` in [`compose.yaml`](compose.yaml)), so only someone at this machine can reach it. Who may read what is a rule of the desk, the product that desk staff sign in to; it does not apply to the explorer. Its routes, under `/lab/api`, are in the table above: they read no cookie, answer any method but GET with 405 `method_not_allowed`, and an unknown path with 404 `not_found`, in the same JSON shape as `/api`. Any other path under `/lab` is the app's page, as every path outside `/api`, `/auth` and `/ping` is.
 
 ## Always true
 
@@ -73,8 +84,9 @@ The steps arrive in the agent's response and are stored by the client with the r
 8. Signing out removes the session and revokes the refresh token; a failed revocation does not stop it.
 9. A POST from another site is refused.
 10. What a session may do comes from the scopes it was granted at sign-in: which agents it may run, whether it may read cases, whether it may decide one, whether it may read traces. A call for anything else is answered 403 before the identity provider or the target is asked.
-11. An inquiry and its runs are read, and a run is started on it, only by the person who entered it. To anyone else it is answered as an unknown inquiry is. The one exception is the trace routes of invariant 12.
-12. A run's steps leave the server only on the trace routes, and only to a session granted `traces:read`. Any other session is answered 403 there before the store is read, so the answer says nothing about whether a run exists. Every other route returns a run without its steps, to anyone. The trace routes cover every person's runs; an id that names no run is 404.
+11. An inquiry and its runs are read, and a run is started on it, only by the person who entered it. To anyone else it is answered as an unknown inquiry is. The exceptions are the trace routes of invariant 12 and the lab explorer's routes of invariant 13.
+12. On the desk's API a run's steps leave the server only on the trace routes, and only to a session granted `traces:read`. Any other session is answered 403 there before the store is read, so the answer says nothing about whether a run exists. Every other `/api` route returns a run without its steps, to anyone. The trace routes cover every person's runs; an id that names no run is 404.
+13. The lab explorer's routes, under `/lab/api`, need no session and only read: they give the pieces' state, the agents, the prepared inquiries and every person's runs with their steps to anyone who can reach the server, and accept no method but GET. The server is published on this machine only.
 
 The server's tests in `test/` are one per item, named by its number, with one probe that the built app is served and that any other path is its page. The server's tests run through the server with scripted agents, a scripted case system and an identity provider whose refresh is a function, with three exceptions: invariant 4 and those beside it in `auth.test.ts` use the stand-in provider, invariant 5's two calls arriving together run on the token function in `src/tokens.ts`, and invariant 2's restart runs on the store.
 
