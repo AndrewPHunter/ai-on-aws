@@ -1,5 +1,6 @@
-// The client's settings, read from the environment by name. Every one is required: nothing falls back
-// to a default of the machine. Pure, so it is tested with plain objects.
+// The client's settings, read from the environment by name. Every one is required except the five the status
+// checks by health alone, which are optional; nothing falls back to a default of the machine. Pure, so it is
+// tested with plain objects.
 
 import { z } from 'zod';
 
@@ -8,7 +9,16 @@ function withoutTrailingSlash(url: string): string {
 }
 
 // Identifiers the status report uses for the parts that are not agents.
-const RESERVED_IDS: readonly string[] = ['case-system', 'identity', 'agents'];
+const RESERVED_IDS: readonly string[] = [
+  'case-system',
+  'identity',
+  'agents',
+  'retrieval',
+  'search',
+  'model-chat',
+  'model-embedding',
+  'model-reranker',
+];
 
 // The scopes an agent can require of the token it is sent.
 export const AGENT_SCOPES = ['agents:intake', 'agents:expert', 'agents:orchestrator'] as const;
@@ -61,6 +71,19 @@ export type OidcConfig = {
 export const MACHINE_CLIENTS = ['contact-form', 'lab-explorer'] as const;
 export type MachineClient = (typeof MACHINE_CLIENTS)[number];
 
+// The pieces the status checks by their health route alone, with no key or token, and the setting each is read
+// from. Each setting is optional.
+export const HEALTH_SETTINGS = {
+  retrieval: 'RETRIEVAL_URL',
+  search: 'SEARCH_URL',
+  'model-chat': 'MODEL_BASE_URL',
+  'model-embedding': 'MODEL_EMBED_BASE_URL',
+  'model-reranker': 'MODEL_RERANK_BASE_URL',
+} as const;
+export type HealthChecked = keyof typeof HEALTH_SETTINGS;
+// The three model servers are given by their base URL, which ends in /v1; their health route is at the root.
+const MODEL_SERVERS: readonly HealthChecked[] = ['model-chat', 'model-embedding', 'model-reranker'];
+
 export type Config = {
   dbPath: string;
   caseReviewUrl: string;
@@ -73,6 +96,9 @@ export type Config = {
   appOrigin: string;
   // The ID-token claim holding a flat list of role names.
   rolesClaim: string;
+  // Where the status checks each piece in HEALTH_SETTINGS, without a trailing slash, and for a model server
+  // without its /v1. A piece left out, or the whole field, is not configured.
+  healthUrls?: Partial<Record<HealthChecked, string>>;
 };
 
 function required(env: NodeJS.ProcessEnv, name: string, meaning: string): string {
@@ -122,6 +148,21 @@ function origin(name: string, value: string): string {
     throw new Error(`${name} must be an origin (scheme, host and port, no path or trailing slash): ${value}`);
   }
   return value;
+}
+
+// The settings in HEALTH_SETTINGS that are set. One absent or empty is left out; one that is not an http(s) URL
+// stops the server, naming it.
+function healthUrlsFrom(env: NodeJS.ProcessEnv): Partial<Record<HealthChecked, string>> {
+  const urls: Partial<Record<HealthChecked, string>> = {};
+  for (const [piece, name] of Object.entries(HEALTH_SETTINGS) as [HealthChecked, string][]) {
+    const value = env[name]?.trim();
+    if (value === undefined || value === '') {
+      continue;
+    }
+    const url = httpUrl(name, value);
+    urls[piece] = MODEL_SERVERS.includes(piece) ? url.replace(/\/v1$/, '') : url;
+  }
+  return urls;
 }
 
 function agentsFrom(value: string): AgentConfig[] {
@@ -183,5 +224,6 @@ export function configFrom(env: NodeJS.ProcessEnv): Config {
     },
     appOrigin: origin('APP_ORIGIN', required(env, 'APP_ORIGIN', 'the origin the web app is served from')),
     rolesClaim: required(env, 'ROLES_CLAIM', 'the ID-token claim holding a flat list of role names'),
+    healthUrls: healthUrlsFrom(env),
   };
 }

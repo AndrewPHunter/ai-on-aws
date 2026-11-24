@@ -308,7 +308,7 @@ The client caches access tokens by scope. Before each call it checks the remaini
 | Agent `POST /invocations` (a new inquiry, or a new run of one) | `Bearer <token for that agent's scope>`: `agents:intake` for an intake agent, `agents:expert` for the label expert, `agents:orchestrator` for the orchestrator | The time the client waits for that agent (its `wait_seconds` in `client/compose.yaml`): 180 s, and 295 s for the orchestrator |
 | Case system: list, get | `Bearer <token for cases:read>` | 30 s |
 | Case system: review | `Bearer <token for cases:review>` | 30 s |
-| Health checks (`/ping`) | None | — |
+| Health checks (`/ping`; the search engine's `/_cluster/health`; the model servers' `/health`) | None | — |
 
 | Refresh | What happens |
 |---|---|

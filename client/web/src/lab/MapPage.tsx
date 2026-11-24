@@ -18,11 +18,17 @@ const GROUPS: readonly { group: Group; title: string }[] = [
 ];
 
 // The ids the status route gives that are not an agent's (client/src/server.ts). An agent's piece has its
-// configured id, read from the agent list; 'agents' is the piece given when no agent is configured.
+// configured id, read from the agent list; 'agents' is the piece given when no agent is configured. Any other id
+// goes under Other.
 const FIXED_GROUP: Readonly<Record<string, Group>> = {
   identity: 'front',
   agents: 'agents',
   'case-system': 'tools',
+  retrieval: 'tools',
+  search: 'stores',
+  'model-chat': 'stores',
+  'model-embedding': 'stores',
+  'model-reranker': 'stores',
 };
 
 function groupOf(piece: PieceStatus, agentIds: ReadonlySet<string>): Group {
