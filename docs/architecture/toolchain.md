@@ -1,17 +1,21 @@
 # Toolchain
 
-How the repository's TypeScript is checked, and how a piece is packaged to run. To use it, see [toolchain/README.md](../../toolchain/README.md).
+The toolchain defines the repository's TypeScript checks and packages
+application components from one dependency tree. Each component receives
+the files it needs to run. Docker supplies Node and npm, so the host needs
+no language toolchain.
+For commands, see [toolchain/README.md](../../toolchain/README.md).
 
-## Terms
+The root `package.json` defines the dependencies and the **check**:
+typechecking, linting, tests and the React app build. The root
+`package-lock.json` fixes the resolved dependency tree. A **piece** is a
+top-level lab component, such as `model/`.
 
-| Term | Meaning |
-|---|---|
-| Root manifests | `package.json` and `package-lock.json` at the root of the repository |
-| The check | Typecheck, lint, tests and the build of the React app, as defined by the `check` script in the root `package.json` |
-| Piece | A top-level folder of the lab, such as `model/` |
-| Node pin | The digest of the Node image, written in `toolchain/Dockerfile`, in the files under `model/` that run Node, and in `platform/identity/setup.sh` and `platform/identity/gate/compose.yaml` |
+The **Node pin** is one image digest shared by `toolchain/Dockerfile`, the
+Node commands under `model/`, and identity setup and gate commands under
+`platform/identity/`.
 
-## What is built from what
+## Build and runtime boundaries
 
 ```mermaid
 flowchart TD
@@ -35,6 +39,17 @@ flowchart TD
   webbuild --> runweb
 ```
 
+The `deps` stage includes development tools for checks and browser builds.
+The `run-deps` stage omits development and optional packages. Each running
+piece receives its own source and the shared top-level TypeScript files;
+a piece with a browser app also receives its shared types and built static
+files. Node runs server TypeScript directly.
+
+The check image contains a source snapshot from image build time. Its
+container has no network or host mounts and a read-only root filesystem.
+The development container instead mounts the working source and keeps
+`node_modules` in a volume.
+
 ## Always true
 
 1. One definition of the check. The `check` script in the root `package.json` is what `toolchain/check.sh` runs in its container and what `npm run check` runs in the dev container.
@@ -53,7 +68,7 @@ flowchart TD
 
 The tests in `toolchain/test/` are named T1 to T5: T1 shows 6, T2 shows 5, T3 shows 12, T4 shows the `shared/` part of 11, and T5 shows 13.
 
-## Where each thing runs
+## Execution and network access
 
 | Thing | Where | Network |
 |---|---|---|
@@ -71,16 +86,21 @@ The tests in `toolchain/test/` are named T1 to T5: T1 shows 6, T2 shows 5, T3 sh
 | Docker is not reachable, or the image cannot be built | `toolchain/check.sh` exits non-zero |
 | `toolchain/lock.sh` cannot resolve, or npm has not finished in 300 seconds | It exits non-zero; the existing `package-lock.json` is unchanged |
 
-## Who owns what
+## Ownership
 
 | Owner | Owns |
 |---|---|
-| Root `package.json` | Dependency versions, and the definition of the check. Its `overrides` pin five `@aws-sdk` packages that `bedrock-agentcore` brings in to the versions that go with `@aws-sdk/client-bedrock-runtime` 3.1174.0, the release Strands' entry in the lockfile holds |
+| Root `package.json` | Exact dependency versions, overrides and the check command |
 | `package-lock.json` | The resolved dependency tree. Written only by `toolchain/lock.sh` |
 | `tsconfig.json` | What the compiler accepts |
 | `eslint.config.js` | The lint rules |
 | `.dockerignore` | What may enter an image |
-| `toolchain/Dockerfile` | The stages, including the `run` stage every piece is packaged with, and the toolchain's copy of the Node pin |
+| `toolchain/Dockerfile` | Build and runtime stages, and the toolchain's Node pin |
 | `toolchain/compose.yaml` | The check container's isolation: no network, read-only |
 | `.devcontainer/devcontainer.json` | How VS Code attaches: the stage, the mount, the volume, the user |
-| Each piece packaged with the `run` stage | Its own TypeScript in `src/`, its own tests in `test/`, and its own compose file: command, ports, volumes, settings |
+| Each packaged piece | Its `src/`, `test/` and compose file; runtime command, ports, volumes and settings |
+
+The root manifest overrides five `@aws-sdk` packages brought in by
+`bedrock-agentcore`. They use the versions associated with
+`@aws-sdk/client-bedrock-runtime` 3.1174.0, which Strands resolves in the
+lockfile.

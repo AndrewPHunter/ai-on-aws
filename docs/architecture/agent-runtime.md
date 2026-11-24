@@ -1,21 +1,32 @@
 # How an agent serves the Runtime contract
 
-Amazon Bedrock AgentCore Runtime asks one thing of a container: `POST /invocations` and `GET /ping` on port 8080. The agents here meet that contract in two ways.
+All four agents accept `POST /invocations` using the request and response
+contract in `shared/agent-contract.ts`, and expose `GET /ping` for health
+checks. Both routes listen on port 8080. Two implementations serve this
+Amazon Bedrock AgentCore Runtime contract:
 
-| Agent | Server | What it shows |
+| Agents | Server | Responsibility |
 |---|---|---|
-| Intake, hand-written loop | The hand-written contract server, `agents/src/contract/server.ts`, with nothing from an SDK | Every layer written out and visible |
-| Intake, on Strands | AWS's SDK server: `BedrockAgentCoreApp` from the npm package `bedrock-agentcore` 0.4.6, behind a local edge | AWS's stack as it comes: Strands for the loop, the AgentCore SDK for the contract |
-| Label expert, on Strands | The same as the intake agent on Strands | The same |
-| Orchestrator, on Strands | The same as the intake agent on Strands | The same |
+| Hand-written intake | `agents/src/contract/server.ts` | HTTP handling, token checks and contract validation |
+| Strands intake, label expert and orchestrator | `BedrockAgentCoreApp` from `bedrock-agentcore` 0.4.6 | SDK HTTP handling, with this repository's token checks and handler adapter |
 
-The request and the answer are the same for all four: `shared/agent-contract.ts`. Each agent names its server in the definition it gives the shared start-up, `serveAgent` in `agents/src/run/serve.ts`: the intake agents through `intake/serve.ts`, the label expert in `expert/main.ts`, the orchestrator in `orchestrator/main.ts`. An agent on the SDK server logs at start that it is on the AgentCore SDK server, where it listens and the value of `LOCAL_RUNTIME_EDGE`; the hand-written agent logs its name and address.
+Each agent selects its server through `serveAgent` in
+`agents/src/run/serve.ts`. The hand-written path loads no AgentCore SDK. The
+SDK path loads `contract/runtime.ts`, which starts the SDK app and, when
+`LOCAL_RUNTIME_EDGE=on`, a local edge in the same process.
 
-## Why the SDK server has an edge in front of it
+## The local boundary
 
-On AWS, a request passes through AgentCore Runtime before it reaches the container. The SDK server relies on that: it checks no access token, it requires a session id, and it expects only the headers Runtime forwards. Run anywhere else, nothing does those things. So, in the same process, a small listener of this repository's own (`agents/src/contract/edge.ts`) stands in for Runtime's front door, and the SDK app listens on loopback behind it.
+AgentCore Runtime checks the caller before forwarding a request to the
+container. The SDK server expects that boundary: it requires a session id
+but does not check access tokens itself. Locally,
+`agents/src/contract/edge.ts` supplies that boundary. It checks the token,
+sets or validates the session id, and limits the body and forwarded headers.
+The SDK app listens on loopback behind it.
 
-The edge is a stand-in. It is not part of AgentCore, and on AgentCore Runtime it is turned off.
+The edge belongs to this repository, not to AgentCore. With
+`LOCAL_RUNTIME_EDGE=off`, the SDK app listens directly on port 8080 for
+Runtime to call.
 
 ## One request
 
@@ -69,37 +80,65 @@ sequenceDiagram
     R-->>C: the answer
 ```
 
-## What the edge does, and what does it on AWS
+## Edge responsibilities
 
-| The edge | On AWS |
+| Boundary | Local edge | AgentCore Runtime |
+|---|---|---|
+| Access token | `shared/access-token.ts`, before reading the body | JWT authorizer with the same discovery URL, audience and client ids |
+| Session id | Accepts 33 to 256 characters; generates a UUID when absent; otherwise 400 | `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id`; AWS clients generate one when absent |
+| Request body | At most 1,000,000 bytes, forwarded with a content length | Runtime's payload limit |
+| Health | Passes `GET /ping` to the SDK without headers | Runtime calls `/ping` |
+
+The edge forwards `Content-Type`, `Accept`, `Authorization`, headers starting
+`X-Amzn-Bedrock-AgentCore-Runtime-Custom-`, the session id, and a generated
+`X-Amzn-Bedrock-AgentCore-Runtime-Request-Id`. It drops all other headers,
+including cookies and `X-Forwarded-For`. On Runtime, `Authorization` must be
+in the request header allowlist; Runtime also forwards the custom headers.
+
+The edge uses the hand-written server's refusal shapes. An invalid token
+gets 401 with `WWW-Authenticate: Bearer error="invalid_token"`. A token that
+lacks every required scope gets 403 with `error="insufficient_scope"` and the
+required scopes. If the identity provider cannot be reached, it gets 503.
+
+| Edge failure | Response |
 |---|---|
-| Checks the access token with `shared/access-token.ts` before reading the body: 401 with `WWW-Authenticate: Bearer error="invalid_token"`, 403 with `error="insufficient_scope"` and the scopes for a token that lacks only the scope, or 503 when the identity provider cannot be asked, in the hand-written server's shapes | Runtime's JWT authorizer, configured with the same discovery URL, audience and client ids |
-| Passes a session id of 33 to 256 characters through, makes a UUID when there is none, answers 400 otherwise | Runtime: `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id`, 33 to 256 characters; AWS's clients make one when the caller gives none |
-| Forwards only the content type, accept, `Authorization`, headers starting `X-Amzn-Bedrock-AgentCore-Runtime-Custom-`, the session id, and a request id it makes (`X-Amzn-Bedrock-AgentCore-Runtime-Request-Id`). Everything else, a cookie or `X-Forwarded-For` included, is dropped | Runtime forwards `Authorization` only when it is in the request header allowlist, and the custom headers |
-| Reads the body itself, at most 1,000,000 bytes, then sends the whole of it with a content length | Runtime's own payload limit |
-| Answers 404 for another path and 405 (with `Allow: POST`) for another method on `/invocations`, in the hand-written server's shapes; passes `GET /ping` to the SDK app, with no headers | Runtime calls `/ping` itself |
-| Answers 502 `{"error":"bad_gateway","detail":"The agent's server did not answer."}` when the SDK app does not answer, and closes the connection instead if the answer had already begun. It sets no time limit of its own on the answer | Runtime's own handling |
-| Answers 500 `{"error":"internal_error","detail":"The request could not be handled."}` when the edge itself fails while handling a request | Runtime's own handling |
-| Writes one line to the error output for a 502, naming the connection error's code, and a fixed line for a 500; never a token or a message's text | Runtime's own logs |
+| Unknown path | 404, in the hand-written server's shape |
+| Method other than POST on `/invocations` | 405 with `Allow: POST`, in the hand-written server's shape |
+| SDK app does not answer | 502 `{"error":"bad_gateway","detail":"The agent's server did not answer."}` |
+| Edge cannot handle the request | 500 `{"error":"internal_error","detail":"The request could not be handled."}` |
 
-## What the SDK app does
+If the response has already begun, a connection failure closes it instead
+of sending another response. The edge sets no response time limit. It logs
+one line for a 502 with the connection error's code, or a fixed line for a
+500, without a token or message text.
 
-| Part | Who writes it |
+## SDK and repository responsibilities
+
+The SDK owns `/ping`, `/invocations`, JSON parsing, the session id
+requirement and validation against the supplied request schema. The
+repository supplies the schema and the `process` adapter that connects a
+validated request to an agent handler.
+
+| Repository file, under `agents/src/` | Owns |
 |---|---|
-| `GET /ping`, `POST /invocations`, the session id requirement, parsing the body, the check against the request schema | The SDK, as it comes |
-| The request schema: the contract's `invocationRequestSchema` | This repository, `contract/sdk-app.ts` |
-| `process`: the second token check, calling the handler, checking its answer against the response schema | This repository, `contract/sdk-app.ts` |
-| The logger's configuration | This repository, `contract/sdk-app.ts` |
-| Starting the app, the edge, the signal handlers | This repository, `contract/runtime.ts`, loaded by `run/serve.ts` only for an agent on the SDK server |
-| `LOCAL_RUNTIME_EDGE`, the header names, where each part listens, the sentences of the failed answers | This repository, `contract/runtime-contract.ts`, which loads nothing of the SDK |
+| `contract/sdk-app.ts` | Request schema, second token check, handler call, response validation and logging policy |
+| `contract/runtime.ts` | SDK app, edge and signal handling |
+| `contract/runtime-contract.ts` | `LOCAL_RUNTIME_EDGE`, listener addresses, header names and failure reasons; no SDK imports |
+| `run/serve.ts` | Shared startup and server selection; loads the SDK path only when selected |
 
-The token is checked a second time in `process`, as the hand-written server does, to get the caller and so one behaviour holds everywhere. The SDK gives `process` no way to answer 401. A request that reaches it with no valid token, which can happen only with the edge off, or on AWS with `Authorization` missing from the allowlist, gets a `failed` answer whose reason says so and says what to change.
+The second token check supplies the caller's identity to the handler. The
+SDK's `process` adapter cannot return HTTP 401, so a refused token at this
+point produces a response with `outcome: failed`. This includes a request
+that reaches the SDK directly without a valid token, or a Runtime request
+whose `Authorization` header was not allowlisted. If the token cannot be
+checked, the response also has `outcome: failed`, with a reason explaining
+the identity-provider failure.
 
-## What the SDK does on its own
-
-- Fastify's own error messages are fixed strings. For a body that is not JSON, a body that does not match the request schema, and a normal request, the SDK's default logging quotes no body. The logger is configured all the same (`contract/sdk-app.ts`): a request is logged as its method and its path without the query, and an error as its type, code and status, never its message or stack.
-- The SDK prints Fastify's deprecation warning FSTDEP023 (`disableRequestLogging`) at every start.
-- The SDK is loaded only on the SDK path: `run/serve.ts` imports `contract/runtime.ts` only for an agent on the SDK server, and what the edge and the start-up share is in `contract/runtime-contract.ts`, which loads nothing of the SDK. Importing the agents' start-up code therefore stays cheap, and the hand-written agent never loads the SDK.
+The SDK logger remains enabled. Requests are logged as method and path,
+without query, headers or body. Errors are logged as type, code and status,
+without their message or stack; the log line's message uses the error code.
+The SDK also prints Fastify's FSTDEP023 deprecation warning
+(`disableRequestLogging`) at startup.
 
 ## Where the two servers differ
 
@@ -118,18 +157,30 @@ For the intake agent on Strands, the label expert and the orchestrator, compared
 | A token that lacks only the agent's scope | 403 | 403, from the edge | The same 200 `failed` as for no valid token |
 | The identity provider cannot be asked | 503 | 503, from the edge | 200, `outcome: failed`, reason "The request reached the agent, and its access token could not be checked: ..." |
 
-The same in all three: a handler that throws gives 200 with `outcome: failed` and "The agent failed unexpectedly.", and a valid request with a valid token gets the handler's answer.
+In all three layouts, a handler that throws produces HTTP 200 with
+`outcome: failed` and "The agent failed unexpectedly." A valid handler
+response is returned unchanged.
 
-With the edge off, the SDK answers 413 from the declared `Content-Length`, before it reads the body, and then closes the connection. So what a client sends over the limit decides what it sees. A client that waits for the answer before sending the body, or sends none, reads the 413. A client that is still sending the body when the connection closes can instead see the connection fail (in Node's `fetch`, "fetch failed"), and which one it sees depends on timing.
+With the edge off, the SDK can reject an oversized declared `Content-Length`
+with 413 before reading the body, then close the connection. A client that
+waits before sending the body can read that response. A client still sending
+the body may instead see a connection failure ("fetch failed" in Node's
+`fetch`), depending on timing.
 
-## The setting
+## Runtime layout
 
 | Setting | Values | Meaning |
 |---|---|---|
 | `LOCAL_RUNTIME_EDGE` | `on` | The edge on `0.0.0.0:8080`, the SDK app on `127.0.0.1:9080` behind it. Set in `agents/compose.yaml` for the three agents on Strands |
 | | `off` | The SDK app alone on `0.0.0.0:8080`, as it runs on AgentCore Runtime |
 
-It is required and has no default. A missing or other value stops the agent at start (exit 2), naming the variable, as a missing setting of any agent does. If `contract/runtime.ts` and the SDK cannot be loaded, the agent stops with exit 1 and says so. The hand-written agent does not read the setting.
+`LOCAL_RUNTIME_EDGE` is required for SDK agents and has no default. A missing
+or invalid value stops startup with exit 2 and names the variable. Failure
+to load `contract/runtime.ts` and the SDK stops startup with exit 1 and an
+explanation. The hand-written agent does not read this setting.
+
+At startup, SDK agents log their server, listener addresses and
+`LOCAL_RUNTIME_EDGE` value. The hand-written agent logs its name and address.
 
 ## Always true
 

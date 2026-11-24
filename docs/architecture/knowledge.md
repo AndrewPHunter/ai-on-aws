@@ -1,6 +1,8 @@
 # Knowledge
 
-The corpus of the lab's Bedrock Knowledge Bases stand-in: US drug labels from DailyMed, pinned by set id and version, fetched onto disk, counted, parsed into structured documents, and split into chunks. Each chunk can be given a vector by the embedding server. The chunks, with their vectors, are indexed in a search engine, and a retrieval service serves search over them to agents as MCP tools: by keyword, by vector, by both fused by rank, or fused and then reranked, as one setting of the service chooses. To use it, see [knowledge/README.md](../../knowledge/README.md).
+The knowledge service makes drug-label retrieval inspectable: a returned passage can be traced through its chunk and parsed document to a pinned DailyMed label. It serves as the lab's Bedrock Knowledge Bases stand-in. Agents access the corpus through two MCP tools; the service owns the search strategy and its filters. Commands are in [knowledge/README.md](../../knowledge/README.md).
+
+The pipeline separates source integrity, text preservation and ranking. Downloads must match the manifest, parsing and chunking must conserve the label's text, and indexing must finish before the search alias moves. Keyword, vector, fused and reranked search then operate on that corpus without changing the agent's tool contract.
 
 ## The corpus as pinned
 
@@ -15,7 +17,7 @@ The corpus of the lab's Bedrock Knowledge Bases stand-in: US drug labels from Da
 | New format, of the pinned | 236 |
 | Old format, of the pinned | 404 |
 
-The corpus holds both prescription and over-the-counter labels. Nothing downstream may assume a label is a prescription label: the document type code in the manifest says which it is.
+The manifest's document type code distinguishes prescription from over-the-counter labels. Downstream stages preserve that distinction rather than treating every label as a prescription label.
 
 ## Terms
 
@@ -25,21 +27,21 @@ The corpus holds both prescription and over-the-counter labels. Nothing downstre
 | Version | A label's version number at DailyMed; it only rises |
 | Benchmark | FDARxBench at one revision: a labels file (set id, drug name, drug id, chunks of text) and a questions file (question, task, source, set id, context passages) |
 | Pin | `knowledge/corpus/benchmark.json`: the benchmark's repository, revision, licence, and each file's path, SHA-256 and size |
-| Manifest | `knowledge/corpus/manifest.json`: per label, set id, version, document id, effective time, published date, document type code, the SHA-256 of the zip and of the XML, the XML's size; and the labels not pinned, each with a reason code |
+| Manifest | `knowledge/corpus/manifest.json`: set id, version, document id, effective time, published date, document type code, zip and XML SHA-256, XML size; unpinned labels with reason codes |
 | Data folder | `knowledge/data/`: the benchmark files, the label XML files, the parsed documents, the chunks, the vectors and the reports. Never tracked, never in an image |
 | Download record | `labels/<set id>/<version>.download.json` beside each XML: the SHA-256 of the zip it came from and of the XML |
-| Stand-in | What the tests use in place of DailyMed, the benchmark's host, the search engine and the model servers: a function or object in memory, given to the code as a value, answering with synthetic data |
+| Stand-in | An injected function or object that supplies synthetic test data in place of DailyMed, the benchmark host, search engine or model servers |
 | Parsed document | `parsed/<set id>/<version>.json`: a label as identity, products and a tree of sections holding blocks (paragraphs, lists, tables, images) and Highlights blocks, with its warnings |
 | Problem | What the parser found wrong: a code, a severity (error or warning), the section id or table position, counts. Never label text |
 | Excluded | A label with an error: it has no parsed file |
 | Chunk | One line of `chunks/<set id>/<version>.jsonl`: a piece of one section's text or of one table, with where it came from and the lines it repeats |
 | Splittable table | A table with a `thead` header, no nested table, no short row, and no wholly bold row below the header except group labels (one filled cell) |
 | Group label | A wholly bold row below the header with exactly one filled cell: it labels the rows under it |
-| Embed report | `embed-report.json`: the embedding identity (model repository, revision, served name, dimensions, document recipe, query instruction), the SHA-256 of the chunk report the vectors were made from, counts, the chunks without a vector, tokens, and the vector files with one SHA-256 over their bytes |
+| Embed report | `embed-report.json`: embedding identity (repository, revision, served name, dimensions, recipe, instruction), source chunk-report SHA-256, counts, missing vectors, tokens and vector-file paths with a combined SHA-256 |
 | Vector file | `vectors/<set id>/<version>.jsonl`: one line per chunk that has a vector, its id and the vector as base64 of little-endian float32 |
 | Embedding identity | Repository, revision, dimensions, recipe, instruction and the vector files' SHA-256, recorded in the index's `_meta`; `null` for an index built without vectors |
 | Search engine | The `search` service: OpenSearch 3.9.0, one node, security plugin off, no published port |
-| Index | `labels-<hash>`: the chunks, one document each, under an explicit mapping. The hash is of the chunk report, the embed report when vectors are loaded, and the index definition |
+| Index | `labels-<hash>`: one document per chunk under an explicit mapping. The hash covers the chunk report, any loaded embed report and the index definition |
 | Strategy | `SEARCH_STRATEGY`, the service's setting: `keyword`, `vector`, `fused` or `fused_reranked`. It says how `search_label` ranks |
 | Alias | `labels`: the name the retrieval service searches. The index command moves it, and only to a complete index |
 | Retrieval service | The `knowledge` service: MCP tools `find_labels` and `search_label` behind the token check |
@@ -91,7 +93,9 @@ flowchart LR
     CH --> CR
 ```
 
-Inside one label, in chunking:
+Parsing and chunking each compare their output with an independent walk of their input. A label that loses or duplicates text produces no output file for that stage. Chunking excludes declared repeated lines from the comparison, so table headers can repeat without hiding duplicated content.
+
+The chunking boundary:
 
 ```mermaid
 flowchart LR
@@ -105,7 +109,7 @@ flowchart LR
     T -- "no" --> N["not chunked: listed with missing and extra"]
 ```
 
-Inside one label, in parsing:
+The parsing boundary:
 
 ```mermaid
 flowchart LR
@@ -123,7 +127,7 @@ flowchart LR
     R -- "yes" --> N["excluded: no file"]
 ```
 
-Inside one download, in pinning and in fetching:
+Pinning and fetching share the download boundary. Archive member names never become filesystem paths; only the manifest's validated set id and version determine the output path.
 
 ```mermaid
 flowchart LR
@@ -134,6 +138,8 @@ flowchart LR
 ```
 
 ## Search and retrieval
+
+The index command builds a content-addressed index and checks every bulk result and the final document count before moving `labels`. Retrieval therefore sees a complete index. A failed build leaves the alias unchanged and attempts to remove its new index.
 
 ```mermaid
 flowchart LR
@@ -174,7 +180,9 @@ flowchart LR
 
 ### Vectors, fusion and reranking
 
-The embedding stage (`knowledge/embed.sh`) asks the embedding server for a vector of every chunk's document text (`<context>\n<text>`, recipe `context-newline-text/1`), in chunk-id order, in batches of 32, and writes one vector file per label and `embed-report.json`. A batch refused as over-length is sent one passage at a time; a passage refused alone gets no vector and is listed. The index build loads each vector with its chunk when the embed report names the chunk report being loaded, and records the embedding identity (repository, revision, dimensions, recipe, query instruction, vector files' SHA-256) in the index's `_meta`. The details, exit codes and numbers are in [knowledge/README.md](../../knowledge/README.md#the-embedding-stage).
+The embedding stage (`knowledge/embed.sh`) represents each chunk as `<context>\n<text>`, recipe `context-newline-text/1`. It processes chunks in id order, in batches of 32, and writes one vector file per label plus `embed-report.json`. An over-length batch is retried passage by passage. A passage refused alone is listed without a vector.
+
+The index accepts those vectors only when the embed report names the chunk report being loaded. Its `_meta` records the embedding repository, revision, dimensions, recipe, query instruction and vector-files SHA-256. That identity connects each query vector to the document representation it must match. Command details are in [knowledge/README.md](../../knowledge/README.md#the-embedding-stage).
 
 `SEARCH_STRATEGY` chooses how `search_label` ranks. The model never chooses it.
 
@@ -185,22 +193,30 @@ The embedding stage (`knowledge/embed.sh`) asks the embedding server for a vecto
 | `fused` | Reciprocal rank fusion of the best 50 by each: score = Σ 1 / (60 + rank); ties by chunk id | As `vector`, plus the keyword search, at once |
 | `fused_reranked` | The best 20 fused, each sent as the text the embedding stage embeds (context line, newline, text), ordered by the reranker's score (`max_tokens_per_doc` 7000); ties by fused rank | As `fused`, plus the reranker |
 
-Before a vector is used the service reads which index the alias points at and the identity it records, and compares it with its configuration (`model/retrieval.env`) and constants: `null` is `vectors_not_built`, any difference `vectors_do_not_match`, and the embedding server is not called. Both legs then search that one index. Fusion is done in the service's code, by rank.
+Before using vectors, the service resolves the alias to one index and compares its recorded embedding identity with `model/retrieval.env` and the recipe constants. A `null` identity returns `vectors_not_built`; a mismatch returns `vectors_do_not_match`. Neither calls the embedding server. Both search legs use the resolved index, so an alias change cannot mix corpora within one search. The service combines their ranks in code.
 
 | Failure | Error result |
 |---|---|
 | The index has no vectors | `vectors_not_built` |
-| The index's vectors were made another way | `vectors_do_not_match` |
+| The index's embedding identity differs from the configured identity | `vectors_do_not_match` |
 | Embedding server not reached; no answer in 3 s; error status, the query refused as too long, a wrong-length vector or an unreadable answer | `embedding_unreachable`, `embedding_timed_out`, `embedding_error` |
 | Reranker not reached; no answer in 5 s; error status, an unreadable answer or one not scoring each passage once | `rerank_unreachable`, `rerank_timed_out`, `rerank_error` |
 | The alias does not exist | `index_not_built` |
 | The alias points at no index or at more than one, under a strategy that uses vectors (a keyword search goes to the alias as it is) | `search_unexpected_answer` |
 
-No failure is retried or falls back to a quieter kind of search. The key goes to the two model servers only. The verdict on an index's embedding identity is kept by index name for the life of the service.
+Search failures are returned without retry or a change of strategy. The model-server key goes only to the embedding and reranking servers. The service caches each index's embedding-identity verdict by index name for its lifetime.
 
 The model servers are reached at `MODEL_EMBED_BASE_URL` and `MODEL_RERANK_BASE_URL` from inside the stack's network. An address of `127.0.0.1` there is the container itself, so servers published on a loopback address of the host are not reached: the embed command exits 2 and a search answers `embedding_unreachable`.
 
-A whole search (`search_label` or `find_labels`) has 8 s from the moment it starts (`SEARCH_LIMIT_MS`, `knowledge/src/search/limits.ts`). Every request it makes gets the smaller of its own limit (engine 5 s, embedding 3 s, reranker 5 s) and what is left; when nothing is left the answer is `search_timed_out`, with a detail naming the step. When a request runs out of time, which limit ran out is decided by what it was given, before it was sent, never by which timer fired first: if it was given what was left of the search (less than its own limit), the search as a whole ran out; otherwise the request's own limit did, and the failure is that request's own (`search_timed_out`, `embedding_timed_out` or `rerank_timed_out`). A search therefore answers inside an agent's 10 s tool limit.
+A whole `search_label` or `find_labels` call has 8 s (`SEARCH_LIMIT_MS`, `knowledge/src/search/limits.ts`), leaving room inside the agent's 10 s tool limit. Each request receives the smaller of its own limit and the remaining search time:
+
+| Request | Own limit | Own timeout result |
+|---|---|---|
+| Engine | 5 s | `search_timed_out` |
+| Embedding | 3 s | `embedding_timed_out` |
+| Reranker | 5 s | `rerank_timed_out` |
+
+If the remaining search time is the smaller limit, a timeout returns `search_timed_out` with the step named in its detail. Otherwise it returns the request's own timeout result. The allotted time determines the error before the request starts, so competing timers cannot change its meaning.
 
 
 | Tool | Returns | Its counterpart in a Bedrock Knowledge Base retrieval result |
@@ -214,7 +230,7 @@ A whole search (`search_label` or `find_labels`) has 8 s from the moment it star
 
 Every tool result is one MCP text item holding JSON: the result, or `{error, detail}` with `isError` set.
 
-The retrieval service accepts a token for the audience `knowledge`, issued to `expert` (the label expert's token, exchanged from its caller's) or `knowledge-gate` (the gate, by client credentials). Its HTTP answers:
+The retrieval boundary requires audience `knowledge`, client `expert` or `knowledge-gate`, and scope `labels:search`. The expert exchanges its caller's token; the gate uses client credentials. Authentication precedes reading the request target and body. HTTP results are:
 
 | Request | Answer |
 |---|---|
@@ -227,7 +243,7 @@ The retrieval service accepts a token for the audience `knowledge`, issued to `e
 | `/mcp` with a method other than `POST` | 405 `{error: "method_not_allowed"}`, `Allow: POST`. The MCP endpoint is stateless and answers in JSON |
 | A failure of the service's own | 500 `{error: "internal_error"}` |
 
-A setting missing or malformed stops the service at start with exit 2, naming the setting.
+A missing or malformed setting stops startup with exit 2 and names the setting.
 
 The agent that calls these two tools is the label expert: [expert-agent.md](expert-agent.md).
 
@@ -237,7 +253,7 @@ The agent that calls these two tools is the label expert: [expert-agent.md](expe
 |---|---|---|
 | The search engine | OpenSearch 3.9.0, by the digest of its multi-architecture index | `knowledge/compose.yaml` |
 | The index's definition | The mapping and settings, part of the index's name | `knowledge/src/search/mapping.ts` |
-| The vectors' identity | The embedding model's repository and revision, the dimensions, the document recipe and the query instruction, recorded in the embed report and the index's `_meta`, and checked by the service before it uses a vector | `model/retrieval.env`, `knowledge/src/vectors/recipe.ts` |
+| The vectors' identity | Repository, revision, dimensions, document recipe and query instruction, recorded in the embed report and index `_meta`; checked before vector use | `model/retrieval.env`, `knowledge/src/vectors/recipe.ts` |
 | The benchmark | Repository, 40-character revision, and each file's SHA-256 | `knowledge/corpus/benchmark.json` |
 | Each label | Set id, version, document id, and the SHA-256 of its XML | `knowledge/corpus/manifest.json` |
 | The image the commands run in | The `run` stage of `toolchain/Dockerfile`, from the Node image pinned there by digest, with the locked run-time dependencies | `toolchain/Dockerfile`, `package-lock.json` |
@@ -253,7 +269,7 @@ The agent that calls these two tools is the label expert: [expert-agent.md](expe
 4. A file name on disk is built only from a manifest's set id, which must be a lowercase GUID, and its version, which must be a positive integer. No name from inside an archive is ever used as a path.
 5. Of each zip, only the one member whose name ends in `.xml` is read. None, or more than one, and the zip is refused.
 6. The XML's size is capped on the bytes the decompressor produces. The size the archive declares is used only to refuse earlier.
-7. The XML reader performs no input or output of its own and expands no entity: a DOCTYPE whose internal subset declares an entity, internal or external, is refused as `xml-doctype-declares-entities`, even when the document uses the entity; a document that is not well-formed is `xml-not-well-formed`.
+7. The XML reader performs no input or output and expands no entity. A DOCTYPE whose internal subset declares an internal or external entity is refused as `xml-doctype-declares-entities`, including when the document uses it. Malformed XML is refused as `xml-not-well-formed`.
 8. A label is written to the data folder only if its XML's SHA-256 equals the manifest's. A file there that does not match, or whose download record is missing, unreadable or names another XML SHA-256, is removed and fetched again.
 9. The fetch report and the census describe what is in the data folder, not what one run did. A run on complete data sends no request and changes no file.
 10. Reasons written to any file are fixed codes, never a parser's message: those of one closed list (`knowledge/src/reasons.ts`) for refusals, and `missing`, `checksum-mismatch`, `no-parsed-file`, `check-failed` and `other` in the census, parse and chunk reports.
@@ -261,26 +277,26 @@ The agent that calls these two tools is the label expert: [expert-agent.md](expe
 12. Every request the corpus commands make, to DailyMed and to the benchmark's host, carries the User-Agent `label-corpus-fetch/1.0` and nothing else that identifies who sent it.
 13. A request that fails during pinning fails the run: every set id is still tried, each failure is named, and nothing is written to `knowledge/corpus/` or `knowledge/data/benchmark/`.
 14. The census runs with no network and writes counts and codes only.
-15. Every setting is a named flag of the tool, given by the script. The tool has no defaults and reads no environment variable, with one exception: the embed command reads the embedding server's address, the key and the model's identity from the environment it is given (`model/.env` and `model/retrieval.env`, passed by `--env-file`), so the key is never on a command line. Every other command is run with no variable.
+15. Scripts pass every setting as a named flag; the corpus tool has no defaults and reads no environment variables except for embedding. The embed command receives the server address, key and model identity through `--env-file` (`model/.env` and `model/retrieval.env`), keeping the key off the command line. Other commands run without those variables.
 16. The parsed document and its problems depend only on the XML bytes: no clock, no randomness, no input or output. The same input gives a byte-identical parsed file and report.
-17. No text of a parsed label is lost or doubled without an error: every label passes the check that no text was lost, or gets `text-not-conserved` and no parsed file. The check compares the parsed document with every text node of the XML's body, not with what the parser read.
+17. Lost or duplicated label text produces `text-not-conserved` and no parsed file. The conservation check independently compares the parsed document with every text node in the XML body.
 18. A label with any error has no parsed file in the data folder; one left by an earlier run is removed.
 19. Highlights text is only ever in a section's Highlights blocks, never in its own blocks.
-20. In a table's grid every position is covered by at most one cell, and empty positions are only ever at the end of a short row, where the label's own cells stop. Anything else excludes the label with `table-not-rectangular`. No cell is moved to fill a gap.
+20. Each table-grid position belongs to at most one cell. Empty positions may occur only at the end of a short row. Overlaps or internal gaps exclude the label with `table-not-rectangular`; cells are never moved to fill gaps.
 21. The parse report holds identifiers, codes from the fixed lists, element names and numbers only.
 22. Text the parser does not understand is kept where it sits; its element is reported by name and count.
 23. For every table row the parsed document records whether it is wholly bold and how many of its cells have text. Which rows are column headings beyond the one inference rule is not decided here.
 24. The chunks depend only on a parsed document and two named settings, the text limit and the table limit. The same input gives byte-identical chunk files and report.
-25. Every word of a label's blocks and Highlights is in exactly one chunk's text outside its `repeated` lines, or the label gets no chunk file. The check compares the chunks with every block and Highlights block of the parsed document, not with what the splitter wrote.
+25. Every word in a label's blocks and Highlights appears exactly once outside chunk `repeated` lines, or no chunk file is written. The check independently compares the chunks with every block and Highlights block in the parsed document.
 26. A chunk id depends only on the set id, version, section, part and the chunk's position in the section and part.
-27. A table that is not splittable is one chunk, whatever its size, and so is a splittable table with fewer than two body rows. A split table's chunks each hold the caption, every header row and the group label in force: the first holds the caption and header rows in their place, and each later one repeats them and lists them in `repeated`. No chunk ends on a group label, unless it is the table's last row, or inside a row span. A chunk of one row may pass the table limit.
+27. Unsplittable tables and tables with fewer than two body rows remain one chunk, regardless of size. Every split-table chunk includes the caption, all header rows and the active group label. The first chunk retains the original caption and headers; later chunks mark their copies as `repeated`. Chunks never end inside a row span. A chunk may end on a group label only if it is the table's last row. A single-row chunk may exceed the table limit.
 28. A chunk of type `table` or `table-rows` holds one table and no other text. A table inside a list item is written, in plain form, into the list's `text` chunk.
-29. The alias `labels` points only at an index into which the engine accepted every item, and whose count of documents equals the number of chunks read. Any failure once the run may have made a new index (a refused item, a count that differs, a create, bulk request, refresh, count or alias move that fails or gets no answer) leaves the alias where it was and removes the new index; if the removal fails, the run names the index left behind. An index the alias points at is never removed: one with the wrong count stops the run (exit 2). An index with this name, the wrong count and no alias on it is removed and built again.
-30. An index's name is a hash of the chunk report, the embed report when vectors are loaded, and the mapping. The chunk report records the SHA-256 of every chunk file and the embed report that of the vector files, and the index command refuses a file that does not match, so a change to any chunk's or vector's bytes is a new index. Indexing unchanged chunks and vectors changes nothing. An embed report made from other chunks builds nothing.
+29. The alias `labels` moves only after the engine accepts every item and its document count equals the chunks read. A refused item, count mismatch, or failed or unanswered create, bulk, refresh, count or alias request leaves the alias unchanged and triggers removal of the new index. Failed removal names the index left behind. An aliased index is never removed: a wrong count stops the run with exit 2. An unaliased index with the expected name but wrong count is removed and rebuilt.
+30. An index name hashes the chunk report, the embed report when vectors are loaded, and the mapping. Those reports include the chunk and vector files' SHA-256 values, which indexing verifies. Changed bytes therefore identify a new index; unchanged chunks and vectors change nothing. An embed report for different chunks builds nothing.
 31. The search engine publishes no port. Only containers on the stack's network reach it.
-32. Every request to the retrieval service but `GET /ping` needs a valid access token with audience `knowledge` and the scope `labels:search`, judged before anything else of the request is read: the target, then the body.
-33. `search_label` searches one label only. The set id filter is set by code and is exact, and the query goes only into a full-text match, never a query language. Input outside the limits (a query over 1,000 characters, a drug name over 200, `max_results` outside 1 to 10, an unknown part, a set id that is not a lowercase GUID) is refused with `invalid_input` before anything is sent. A request body over 100 kB is refused with 400.
-34. The strategy is the service's setting, never the caller's or the model's: no tool argument names it. Every strategy searches under the same filters set in code. A failure of the embedding server, the reranker or the engine is an error result naming it, never a search by another strategy. A vector is used only from an index whose recorded embedding identity matches the service's, and both legs of a search run against that one index.
+32. Every retrieval request except `GET /ping` requires a valid token with audience `knowledge` and scope `labels:search`. The token is checked before the target and body are read.
+33. `search_label` searches one label through an exact set-id filter set by code. The query is full-text input, never a query language. Queries over 1,000 characters, drug names over 200, `max_results` outside 1 to 10, unknown parts and set ids other than lowercase GUIDs return `invalid_input` before any request is sent. Bodies over 100 kB return 400.
+34. Service configuration owns the strategy; tool arguments cannot choose it. Every strategy uses the same code-defined filters. Embedding, reranking and engine failures return named errors without changing strategy. Vector use requires a matching embedding identity, and both search legs use that one index.
 35. The model servers' key is sent to the two model servers only, and appears in no result, error or output line.
 36. An engine answer is read as a result only when it is whole: one that says it timed out or that a shard failed, or holds a version that is not a whole number of 1 or more, is an error result.
 37. No parser's message about label data reaches the index command's or the gate's output: a line that is not JSON is named by its file and line number.
@@ -295,10 +311,10 @@ The agent that calls these two tools is the label expert: [expert-agent.md](expe
 |---|---|---|---|
 | Build the image | `docker build`, stage `run` of `toolchain/Dockerfile`, `PIECE=knowledge` | npm registry, for the locked dependencies | None |
 | `pin` | The image, as the host user, read-only root filesystem, no capabilities | DailyMed and GitHub | `corpus/` read-write, `data/` read-write |
-| `fetch` | The same | DailyMed and GitHub | `corpus/` read-only, `data/` read-write |
-| `census` | The same | None | `corpus/` read-only, `data/` read-write |
-| `parse` | The same | None | `corpus/` read-only, `data/` read-write |
-| `chunk` | The same | None | `corpus/` read-only, `data/` read-write |
+| `fetch` | Corpus image, host user, read-only root, no capabilities | DailyMed and GitHub | `corpus/` read-only, `data/` read-write |
+| `census` | Corpus image, host user, read-only root, no capabilities | None | `corpus/` read-only, `data/` read-write |
+| `parse` | Corpus image, host user, read-only root, no capabilities | None | `corpus/` read-only, `data/` read-write |
+| `chunk` | Corpus image, host user, read-only root, no capabilities | None | `corpus/` read-only, `data/` read-write |
 | `embed` | The same image, on the stack's network, with `model/.env` and `model/retrieval.env` by `--env-file` | The embedding server | `corpus/` read-only, `data/` read-write |
 | `index` | The same image, on the stack's network | The search engine only | `corpus/` and `data/` read-only |
 | `search` service | OpenSearch, no capabilities, no new privileges, not read-only (it writes its keystore at start) | The stack's network, no published port | None; a named volume for its data |
@@ -313,7 +329,7 @@ The agent that calls these two tools is the label expert: [expert-agent.md](expe
 | `text-not-conserved` | error | The token collections of side A and side B differ; gives missing and extra | Excluded |
 | `table-not-rectangular` | error | After spans, two cells claim one position, a span passes the last row, or a row has an empty position before a covered one | Excluded |
 | `no-sections` | error | No section of the body has a title or a block | Excluded |
-| `unreadable` | error | The XML reader refused the file (its reason is a `reasons.ts` code), or the XML is missing (`missing`) or does not match the manifest (`checksum-mismatch`) | Excluded |
+| `unreadable` | error | XML reader refusal (`reasons.ts` code), missing XML (`missing`), or manifest mismatch (`checksum-mismatch`) | Excluded |
 | `section-untitled`, `section-unclassified` | warning | A section with no title; a section coded 42229-5 | Written |
 | `table-header-inferred`, `table-header-none`, `table-caption-inferred`, `table-nested` | warning | How a table's header and caption were found; a table inside a cell | Written |
 | `section-images-only`, `footnote-reference-unmatched`, `element-unknown` | warning | A section of images only; a reference to no footnote; an element not known, by name and count | Written |
@@ -333,7 +349,7 @@ The agent that calls these two tools is the label expert: [expert-agent.md](expe
 | A benchmark file answers 404, is over 256 MiB, or holds a line that is not a record; a history that cannot be read; a manifest that would fail its schema | The run fails, nothing written to `corpus/`, exit 1 | A benchmark file refused (`download-failed`, `benchmark-checksum-mismatch`), run carries on, exit 1 |
 | A tracked file fails its schema | Not applicable | Nothing fetched, exit 2 |
 
-In the census, a pinned label that is missing from the data folder or does not match is listed as not counted and the census exits 1; a benchmark file missing or not matching the pin stops it with exit 2.
+The census lists missing or mismatched pinned labels as not counted and exits 1. A missing benchmark file or a mismatch with its pin stops the census with exit 2.
 
 ## Who owns what
 
@@ -359,11 +375,11 @@ In the census, a pinned label that is missing from the data folder or does not m
 
 ## What is not present
 
-- No security on the search engine: its security plugin is off, so it has no TLS, no sign-in and no access control. Any container on the stack's network can read, change or delete its indexes; only the absence of a published port keeps everything else out.
+- The search engine's security plugin is off: no TLS, sign-in or access control. Any container on the stack's network can read, change or delete indexes. The engine publishes no port, so access is bounded by that network.
 - No Bedrock data source.
 - No record of which passages the reranker read only in part (over 7,000 tokens).
 - One passage of the corpus is over the embedding model's limit: it has no vector and is found by keyword only.
-- Vectors are not bit-for-bit repeatable across runs of the embedding stage, which is why the index is named from the vectors it holds.
+- Embedding runs do not guarantee bit-identical vectors. The index name includes the vector files' hash so different bytes identify a different index.
 - No approximate (HNSW) vector search: each vector search is exact, over the documents of one label.
 - No check of the reranker's repository or revision: the service names the reranker only by its served name.
 - No removal of old indexes, and no backup of an index: it is rebuilt from the chunks.

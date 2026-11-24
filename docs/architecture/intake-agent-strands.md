@@ -1,14 +1,16 @@
 # Intake agent, on Strands
 
-The same agent as the [hand-written one](intake-agent-handwritten.md), with Strands running the loop and AWS's SDK server serving the contract. It has the same prompt, the same rules, the same limits, the same contract and the same case system. This document covers only what differs. Terms, the untrusted-text flow, the "Always true" list and the "Not present" list are in the hand-written agent's document and apply here unless a section below says otherwise.
+This implementation uses Strands to run the intake agent's model loop and the AgentCore SDK server to serve its contract. It shares the [hand-written agent's](intake-agent-handwritten.md) prompt, run rules, configured limits and case system. Strands hooks apply those rules around model and tool calls.
+
+This document covers the implementation differences. The hand-written agent's terms, untrusted-text flow, invariants and known limits also apply, except where a difference is identified below.
 
 Strands is `@strands-agents/sdk` 1.25.0, the TypeScript SDK. To run the agent, see [agents/README.md](../../agents/README.md).
 
-The contract is served by `BedrockAgentCoreApp` from `bedrock-agentcore` 0.4.6, behind a local stand-in for AgentCore Runtime's front door; how, and where it answers differently from the hand-written server, is in [agent-runtime.md](agent-runtime.md).
+`BedrockAgentCoreApp` from `bedrock-agentcore` 0.4.6 serves the contract behind a local stand-in for AgentCore Runtime's front door. [Agent runtime](agent-runtime.md) describes that boundary and its response differences from the hand-written server.
 
-Strands is used the way it comes. Its default model is Amazon Bedrock; here the local model server takes that place, through Strands' OpenAI model on that model's default API, the Responses API.
+Strands uses the local model server through `OpenAIModel` and its default Responses API, in place of the SDK's default Bedrock model.
 
-## What is shared and what is not
+## Shared responsibilities and implementation differences
 
 | Part | Hand-written agent | Strands agent |
 |---|---|---|
@@ -16,11 +18,13 @@ Strands is used the way it comes. Its default model is Amazon Bedrock; here the 
 | Rules of a run, its record, its endings | `intake/run.ts` (rules); `run/state.ts`, `run/steps.ts`, `run/turns.ts`, `run/endings.ts` (state, record, endings) | The same files |
 | Limits and sampling settings | `intake/settings.ts` (limits), `run/sampling.ts` (sampling) | The same files |
 | Startup and environment | `intake/serve.ts`, `run/serve.ts` | The same files, plus `LOCAL_RUNTIME_EDGE` |
-| Who may call, and where | `AUTH_ALLOWED_AUDIENCE` `intake-handwritten`, `AUTH_ALLOWED_CLIENTS` `desk,lab-explorer`, published on port 8080 | `AUTH_ALLOWED_AUDIENCE` `intake-strands`, `AUTH_ALLOWED_CLIENTS` `desk,orchestrator,lab-explorer` (the orchestrator calls it to screen every message), published on port 8081 |
+| Audience (`AUTH_ALLOWED_AUDIENCE`) | `intake-handwritten` | `intake-strands` |
+| Clients (`AUTH_ALLOWED_CLIENTS`) | `desk,lab-explorer` | `desk,orchestrator,lab-explorer`; the orchestrator screens every message through this agent |
+| Published port | 8080 | 8081 |
 | HTTP surface | `contract/server.ts`, written by hand | `BedrockAgentCoreApp` (`contract/sdk-app.ts`), behind the local edge (`contract/edge.ts`), started by `contract/runtime.ts` |
 | The access-token check | `shared/access-token.ts`, in `contract/server.ts` | The same file, in the edge and again in `contract/sdk-app.ts` |
 | Exchanging the caller's token for the case-system token | `tools/tool-token.ts` (`connectWithToolToken`, wired in `intake/main-handwritten.ts`) | `tools/tool-token.ts` (`toolToken`), called in `handleInquiry`, with the exchange given in `StrandsDeps` |
-| Context headers and the case-system token on requests to the case system, the two tools a run needs and is shown, reading a case system answer | `tools/case-system.ts` (`caseSystemHeaders`, `missingCaseTools`, `isCaseTool`), which reads answers through `tools/mcp-answers.ts` | The same functions |
+| Case-system headers, required tools and result parsing | `tools/case-system.ts` (`caseSystemHeaders`, `missingCaseTools`, `isCaseTool`), which reads answers through `tools/mcp-answers.ts` | The same functions |
 | The loop | `intake/handwritten.ts` | Strands' `Agent` |
 | Request to the model | `model/chat.ts`: chat completions, one JSON response | Strands' `OpenAIModel` on its default: the Responses API, streamed. The report check alone goes through `model/chat.ts`, as in the hand-written agent, outside Strands |
 | Connection to the case system | `@modelcontextprotocol/sdk` 1.32.2 client | Strands' `McpClient`, on `@modelcontextprotocol/client` 2.4.0 |
@@ -74,7 +78,9 @@ flowchart LR
 
 `intake/strands.ts` is the only file of the intake agent that imports Strands. The label expert's `expert/strands.ts` and the orchestrator's `orchestrator/strands.ts` are the only others in `agents/`.
 
-Before anything is connected, `handleInquiry` exchanges the caller's token for the case-system token, within the tool limit, 10 s, or what the run has left. A refused exchange, or one that cannot be made, ends the run `failed` with the same reasons as the hand-written agent: no MCP client is made and the model is not asked. Connecting to the case system and listing its tools then share one time limit of their own, asked of the run's deadline again after the exchange: the tool limit, or what the run has left by then. The hand-written agent differs here: its exchange and its connection share one tool limit. A connection that fails or runs out of time ends the run `failed`, with the same three reasons as the hand-written agent: not reached, the token refused, or the token not checkable. A case system that does not offer both `create_case` and `add_follow_up` ends it `failed`, naming what is missing. Only those two become `CaseTool`s: any other tool it offers is not given to the `Agent`, so the model is not shown it.
+`handleInquiry` first exchanges the caller's token for a case-system token. The exchange has at most 10 s, bounded by the run's remaining time. If it fails, the run ends `failed` with the same reasons as the hand-written agent; no MCP client is created and the model is not called.
+
+Connecting and listing tools then share a separate limit of at most 10 s, recalculated from the run's remaining time. The hand-written implementation instead shares one tool limit between exchange and connection. Connection failures distinguish an unreachable case system, a refused token and a token the case system cannot check. Missing `create_case` or `add_follow_up` also fails the run, naming the missing tool. Only those two tools become `CaseTool`s visible to the model.
 
 ## One request, end to end
 
@@ -133,7 +139,7 @@ sequenceDiagram
 
 ## Where each rule is applied
 
-The rule is one function in `intake/run.ts` or `run/turns.ts` in both agents. This table shows what each agent does with its answer.
+Both implementations call the same rule functions in `intake/run.ts` and `run/turns.ts`. The difference is where the loop applies each result.
 
 | Rule | Hand-written loop | Strands |
 |---|---|---|
@@ -141,16 +147,16 @@ The rule is one function in `intake/run.ts` or `run/turns.ts` in both agents. Th
 | A lost write is repeated once by code (`afterCall` says `repeat`) | `runToolCall` calls again | `AfterToolCallEvent`: `event.retry = true` |
 | A write still unanswered fails the run (`afterCall` says `unsettled`) | `loop` returns `failed` | `AfterToolCallEvent` aborts a cancel signal this file owns |
 | A turn lost to thinking is asked again with thinking off (`askAgainWithoutThinking`) | `loop` continues with `thinking = false` | `AfterModelCallEvent`: `model.updateConfig`, then `event.retry = true` |
-| A failed request to the model is sent again | `askModel`: at most three requests for a turn | Not in this file. The OpenAI client inside Strands' model, then Strands' retry strategy, both as they come (see "A failed request to the model") |
+| Model request retries | `askModel`: at most three requests per turn | The OpenAI client and Strands retry strategy retain their defaults; see "A failed request to the model" |
 | Turn limit | The `for` loop | `limits.turns` on `invoke` |
 | Time limit | Checked at the top of each turn | Checked in `BeforeModelCallEvent`, plus a timer on the cancel signal for a request in flight |
 | Time limit on one tool call | `ToolSet.call` takes a timeout | `CaseTool` passes `timeoutMs` to `McpClient.callTool` |
 | How the run ends | Returned where it is decided | Decided after `invoke` returns, from the run's own state. Strands' stop reason is read last |
-| At the model's reply, with no case recorded: the report check, then `afterReply` (`atReply` in `intake/report-check.ts`) | Made in `loop`; told once is one more turn of the same loop | Made after `invoke` returns, outside Strands, with the chat client. Told once is a second `invoke` of the same `Agent`: the same hooks, the same cancel signal (so the same deadline), and as turns what the first left, counted as model turns answered |
+| Reply with no case: report check and `afterReply`, through `atReply` | Runs inside `loop`; the reminder starts another turn | Runs after `invoke`, through the chat client. The reminder starts a second `invoke` on the same `Agent`, with the existing hooks, cancel signal, deadline and remaining turn allowance |
 
 ## What Strands does differently
 
-The rules themselves are the same functions in both agents. What follows is what Strands' own loop does differently around them, as its source and this file's code have it.
+The shared rules do not remove differences in parsing, retries, cancellation and turn accounting. The adapter handles those differences as follows.
 
 | Situation | Hand-written loop | Strands | What this file does about it |
 |---|---|---|---|
@@ -161,28 +167,28 @@ The rules themselves are the same functions in both agents. What follows is what
 | The model names a tool that does not exist | Tells the model which tools exist | Tells the model `Tool '<name>' not found in registry` | Records the step |
 | A tool result is an error | The model is sent the result as it is | The model is sent it with `[ERROR] ` in front | Nothing |
 | A turn lost to thinking is asked again | Counts as one of the 6 turns | Not counted, so a run can have 7 turns | Nothing |
-| The run's time runs out while a request is in flight | The request was given only the time left, so it times out | The cancel signal's timer stops the request | Reports a model request as a model that did not answer, and a write as not known, as the hand-written loop does |
+| Run deadline during a request | The request times out at the remaining run limit | The cancellation timer stops the request | Reports an unanswered model request or an uncertain write, as the hand-written loop does |
 | How a turn ended, as recorded | The server's words: `stop`, `tool_calls`, `length` | Strands' words: `endTurn`, `toolUse`, `maxTokens` | Records what it is given |
 | How thinking is turned off | `chat_template_kwargs`, which the model server passes to the model's chat template | `reasoning.effort: 'none'`, the Responses API's own setting | Sets it through `model.updateConfig` |
 | The request, as sent | Chat completions: a list of messages | The Responses API: instructions, then a list of input items | Nothing |
 | A failed request to the model is sent again | Each failure is an error step | The OpenAI client sends it again inside itself. No hook is called | Nothing. The record shows only a failure that reached Strands |
 | The model never answers | One request. The run fails when its time allowed runs out | The OpenAI client sends the request again, until the run's time limit | Nothing. The run's own time limit is what ends it |
-| The model answers 429 three times in a row | The run fails: it has made its three requests | The client's three requests are one failed call to Strands, which waits and asks again | Records the failed call as an error step, and does not count it as how the run ended if a later attempt answers |
+| Three consecutive 429 responses | The three-request limit fails the run | The client reports one failed call to Strands, which waits and retries | Records the failed call as an error step; a later success can still complete the run |
 | Strands stops the run with an error no other row names | Not applicable | `invoke` throws | Ends the run `failed`: "Strands stopped the run with" the error's type, recorded as an error step |
-| A write gets no answer and the run's time is already out | Repeats it with the time left, none, so the repeat gets no answer either; the run fails as a write not answered twice | Is already stopping the run, so no repeat is made | Ends the run `failed`: the write is not known, and the time ran out before it could be repeated. Both outcomes are `failed` as not known |
+| Unanswered write at the run deadline | Attempts the repeat with no time left; fails as an unanswered write | Cancellation prevents the repeat | Returns `failed`, explaining that the write is uncertain and time expired before retry |
 
-Several tool calls in one turn are run by both, in order, and the model is sent every result.
+Both implementations execute a turn's tool calls sequentially and return their results to the model.
 
 ### A failed request to the model
 
-Nothing is set. Two layers send a failed request again, and the run's time limit stops both.
+The adapter leaves model retries at their SDK defaults. Two layers can retry a request; the run's deadline bounds both.
 
 | Layer | Sends again when | How many | Wait |
 |---|---|---|---|
 | The OpenAI client inside `OpenAIModel` | The connection failed, the request timed out, or the status is 408, 409, 429 or 5xx | 3 requests at most | About 0.5 s, then 1 s |
-| Strands' `DefaultModelRetryStrategy` | The call failed as throttling or as a network error. On `OpenAIModel` only throttling is ever reported: status 429, or a rate-limit message | 6 attempts at most, each a call to the client above | Random, from nothing up to 4 s, then up to 8 s, doubling |
+| Strands' `DefaultModelRetryStrategy` | Throttling or network errors. `OpenAIModel` reports only throttling to this layer: status 429 or a rate-limit message | 6 attempts at most, each a call to the client above | Random, from nothing up to 4 s, then up to 8 s, doubling |
 
-What follows:
+These layers produce the following behaviour:
 
 - **A model that answers 500** gets three requests and the run fails, as in the hand-written agent.
 - **A model that keeps answering 429** can get up to 18 requests.
@@ -204,11 +210,11 @@ Each is set in `intake/strands.ts`: the `McpClient` for each message in `handleI
 
 ## Not present, in addition
 
-Everything in the hand-written agent's "Not present" list is also absent here, including special handling of a token the case system refuses mid-run: such a tool call falls under the rules for a call that got no answer. The refusal at connection is named in the same two reasons as the hand-written agent's, read from the error Strands' MCP client raises. Three more follow from Strands:
+The hand-written agent's "Not present" list also applies. In particular, a token refused during a run follows the unanswered-write rules. A refusal during connection uses the same reasons as the hand-written agent, extracted from the MCP client's error. The Strands implementation has these additional limits:
 
 | Missing | What follows |
 |---|---|
-| The model's reasoning text in the record | Strands reads it into the message, but this agent records only the reply text, so as in the hand-written agent only its cost appears in `output_tokens`. Strands does not send reasoning back to the model on later turns over the Responses API, and logs a warning each time it leaves it out |
+| Reasoning text in the record | The agent records reply text and `output_tokens`, excluding reasoning text. Strands also omits reasoning from later Responses API requests and logs a warning for each omission |
 | Control of what Strands writes to the log | Strands logs its own warnings and errors to the container's output, including a stack trace when tool arguments cannot be parsed |
-| A smaller image | Strands requires the AWS SDK's Bedrock client and the OpenAI client, and the AgentCore SDK brings Fastify and more AWS SDK clients. All four agents run from one image, `ai-on-aws-agents:local`, so the hand-written agent's container carries them too |
+| Separate minimal images | All four agents share `ai-on-aws-agents:local`. It includes Strands' Bedrock and OpenAI clients, plus Fastify and the AgentCore SDK's AWS clients, even in the hand-written agent's container |
 

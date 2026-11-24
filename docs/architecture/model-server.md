@@ -1,22 +1,30 @@
 # Model server
 
-The lab's stand-in for hosted models: three vLLM processes on one NVIDIA GPU,
-each serving one model behind an OpenAI-compatible API and one shared key.
-The chat server serves the chat model with tool calling, the embedding server
-an embedding model, the reranker server a reranker. Everything else in the lab
-reaches them by their URLs and that key.
+Three vLLM processes share one NVIDIA GPU and stand in for hosted models
+through OpenAI-compatible APIs: chat with tool calling, embeddings, and
+reranking. Each process serves one model. Agents and the knowledge service
+reach them through configured URLs and authenticate with one shared key.
 
-## Terms
+Setup runs from the **control machine**, which may also be the **GPU
+machine**. It selects a chat profile that fits alongside the two retrieval
+models, downloads pinned weights, starts the servers, and checks that they
+meet the lab's requirements. When the machines are separate, the GPU machine
+needs no copy of the repository.
 
-| Term | Meaning |
-|---|---|
-| GPU machine | the machine with the NVIDIA GPU; it runs the servers |
-| Control machine | the machine `setup.sh` is run from; it may be the GPU machine |
-| Machine settings | `model/.env`: address, the three ports and URLs, cache directory, user, key. Ignored by git |
-| Profile | a file in `model/profiles/`: a chat model at a pinned revision, its context length, how many requests it serves at once, the size of its context cache in bytes, and the chat server's start-up share of the card |
-| Retrieval settings | `model/retrieval.env`: the embedding model and the reranker, each at a pinned revision, with its name, longest input, cache size in bytes and start-up share of the card; the embedding model's number of dimensions. The same for every profile |
-| Gate | `model/gate/`: the check that decides whether the running servers are fit for the lab |
-| Tier | a profile, with the free GPU memory it and the two retrieval servers need. Listed in `model/tiers.json` |
+## Configuration boundary
+
+Three files configure the servers, passed explicitly by name:
+
+| Configuration | Location | Controls |
+|---|---|---|
+| Machine settings | `model/.env`, ignored by git | Bind address, ports and URLs, cache directory, user and API key |
+| Chat profile | `model/profiles/` | Chat model and revision, context length, concurrency, cache bytes and startup memory share |
+| Retrieval settings | `model/retrieval.env` | Embedding and reranker models and revisions, served names, input limits, cache bytes, startup memory shares and embedding dimensions |
+
+Retrieval settings are the same for every chat profile. A **tier** combines
+a chat profile with the free GPU memory needed for all three servers, as
+recorded in `model/tiers.json`. The **gate**, in `model/gate/`, checks the
+running servers against the same requirements for every tier.
 
 ## Servers
 
@@ -28,15 +36,17 @@ reaches them by their URLs and that key.
 
 Each also serves `/v1/models`, which lists its served name, and `/health`, which its health check reads. Each listens on port 8000 in its container.
 
-Where the knowledge piece meets these servers:
+The knowledge pipeline and retrieval service use the following settings:
 
-| Setting | From | Read by the knowledge piece as |
+| Setting | From | Purpose |
 |---|---|---|
-| `MODEL_EMBED_BASE_URL`, `MODEL_RERANK_BASE_URL`, `MODEL_API_KEY` | machine settings | where the embedding stage and the retrieval service send requests, and the key they carry |
-| `EMBED_MODEL_ID`, `RERANK_MODEL_ID` | retrieval settings | the served names each request names |
-| `EMBED_MODEL_REPO`, `EMBED_MODEL_REVISION`, `EMBED_DIMENSIONS` | retrieval settings | the vectors' identity, recorded in the embed report and the index and compared by the service before it uses a vector |
+| `MODEL_EMBED_BASE_URL`, `MODEL_RERANK_BASE_URL`, `MODEL_API_KEY` | machine settings | Embedding and reranking destinations, and the request key |
+| `EMBED_MODEL_ID`, `RERANK_MODEL_ID` | retrieval settings | Model names sent in API requests |
+| `EMBED_MODEL_REPO`, `EMBED_MODEL_REVISION`, `EMBED_DIMENSIONS` | retrieval settings | Vector identity recorded in the embed report and index, then checked by the retrieval service |
 
-The knowledge piece runs in containers on the lab's network and reaches these URLs from there. A server published on a loopback address of the host is not reachable from those containers.
+These requests originate in containers on the lab's network. A model server
+published only on its host's loopback address is not reachable from those
+containers.
 
 ## Setup
 
@@ -135,19 +145,32 @@ With `--check`, setup stops after the disk check and prints the tier it would se
 | `docker compose ... up -d chat embed rerank` | chat starts first; the embedding and reranker servers wait until it reports healthy |
 | Set up again | refused until all three are stopped |
 
-## Where each step runs
+## Execution and side effects
 
-| Step | Runs on | Changes anything |
+`model/setup.sh` sequences the work. `model/setup/tool.ts` makes the decisions:
+flag validation, tier selection, disk capacity, machine settings, health,
+model capacity and exit codes. The tool runs in the pinned Node image on
+the control machine with no network.
+
+| Step | Runs on | Side effect |
 |---|---|---|
-| Parse flags, select a tier, decide the disk verdict | control machine | no |
-| Ask Docker's version when `--host` is given; list the lab's running servers; run the pinned Node image, once as a trial and then for the GPU probe and the disk probe; look for the server image; inspect the cache directory and Docker's storage | GPU machine | no, except that a Node image the machine lacks is pulled |
-| Write machine settings | control machine | `model/.env` |
-| Download weights of the three models | GPU machine | the cache directory |
-| Run the three servers, one at a time, each waited on until healthy for at most 900 seconds | GPU machine | three containers |
-| Check capacity from the chat and embedding servers' start-up logs | control machine | no |
-| Gate, on the host's network when the servers are published on a loopback address | control machine | `model/gate-report.json`; an earlier one is removed before the downloads |
+| Parse flags, select a tier, check disk capacity | Control machine | None |
+| Check Docker, running servers, GPU, cache and storage | GPU machine | Pulls the pinned Node image if absent |
+| Write machine settings | Control machine | Creates `model/.env` |
+| Download three models' weights | GPU machine | Populates the cache directory |
+| Start servers sequentially, allowing up to 900 seconds each to become healthy | GPU machine | Creates three containers |
+| Check chat and embedding capacity from startup logs | Control machine | None |
+| Run the gate | Control machine | Writes `model/gate-report.json` |
 
-Every decision (flags, selection, disk verdict, the text of machine settings, health, capacity, exit codes) is made by `model/setup/tool.ts`, run in the pinned Node image on the control machine with no network. The exceptions are the refusals `setup.sh` makes itself, before the tool can run, each with exit 2: `DOCKER_HOST` or a variable that would override the three files set in the shell, Docker missing or not answering, and the tool not starting.
+The GPU checks include Docker's version when `--host` is supplied, a trial
+run of the Node image, GPU and disk probes, and checks for the server image,
+cached weights and Docker storage. The gate uses the host network when the
+servers are published on loopback. Setup removes any previous gate report
+before downloading weights.
+
+Before the tool can run, `setup.sh` rejects the following with exit 2:
+`DOCKER_HOST` or an overriding configuration variable in the shell, Docker
+missing or not responding, and failure to start the tool.
 
 ## What the gate checks
 
@@ -178,13 +201,17 @@ Every decision (flags, selection, disk verdict, the text of machine settings, he
 
 ## Ownership
 
-| Thing | Where | Read by |
+| Owner | Responsibility | Consumers |
 |---|---|---|
-| Server and download definitions | `model/compose.yaml` | setup, a person starting the servers by hand |
-| Profiles | `model/profiles/` | the chat server, the gate, setup |
-| Retrieval settings | `model/retrieval.env` | the embedding and reranker servers, the gate, setup; in the knowledge piece, the embedding stage, the retrieval service and the knowledge gate |
-| Tiers: chat peaks, retrieval peaks, margin, download sizes, the server image's size on disk, minimum driver and GPU compute capability | `model/tiers.json` | setup |
-| Machine settings | `model/.env` | the servers, the gate, the rest of the lab (the agents; the knowledge piece's embedding stage and retrieval service) |
-| Setup: sequencing | `model/setup.sh` | a person |
-| Setup: decisions, as pure functions with tests | `model/setup/` | `setup.sh` |
-| Gate, its thresholds and its fixed synthetic set | `model/gate/` | setup, a person |
+| `model/compose.yaml` | Server and download definitions | Setup and manual server commands |
+| `model/profiles/` | Chat model settings | Chat server, gate and setup |
+| `model/retrieval.env` | Embedding and reranker settings | Retrieval servers, setup, model gate, knowledge embedding stage, retrieval service and knowledge gate |
+| `model/tiers.json` | Memory and disk requirements; hardware minimums | Setup |
+| `model/.env` | Machine settings | Servers, gate, agents, knowledge embedding stage and retrieval service |
+| `model/setup.sh` | Setup sequence | Operator |
+| `model/setup/` | Setup decisions as pure functions | `setup.sh` |
+| `model/gate/` | Checks, thresholds and fixed synthetic dataset | Setup and direct gate commands |
+
+Tier requirements include chat, embedding and reranker memory peaks, a
+margin, download sizes and server-image disk size. Hardware minimums cover
+the driver and GPU compute capability.

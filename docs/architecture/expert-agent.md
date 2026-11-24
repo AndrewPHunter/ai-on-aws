@@ -1,8 +1,10 @@
 # Label expert, on Strands
 
-One agent in one container. It receives a question about a medicine and answers it only from the text of that medicine's approved label, as the [retrieval service](knowledge.md#search-and-retrieval) returns it. Every statement it returns has been checked in code against the passage it cites. It writes nowhere: it calls the model and the retrieval service's two tools, nothing else. To run it, see [agents/README.md](../../agents/README.md).
+The label expert answers questions about a medicine from its approved label, supplied by the [retrieval service](knowledge.md#search-and-retrieval). The model selects passages and proposes an answer; code checks its citations, quotes, numbers and units before returning it. These checks establish specific relationships to the cited text, not whether the text supports every claim.
 
-It serves the same contract as the intake agents, through the same startup (`run/serve.ts`), on AWS's SDK server behind the local edge, as the intake agent on Strands does ([agent-runtime.md](agent-runtime.md)). Its loop is Strands', used as the [intake agent on Strands](intake-agent-strands.md) uses it.
+The agent makes no case changes and has two retrieval tools: `find_labels` and `search_label`. For startup instructions, see [agents/README.md](../../agents/README.md).
+
+It shares the intake agents' contract and startup (`run/serve.ts`). The [AgentCore SDK server and local edge](agent-runtime.md) serve requests, and Strands runs the model loop with the same integration pattern as the [Strands intake agent](intake-agent-strands.md).
 
 ## Terms
 
@@ -10,7 +12,7 @@ It serves the same contract as the intake agents, through the same startup (`run
 |---|---|
 | Label | One approved drug label, one version of it, identified by its set id |
 | Passage | One chunk of a label's text, as `search_label` returns it: its text, section, part (body or Highlights), type and the label's version, date and page |
-| Handle | The short name of a passage: `P1`, `P2`, … in the order first seen in the run. A passage seen again keeps its handle. The model sees it for a passage it is shown; the retrieval step records it for every passage |
+| Handle | A stable passage identifier within the run: `P1`, `P2`, … in first-seen order. Retrieval steps record every handle; the model receives handles only for passages it has been shown |
 | Shown | A passage whose whole text the model was given. Only a shown passage can be cited |
 | Reading allowance | The characters of passage text the model may be shown in one run |
 | Statement | One sentence of an answer, with the handles it cites and a quote |
@@ -23,18 +25,18 @@ It serves the same contract as the intake agents, through the same startup (`run
 
 | Module | Owns | Knows nothing about |
 |---|---|---|
-| `expert/main.ts` | Starting the agent through `run/serve.ts` on the AgentCore SDK server, with the implementation `Strands`; this agent's output allowance | The rules of a run |
+| `expert/main.ts` | Starts the AgentCore SDK server through `run/serve.ts` with implementation `Strands`; sets the output allowance | Run rules |
 | `expert/serve.ts` | Reading `KNOWLEDGE_MCP_URL`, beside what `run/serve.ts` reads | Everything else |
-| `expert/settings.ts` | Every number of this agent: limits, output allowance, searches, reading allowance, answer limits | Where they are used |
+| `expert/settings.ts` | Run limits, output allowance, search count, reading allowance and answer limits | Enforcement |
 | `expert/prompt.ts` | What the model is told, and the message laid out for it (its text only, inside `<message>`) | Everything else |
 | `expert/strands.ts` | The run: the four tools, the hooks, which calls are made, what the model is shown, how the run ends, the reply | HTTP, the token check, the search engine |
 | `expert/checks.ts` | Whether a final tool is accepted, and the reply it gives. Pure functions | Strands, the retrieval service, the clock |
-| `expert/retrieval.ts` | How an answer of the retrieval service is read, the sentence for each way it fails, how a section is named | The model, the loop |
-| `tools/tool-token.ts` (shared with the intake agents) | Exchanging the caller's token for one meant for the tool server, the retrieval service's audience and scope, and the reason a run ends with when the exchange fails | The model, the loop, MCP |
-| `tools/mcp-answers.ts` (shared with the intake agents) | Reading why connecting to an MCP service failed and the payload of a tool result, in the words of the service named | Which service, the model, the loop |
+| `expert/retrieval.ts` | Retrieval response parsing, failure messages and section names | Model, loop |
+| `tools/tool-token.ts` (shared with the intake agents) | Token exchange, retrieval audience and scope, and exchange failure reasons | Model, loop, MCP |
+| `tools/mcp-answers.ts` (shared with the intake agents) | MCP connection errors and tool payload parsing, using the supplied service name | Service-specific rules, model, loop |
 | `run/*`, `contract/sdk-app.ts`, `contract/edge.ts`, `contract/runtime.ts`, `contract/runtime-contract.ts`, `model/served.ts` (shared) | The state every run keeps, the record, the shared endings, startup, the HTTP contract on the SDK server, the wording of a model failure | This agent |
 
-The shared endings in `run/endings.ts` take no `label_answer`. `expert/strands.ts` adds it to a completed response, and gives its three `stopped` endings of its own to the shared `stopped(run, reason)`.
+`expert/strands.ts` adds `label_answer` to completed responses. It passes the reasons for its three agent-specific stopped outcomes to the shared `stopped(run, reason)` function.
 
 ## One message
 
@@ -77,11 +79,13 @@ flowchart TD
     class Infer inference
 ```
 
-Two calls asked for in one turn are run one at a time, in order, so a search on a label the same turn's `find_labels` returned is made after it. Once a final tool is accepted, a search fails, or a final tool fails after the last correction, the run is stopped through a cancel signal: anything else asked for in that turn is not called and the model is not asked again. A tool asked for when the run's time is already used up calls nothing and ends the run at its time limit.
+Tool calls run sequentially in the order requested. A search can therefore use a label returned by `find_labels` earlier in the same turn. Accepting a final tool, encountering a fatal search failure, or exhausting the corrections cancels the loop: later tools in that turn do not run, and the model receives no further turn. If the deadline has already passed when a tool is requested, no call is made and the run stops at its time limit.
 
-Before anything is connected, the agent exchanges the caller's token, once, as itself (`tools/tool-token.ts`), for one with audience `knowledge` and scope `labels:search`, within the tool limit or what the run has left. A refused exchange, or one that cannot be made, ends the run `failed`: a refusal with the identity provider's words, an exchange that cannot be made with a fixed sentence that names no address; nothing is connected and the model is not asked. It is not retried. Connecting to the retrieval service and listing its tools then share one time limit of their own, asked of the run's deadline again after the exchange: the tool limit, or what the run has left by then. Every request to the retrieval service carries `Authorization: Bearer` with the exchanged token, and no other header of this agent's: no context headers. The retrieval service never sees the caller's token; it checks the exchanged one with its own settings (`knowledge/compose.yaml`).
+Before connecting, the agent exchanges the caller's token through `tools/tool-token.ts` for audience `knowledge` and scope `labels:search`. The exchange is attempted once, within the tool limit or the run's remaining time. Failure ends the run before retrieval or inference: a refusal includes the provider's reason; an unavailable exchange uses a fixed sentence with no address.
 
-What the model is told when code refuses a call, each recorded as a tool step with `is_error` and the refusal as its result:
+Connection and tool discovery share a separate tool limit, bounded by the time left after the exchange. Every retrieval request carries the exchanged token in `Authorization: Bearer`, with no message context headers. The retrieval service checks that token using `knowledge/compose.yaml`; it never receives the caller's token.
+
+Code reports each refused call to the model and records a tool step with `is_error` and the refusal as its result:
 
 | Refusal | When |
 |---|---|
@@ -91,7 +95,9 @@ What the model is told when code refuses a call, each recorded as a tool step wi
 | `answer_not_accepted` | A final tool that did not pass. The step's result lists every problem |
 | `unknown_tool` | A tool the model named that does not exist. Strands answers it in its own words; the step records them |
 
-A search that is answered gives the model each passage best first: shown whole with its handle, named by its handle as shown above, or, when it does not fit what is left of the reading allowance, described by section, part, type and size with no handle. It then says how many searches are left. It is recorded as a `retrieval` step: the query, the strategy the service reports, and each hit's label names, section, score, first 300 characters, passage id, handle (given to every passage, shown or not) and whether it was shown. A `find_labels` call, and a search the service did not answer with a success of its own label's passages, are recorded as `tool` steps with the service's answer as their result.
+Successful searches present passages in ranked order. A new passage is shown whole with its handle if it fits the remaining reading allowance. A passage shown earlier is referenced by handle at no further cost. A passage that does not fit is described by section, part, type and size, without a handle. The result also gives the remaining search count.
+
+The `retrieval` step records the query, reported search strategy and each hit's label names, section, score, first 300 characters, passage id, handle and shown status. Every passage gets a recorded handle, including those withheld from the model. `find_labels` calls and unsuccessful searches are `tool` steps containing the service's response.
 
 ## Who decides what
 
@@ -110,16 +116,16 @@ A search that is answered gives the model each passage best first: shown whole w
 
 ## What code checks about an answer
 
-For each statement, in this order. Every problem found is told to the model at once, by statement number. A statement whose fields are of the wrong type, or that fails check 1, is told that and is not checked further:
+Code checks each statement in the following order and reports all detected problems together, by statement number. Wrong field types or failure of check 1 prevent further checks on that statement:
 
 1. The text is not empty, at least one passage is cited, and every handle cited was shown in this run.
-2. The quote is 15 to 600 characters and is found in one cited passage. Both sides are compared after removing footnote marks (`[^…]`), turning each run of white space into one space, and ignoring case. Nothing else is forgiven.
+2. The quote is 15 to 600 characters and is found in one cited passage. Both sides are compared after removing footnote marks (`[^…]`), turning each run of white space into one space, and ignoring case. No other normalization applies.
 3. Every number in the text is a number in a cited passage. A number is a run of digits with an optional decimal part. Before comparing, on both sides: footnote marks are removed, `^{x}` and `_{x}` become `x`, and thousands separators are removed.
 4. A number in the text followed by a unit from the closed list (mcg, µg, mg, g, kg, mL, L, %, IU, unit, units, mEq, mmol; one space between is allowed) needs that unit somewhere in a cited passage, ignoring case. `%` also matches `percent`; `unit` and `units` match each other; µ (micro sign) and μ (Greek mu) are the same letter.
 
-No statements, or more than 8, is a problem. Only a passage's text is compared, never its handle, its label's names or its section path.
+An answer must contain 1 to 8 statements. Checks compare only passage text, excluding handles, label names and section paths.
 
-What the model is told when an answer does not pass: for each statement, one line for its quote and one line joining its other problems, each line naming the statement. Nothing of a passage's text is put into the message beyond the model's own quote words that matched:
+Correction feedback identifies each statement, with one line for quote problems and another for its remaining problems. It repeats no passage text beyond the matching words from the model's own quote:
 
 | Problem | What the model is told |
 |---|---|
@@ -133,9 +139,9 @@ What the model is told when an answer does not pass: for each statement, one lin
 
 After the problems, always one closing line: "Send the whole answer again, by calling answer, with these corrected. A statement that cannot be supported from the passages shown may be left out." A refused `cannot_answer` is told why and closes with "Call answer or cannot_answer again."
 
-Readings chosen where the rules leave a choice:
+The checks handle boundary cases as follows:
 
-| Question | Reading |
+| Case | Behaviour |
 |---|---|
 | After a passage that does not fit, is a smaller one after it shown? | Yes. Each passage is judged on its own, best first |
 | A passage shown in an earlier search comes back: is it `shown`? | Yes, and it is named as above, at no cost |
@@ -148,14 +154,14 @@ Readings chosen where the rules leave a choice:
 
 ## Always true
 
-1. The agent writes nowhere. It calls the model and `find_labels` and `search_label`, and nothing else.
-2. Text the model writes reaches the reply only as statements that passed every check. No other sentence of the reply carries model text: each is written by code, from what the retrieval service returned at most (a label's names, version and date), and so is every stop reason. What the model searched for is in its tool and retrieval steps.
+1. The agent does not write business records. Its external calls are limited to the model, identity exchange, and retrieval through `find_labels` and `search_label`.
+2. Only model statements that pass every check reach the reply. Code writes all other reply sentences and stop reasons, using at most the retrieval service's label names, version and date. The model's search terms appear in tool and retrieval steps.
 3. Every citation names the passage the quote was found in, and that passage's label, version, date and page, as the retrieval service returned them.
-4. A search that could not be made is never told to the model and never repeated. An unknown error code, or an error the agent cannot read, counts as one.
-5. The token the agent got for the retrieval service goes to it on every request of the run. The caller's token does not, and nothing else of the message does. The model is given the message's text only: not the sender, not the receipt time.
+4. A fatal retrieval failure ends the run without a retry or a tool result sent to the model. Unknown error codes and unreadable errors count as fatal failures.
+5. Every retrieval request uses the exchanged token, never the caller's token or message context headers. The model receives only the message text, without the sender or receipt time.
 6. No passage is cut. A passage is shown whole or named as not shown.
 7. Runs share no state. A new Agent and a new MCP client are made for every message.
-8. Whatever goes wrong, a run ends with an outcome inside the contract, and nothing the model wrote that did not pass the checks is in the reply.
+8. Every run returns an outcome within the contract. No unchecked or rejected model text appears in the reply.
 
 ## How it ends
 
@@ -171,10 +177,10 @@ Readings chosen where the rules leave a choice:
 | `failed` | The model wrote tool arguments that are not JSON | "The model wrote tool arguments that are not JSON, and Strands stops the run when that happens." |
 | `failed` | The identity provider refused to exchange the caller's token for one meant for the retrieval service | "The agent could not get a token for the retrieval service: " and the provider's refusal |
 | `failed` | The exchange could not be made: no answer in time, the provider not reached, or an answer it cannot read | "The agent could not get a token for the retrieval service: the identity provider could not be reached or did not answer in time." |
-| `failed` | The retrieval service could not be reached, refused the token, could not check it, or does not offer both tools | One sentence each |
-| `failed` | `find_labels` or `search_label` answered `index_not_built`, `search_timed_out`, `search_unreachable`, `search_error` or `search_unexpected_answer` | One sentence each |
+| `failed` | Retrieval service unreachable, token refused or unverifiable, or either required tool missing | Identifies the connection failure or missing tools |
+| `failed` | `find_labels` or `search_label` returns `index_not_built`, `search_timed_out`, `search_unreachable`, `search_error` or `search_unexpected_answer` | Identifies the reported search failure |
 | `failed` | Either tool answered any other error code, the retrieval service's vector, embedding and reranker codes among them | "The label search answered with an error this agent does not know: " and the code |
-| `failed` | Either tool answered an error that is not `{ error, detail }`, or a success of a shape the agent does not expect | One sentence each |
+| `failed` | Either tool returns an error outside `{ error, detail }`, or an unexpected success shape | Identifies the unreadable error or unexpected response |
 | `failed` | No answer within the tool limit, or the run's time ran out while a tool call was in flight | Names the limit |
 | `failed` | A search answered with a passage from another label than the one searched | "The retrieval service returned a passage from another label than the one searched." |
 | `failed` | Strands stopped the run with an error no row above names | "Strands stopped the run with" the error's type |
@@ -201,9 +207,11 @@ A `stopped` or `failed` run has no reply, no citations and no `label_answer`.
 
 ## How it is tested
 
-`agents/test/expert.test.ts`: one test for each line of "Always true" (expert 1 to 7), and one (expert 8) that a refused token exchange, a run with no final tool, a model server that fails, or an answer that never passes ends inside the contract with no unchecked model text in the reply. Each calls the handler with the caller and a scripted token exchange as values, through the real Strands loop and its MCP client, against a scripted model server and a scripted retrieval service on loopback; no token is signed, and every response is checked against the contract schema. Whether this agent and the real retrieval service agree is not checked here. The SDK server and the edge are tested in `agents/test/runtime.test.ts` with a handler written for the tests, not this agent's.
+`agents/test/expert.test.ts` maps tests `expert 1` through `expert 7` to the corresponding invariants. `expert 8` covers a refused token exchange, no final tool, a failed model server and an answer that never passes, checking that each returns a contract outcome without unchecked model text.
 
-The model's and the tools' time limits are kept in real time by their clients. The tests set limits no busy machine reaches, and no test's subject is a time limit.
+The tests call the handler through the real Strands loop and MCP client, with a caller value, scripted token exchange, and scripted model and retrieval servers on loopback. They sign no tokens and validate every response against the contract schema. They do not establish agreement with the real retrieval service. `agents/test/runtime.test.ts` tests the SDK server and edge with a separate test handler.
+
+Model and tool clients enforce real-time limits. These tests use generous limits to avoid timing-dependent failures; they do not verify timeout behaviour.
 
 ## Not present
 
@@ -212,7 +220,7 @@ The model's and the tools' time limits are kept in real time by their clients. T
 - The wording of a statement is not checked against the passage beyond its quote and its numbers. A statement can say something its quote does not.
 - Which of several matching labels is used is the model's choice. It is visible only in the citation.
 - Whether a message is a report or a question is the model's judgement. A bare report of a side effect is declined as `not_a_label_question` by instruction, not by a check.
-- The reading allowance is counted in characters, not tokens, so it is safe only up to the worst rate recorded in `expert/settings.ts`. Text denser than that could still overflow the context, and the run would then end `failed` with the model server's status.
-- No choice of how passages are ranked: the retrieval service ranks by its own setting (`SEARCH_STRATEGY`: keyword, vector, fused or fused_reranked; keyword in the lab's compose file), and the retrieval step records the strategy the service reports it ran, with each hit's score as the service returned it.
+- The reading allowance counts characters rather than tokens. It assumes at most 0.75 tokens per character (`expert/settings.ts`); denser text can overflow the context and fail the run with the model server's status.
+- The agent cannot choose passage ranking. The retrieval service uses `SEARCH_STRATEGY`: `keyword`, `vector`, `fused` or `fused_reranked` (`keyword` in the lab compose file). Retrieval steps record the reported strategy and returned scores.
 - One implementation, on Strands. There is no hand-written loop for this agent.
 - No hand-off to the intake agent when a message reports an adverse event: it is declined, and the caller must send it to intake.

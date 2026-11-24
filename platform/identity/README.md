@@ -42,7 +42,7 @@ docker compose restart identity                                    # the whole l
 docker compose -f platform/identity/compose.yaml restart identity  # the provider started on its own
 ```
 
-Stopping the container empties the tmpfs that holds its database, so the start imports the file as it now is, with new signing keys. Every token issued before the restart is then refused, and everyone signed in to the desk signs in again. Run the gate afterwards to check the realm still issues the tokens described here. A realm that does not import never becomes healthy.
+Stopping the container empties the tmpfs that holds its database, so the start imports the file as it now is, with new signing keys. Old refresh tokens are refused, so desk sessions end at their next refresh. Services using the new signing keys reject old access tokens; a service with cached old keys can still accept them until expiry or key replacement. Run the gate afterwards to check the realm still issues the tokens described here. A realm that does not import never becomes healthy.
 
 A realm file that names a variable `platform/identity/.env` lacks also needs `setup.sh` run again and a rebuilt stack: see [Changing the realm file](../../docs/architecture/identity.md#changing-the-realm-file).
 
@@ -258,7 +258,7 @@ Four machines get tokens on the stack's network: the knowledge gate, the evaluat
 | Mode | `start-dev` | Keycloak's development mode: relaxed hostname checks, caches local to the process, no build optimisation |
 | Database | `dev-file`, an H2 file inside the container on a tmpfs | Lost at every stop; one process only |
 | Transport | HTTP, published on `127.0.0.1:8090` only | Tokens and passwords travel unencrypted. Acceptable on loopback and the lab's own network only |
-| Signing keys | Made at every start | A token issued before a restart no longer verifies after it |
+| Signing keys | Made at every start | Old access tokens fail against the new keys; cached old keys can still verify them until expiry or key replacement |
 | Secrets | `platform/identity/.env`, read at start | A plain file on the machine |
 
 ## Hardening
