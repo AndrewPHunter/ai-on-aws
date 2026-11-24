@@ -21,7 +21,7 @@ That starts the client together with the [agents](../agents/README.md), the [cas
 docker compose down
 ```
 
-stops them and keeps the inquiries, the cases and the label index. Add `-v` to delete all three.
+stops them and keeps the inquiries, the cases and the label index. Add `-v` to delete all three. To delete only the inquiries and the cases, and keep the label index, run [`reset-demo-data.sh`](../reset-demo-data.sh): it asks first, then starts the client and the case system again with empty stores.
 
 ## The screens
 
