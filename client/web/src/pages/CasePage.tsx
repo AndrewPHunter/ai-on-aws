@@ -1,13 +1,15 @@
 import { useState } from 'react';
+import type { ReactNode } from 'react';
 import { Link, useParams } from 'react-router';
 
 import type { AuditView, CaseRecord, ElementName, ReviewDecision, VersionView } from '../../../shared/api.ts';
-import { ApiFailure, failureText, useCase, useCases, useReview } from '../api.ts';
-import { Boxed, CaseStatusTag, Loading, Problem } from '../components.tsx';
+import { ApiFailure, failureText, useCase, useCases, useInquiry, useReview } from '../api.ts';
+import { Boxed, CaseStatusTag, Loading, Paragraphs, Problem } from '../components.tsx';
 import {
   ELEMENT_LABEL,
   STATUS_LABEL,
   actorWords,
+  arrivalWords,
   daysAfter,
   firstLine,
   formatDate,
@@ -176,6 +178,50 @@ function VersionChanges({ version, previous }: { version: VersionView; previous:
   );
 }
 
+// The message the case was opened from: the one its first version was recorded from, read from the desk's inbox.
+function OriginalMessage({ versions }: { versions: readonly VersionView[] }) {
+  const first = versions.reduce<VersionView | undefined>(
+    (earliest, version) => (earliest === undefined || version.version < earliest.version ? version : earliest),
+    undefined,
+  );
+  const inquiry = useInquiry(first?.message_id);
+
+  let body: ReactNode;
+  if (first === undefined) {
+    body = <p className="absent">The case has no recorded version, so the message it came from is not known.</p>;
+  } else if (inquiry.isPending) {
+    body = <Loading what="the message" />;
+  } else if (inquiry.isError) {
+    const missing = inquiry.error instanceof ApiFailure && inquiry.error.status === 404;
+    body = (
+      <Problem>
+        <p>{missing ? 'The message this case came from is not in this desk’s inbox.' : failureText(inquiry.error)}</p>
+      </Problem>
+    );
+  } else {
+    const message = inquiry.data;
+    const arrival = arrivalWords(message.entered_by);
+    body = (
+      <article className="card origin" aria-label="The message">
+        <p className="origin__how">
+          From {message.sender}. Received {formatDateTime(message.received_at)}
+          {arrival === null ? '' : `, ${arrival}`}.
+        </p>
+        <div className="writing">
+          <Paragraphs text={message.text} />
+        </div>
+      </article>
+    );
+  }
+
+  return (
+    <section className="stack" aria-labelledby="origin-title">
+      <h2 id="origin-title">Original message</h2>
+      {body}
+    </section>
+  );
+}
+
 type HistoryItem =
   | { kind: 'audit'; at: string; entry: AuditView; version: VersionView | undefined }
   | { kind: 'version'; at: string; version: VersionView };
@@ -325,6 +371,7 @@ export function CasePage() {
               </p>
             )}
           </section>
+          <OriginalMessage versions={record.data.versions} />
           <History record={record.data} />
         </div>
         <aside className="caselayout__side stack stack--large" aria-label="Decision">

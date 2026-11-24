@@ -14,14 +14,14 @@ const PEOPLE: readonly Person[] = [
     username: 'dana.desk',
     name: 'Dana Desk',
     role: 'desk',
-    may: 'Log inquiries, which the orchestrator handles. Sees only the inquiries this account entered.',
+    may: 'Log inquiries, which the orchestrator handles. Sees the desk’s inbox: every inquiry logged at the desk, and the messages that arrive through the contact form.',
     scopes: ['agents:intake', 'agents:orchestrator'],
   },
   {
     username: 'morgan.medinfo',
     name: 'Morgan Medinfo',
     role: 'medical-information',
-    may: 'Everything Dana may do, and ask the label expert directly.',
+    may: 'Everything Dana may do, with the same view of the desk’s inbox, including the messages from the contact form; and ask the label expert directly.',
     scopes: ['agents:intake', 'agents:expert', 'agents:orchestrator'],
   },
   {

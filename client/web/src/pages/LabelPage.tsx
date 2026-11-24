@@ -21,16 +21,16 @@ function Answered({ inquiryId }: { inquiryId: string }) {
     const missing = inquiry.error instanceof ApiFailure && inquiry.error.status === 404;
     return (
       <Problem>
-        <p>{missing ? 'That question is not among yours.' : failureText(inquiry.error)}</p>
+        <p>{missing ? 'That question is not among the desk’s questions.' : failureText(inquiry.error)}</p>
       </Problem>
     );
   }
   const run = latestRun(inquiry.data);
   return (
     <div className="stack stack--large">
-      <article className="card card--reading" aria-label="Your question">
+      <article className="card card--reading" aria-label="The question">
         <div className="message__head">
-          <span className="message__from">Your question</span>
+          <span className="message__from">{inquiry.data.sender}</span>
           <span className="message__when">Asked {formatDateTime(inquiry.data.received_at)}.</span>
         </div>
         <div className="writing">
@@ -59,14 +59,14 @@ function Earlier({ chosen }: { chosen: string | null }) {
         <h2 id="earlier-title" className="side__title">
           Earlier questions
         </h2>
-        {inquiries.isPending ? <Loading what="your questions" /> : null}
+        {inquiries.isPending ? <Loading what="the desk’s questions" /> : null}
         {inquiries.isError ? (
           <Problem>
             <p>{failureText(inquiries.error)}</p>
           </Problem>
         ) : null}
         {inquiries.data !== undefined && questions.length === 0 ? (
-          <p>Questions you ask appear here, newest first.</p>
+          <p>Questions asked at the desk appear here, newest first.</p>
         ) : null}
         <ul className="earlier">
           {questions.map((question) => (

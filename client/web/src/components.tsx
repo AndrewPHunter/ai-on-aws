@@ -8,6 +8,19 @@ import type { CaseStatus } from '../../shared/api.ts';
 import { STATUS_LABEL, formatElapsed } from './format.ts';
 import type { Tone } from './inbox.ts';
 
+// The desk's mark: a square with the accent's cross, and a name beside it.
+export function Mark({ name }: { name: string }) {
+  return (
+    <span className="mark">
+      <svg aria-hidden="true" width="26" height="26" viewBox="0 0 26 26" fill="none" strokeWidth="2">
+        <rect x="2" y="2" width="22" height="22" stroke="currentColor" />
+        <path d="M13 7v12M7 13h12" className="mark__cross" />
+      </svg>
+      <span className="mark__name">{name}</span>
+    </span>
+  );
+}
+
 // A status in words on its own colour. The words always differ, so colour is never the only signal.
 export function Tag({ tone, children }: { tone: Tone | CaseStatus; children: ReactNode }) {
   return <span className={`tag tag--${tone}`}>{children}</span>;
