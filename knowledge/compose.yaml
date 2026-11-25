@@ -47,14 +47,15 @@ services:
         PIECE: knowledge
     image: ai-on-aws-knowledge:local
     command: ["node", "knowledge/src/search/server.ts"]
-    # The model servers' addresses and the key (model/.env), and the embedding and reranker models' identity
-    # (model/retrieval.env). The strategy set below uses both servers: a value of these missing stops the service at
-    # start, naming it. The files are optional so that a stack set to SEARCH_STRATEGY keyword, which reads none of
-    # their values, starts when model/.env does not exist.
+    # The model servers' addresses and the key (model/.env), and the embedding and reranker models' identity (the
+    # retrieval settings file the model servers were started from: MODEL_RETRIEVAL_ENV of model/.env, which the root
+    # compose.yaml passes for interpolation; model/retrieval.env when it is not set). The strategy set below uses both
+    # servers: a value of these missing stops the service at start, naming it. The files are optional so that a stack
+    # set to SEARCH_STRATEGY keyword, which reads none of their values, starts when model/.env does not exist.
     env_file:
       - path: ../model/.env
         required: false
-      - path: ../model/retrieval.env
+      - path: ../model/${MODEL_RETRIEVAL_ENV:-retrieval.env}
         required: false
     environment:
       SEARCH_URL: http://search:9200

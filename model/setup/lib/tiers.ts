@@ -90,3 +90,64 @@ export function validateTiers(raw: unknown): TiersResult {
 export function needMiB(tiers: Tiers, tier: Tier): number {
   return tier.measuredPeakMiB + tiers.embeddingPeakMiB + tiers.rerankerPeakMiB + tiers.marginMiB
 }
+
+// The Metal tiers file, model/metal/tiers.json. A Mac's GPU shares the machine's memory, so a tier records the peak
+// memory of the three servers together, measured through setup, rather than one peak per server.
+export type MetalTier = { name: string; profile: string; serversPeakMiB: number; downloadMiB: number }
+
+export type MetalTiers = {
+  requirements: { minMacosMajor: number }
+  marginMiB: number
+  // Space the installed Python environment takes in the cache directory, together with uv's package cache beside it.
+  environmentDiskMiB: number
+  embeddingDownloadMiB: number
+  rerankerDownloadMiB: number
+  tiers: MetalTier[]
+}
+
+export type MetalTiersResult = { ok: true; tiers: MetalTiers } | { ok: false; errors: string[] }
+
+export function validateMetalTiers(raw: unknown): MetalTiersResult {
+  const errors: string[] = []
+  const top = record(raw)
+  if (top === null) return { ok: false, errors: ['the Metal tiers file must be a JSON object'] }
+  const requirements = record(top.requirements)
+  if (requirements === null || !isPositiveInteger(requirements.minMacosMajor)) {
+    errors.push('requirements.minMacosMajor must be a positive integer')
+  }
+  if (!isNonNegativeInteger(top.marginMiB)) errors.push('marginMiB must be a non-negative integer')
+  for (const key of ['environmentDiskMiB', 'embeddingDownloadMiB', 'rerankerDownloadMiB'] as const) {
+    if (!isPositiveInteger(top[key])) errors.push(`${key} must be a positive integer`)
+  }
+  if (!Array.isArray(top.tiers) || top.tiers.length === 0) {
+    errors.push('tiers must be a non-empty array')
+  } else {
+    const seen = new Set<string>()
+    top.tiers.forEach((entry: unknown, position: number) => {
+      const tier = record(entry)
+      const label = `tiers[${position}]`
+      if (tier === null) {
+        errors.push(`${label} must be an object`)
+        return
+      }
+      for (const key of ['name', 'profile'] as const) {
+        if (typeof tier[key] !== 'string' || !SAFE_NAME.test(tier[key])) {
+          errors.push(`${label}.${key} must be non-empty and made only of letters, digits, ".", "-" and "_"`)
+        }
+      }
+      if (!isPositiveInteger(tier.serversPeakMiB)) errors.push(`${label}.serversPeakMiB must be a positive integer`)
+      if (!isPositiveInteger(tier.downloadMiB)) errors.push(`${label}.downloadMiB must be a positive integer`)
+      if (typeof tier.name === 'string') {
+        if (seen.has(tier.name)) errors.push(`tier names must be unique: ${tier.name} appears more than once`)
+        seen.add(tier.name)
+      }
+    })
+  }
+  if (errors.length > 0) return { ok: false, errors }
+  return { ok: true, tiers: raw as MetalTiers }
+}
+
+// The memory a Metal tier needs: the peak of the three servers together, plus the margin.
+export function metalNeedMiB(tiers: MetalTiers, tier: MetalTier): number {
+  return tier.serversPeakMiB + tiers.marginMiB
+}

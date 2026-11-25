@@ -1,6 +1,8 @@
 // Reading env files (model/.env, model/.env.example, model/profiles/*.env) and rendering model/.env.
 // Pure: text in, values out. File reading and the random key are at the edge, in tool.ts.
 
+import { METAL_BIND, METAL_CLIENT_HOST, RETRIEVAL_ENV, type Toolchain } from './toolchain.ts'
+
 export type EnvReadResult = { ok: true; values: Map<string, string> } | { ok: false; message: string }
 
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/
@@ -29,8 +31,8 @@ export function readEnv(text: string, required: readonly string[]): EnvReadResul
   return { ok: true, values }
 }
 
+// On NVIDIA the bind address is given; on Metal it is always the loopback address (invariant 19).
 export type EnvInput = {
-  bindAddress: string
   port: number
   embedPort: number
   rerankPort: number
@@ -38,9 +40,18 @@ export type EnvInput = {
   runUid: number
   runGid: number
   apiKey: string
-}
+} & ({ toolchain: 'nvidia'; bindAddress: string } | { toolchain: 'metal' })
 
 export type RenderResult = { ok: true; text: string } | { ok: false; message: string }
+
+// How clients in the lab's containers reach a server: at its bind address on NVIDIA, and at Docker Desktop's name
+// for the Mac on Metal, where the servers listen on the Mac's loopback address.
+export function baseUrl(toolchain: Toolchain, bindAddress: string, port: number | string): string {
+  return `http://${toolchain === 'metal' ? METAL_CLIENT_HOST : bindAddress}:${port}/v1`
+}
+
+// Written by both toolchains, and optional when read: settings without them are an NVIDIA machine's.
+export const TOOLCHAIN_NAMES = ['MODEL_TOOLCHAIN', 'MODEL_RETRIEVAL_ENV'] as const
 
 // Exactly the variables of model/.env.example, in its order.
 export const ENV_NAMES = [
@@ -55,6 +66,7 @@ export const ENV_NAMES = [
   'MODEL_BASE_URL',
   'MODEL_EMBED_BASE_URL',
   'MODEL_RERANK_BASE_URL',
+  ...TOOLCHAIN_NAMES,
 ] as const
 
 // Characters that an env file reader (Docker Compose's included) would treat specially.
@@ -66,8 +78,9 @@ export function isEnvSafe(value: string): boolean {
 }
 
 export function renderEnv(input: EnvInput): RenderResult {
+  const bind = input.toolchain === 'metal' ? METAL_BIND : input.bindAddress
   const values: Record<(typeof ENV_NAMES)[number], string> = {
-    MODEL_BIND_ADDRESS: input.bindAddress,
+    MODEL_BIND_ADDRESS: bind,
     MODEL_PORT: String(input.port),
     MODEL_EMBED_PORT: String(input.embedPort),
     MODEL_RERANK_PORT: String(input.rerankPort),
@@ -75,9 +88,11 @@ export function renderEnv(input: EnvInput): RenderResult {
     MODEL_RUN_UID: String(input.runUid),
     MODEL_RUN_GID: String(input.runGid),
     MODEL_API_KEY: input.apiKey,
-    MODEL_BASE_URL: `http://${input.bindAddress}:${input.port}/v1`,
-    MODEL_EMBED_BASE_URL: `http://${input.bindAddress}:${input.embedPort}/v1`,
-    MODEL_RERANK_BASE_URL: `http://${input.bindAddress}:${input.rerankPort}/v1`,
+    MODEL_BASE_URL: baseUrl(input.toolchain, bind, input.port),
+    MODEL_EMBED_BASE_URL: baseUrl(input.toolchain, bind, input.embedPort),
+    MODEL_RERANK_BASE_URL: baseUrl(input.toolchain, bind, input.rerankPort),
+    MODEL_TOOLCHAIN: input.toolchain,
+    MODEL_RETRIEVAL_ENV: RETRIEVAL_ENV[input.toolchain],
   }
   for (const name of ENV_NAMES) {
     const value = values[name]

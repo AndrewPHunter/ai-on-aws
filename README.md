@@ -27,11 +27,19 @@ The web app has two views of the system. The desk presents inquiries, replies, a
 
 ## Getting started
 
-Run the commands below from the repository root. The development machine needs a shell and Docker with Compose. The model host also needs an NVIDIA GPU and the NVIDIA Container Toolkit; it can be the same machine or a separate host. GPU, driver, memory, and disk requirements are in the [model setup guide](model/README.md#what-you-need). No host Node installation is required.
+Run the commands below from the repository root. The development machine needs a shell and Docker with Compose. The model host is either an NVIDIA machine, with the NVIDIA Container Toolkit, the same machine or a separate host; or an Apple silicon Mac, which runs the model servers itself. GPU, driver, memory, and disk requirements are in the [model setup guide](model/README.md#what-you-need). No host Node installation is required.
 
 ### Run the model server
 
-When the GPU is on the same machine:
+On an Apple silicon Mac:
+
+```bash
+model/setup.sh --cache-dir <directory>
+```
+
+The servers run on the Mac with vLLM-Metal, and the lab's containers reach them at `host.docker.internal`. The Mac also needs `uv`, `git` and `curl`; see [On an Apple silicon Mac](model/README.md#on-an-apple-silicon-mac).
+
+When the NVIDIA GPU is on the same machine:
 
 ```bash
 model/setup.sh --bind <address> --cache-dir <directory>

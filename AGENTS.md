@@ -17,7 +17,13 @@ tool calling and its reliability, retrieval, evaluation and security.
   files, with an `.env.example` beside each that names every variable.
 - **Everything runs in containers.** No language toolchain is assumed on
   the host: only a shell and Docker. Images are pinned by digest, and
-  dependencies by a committed lockfile generated in a container.
+  dependencies by a committed lockfile generated in a container. The one
+  exception: on an Apple silicon Mac the model servers run on the Mac itself,
+  because a container cannot use its GPU; their Python environment is
+  installed from a committed lock file generated in a container, which
+  holds every package at one version and checks each one from an index or
+  a URL against its checksum; two packages are built from pinned git
+  commits, and the tools that build them are not in the lock.
 - **Every setting is explicit.** Configuration is passed in by name. Nothing
   depends on a default of the machine, the shell or the user.
 - **Keep designed, implemented and measured apart** in what you write.

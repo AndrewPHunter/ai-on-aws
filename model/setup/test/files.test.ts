@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url'
 import { readEnv } from '../lib/envfile.ts'
 import { readProfile } from '../lib/profile.ts'
 import { readRetrieval } from '../lib/retrieval.ts'
-import { validateTiers, type Tiers } from '../lib/tiers.ts'
+import { validateMetalTiers, validateTiers, type MetalTiers, type Tiers } from '../lib/tiers.ts'
 
 const path = (relative: string): string => fileURLToPath(new URL(`../../${relative}`, import.meta.url))
 const read = (relative: string): string => readFileSync(path(relative), 'utf8')
@@ -19,6 +19,12 @@ const read = (relative: string): string => readFileSync(path(relative), 'utf8')
 function shippedTiers(): Tiers {
   const result = validateTiers(JSON.parse(read('tiers.json')))
   if (!result.ok) throw new Error(`model/tiers.json: ${result.errors.join('; ')}`)
+  return result.tiers
+}
+
+function shippedMetalTiers(): MetalTiers {
+  const result = validateMetalTiers(JSON.parse(read('metal/tiers.json')))
+  if (!result.ok) throw new Error(`model/metal/tiers.json: ${result.errors.join('; ')}`)
   return result.tiers
 }
 
@@ -85,16 +91,32 @@ test("13. every tier's profile gives the chat server an explicit start-up share"
   }
 })
 
-test("P1. the shipped tiers file is valid, and every tier's profile and the retrieval settings read", () => {
-  for (const tier of shippedTiers().tiers) {
+test('18. the embedding model is the same in both retrieval files', () => {
+  const values = (relative: string): Map<string, string> => {
+    const result = readEnv(read(relative), [])
+    if (!result.ok) throw new Error(`model/${relative}: ${result.message}`)
+    return result.values
+  }
+  const nvidia = values('retrieval.env')
+  const metal = values('metal/retrieval.env')
+  for (const name of ['EMBED_MODEL_REPO', 'EMBED_MODEL_REVISION', 'EMBED_MODEL_ID', 'EMBED_DIMENSIONS', 'EMBED_MAX_MODEL_LEN']) {
+    assert.ok(nvidia.has(name), `${name} is not in retrieval.env`)
+    assert.equal(metal.get(name), nvidia.get(name), name)
+  }
+})
+
+test("P1. the shipped tiers files are valid, and every tier's profile and both retrieval settings read", () => {
+  for (const tier of [...shippedTiers().tiers, ...shippedMetalTiers().tiers]) {
     const profile = readProfile(read(`profiles/${tier.profile}.env`))
     assert.ok(profile.ok, `profiles/${tier.profile}.env: ${profile.ok ? '' : profile.message}`)
   }
-  const retrieval = readRetrieval(read('retrieval.env'))
-  assert.ok(retrieval.ok, retrieval.ok ? '' : retrieval.message)
+  for (const relative of ['retrieval.env', 'metal/retrieval.env']) {
+    const retrieval = readRetrieval(read(relative))
+    assert.ok(retrieval.ok, `${relative}: ${retrieval.ok ? '' : retrieval.message}`)
+  }
 })
 
-test('P2. every variable compose.yaml reads is supplied by one of the three files', () => {
+test('P2. every variable compose.yaml reads is supplied by one of the three files, and every setting servers.sh reads by the file it reads', () => {
   const machine = names('.env.example')
   const retrieval = names('retrieval.env')
   const profiles = shippedTiers().tiers.map((tier) => names(`profiles/${tier.profile}.env`))
@@ -102,5 +124,19 @@ test('P2. every variable compose.yaml reads is supplied by one of the three file
   assert.ok(used.size > 0)
   for (const name of used) {
     assert.ok(machine.has(name) || retrieval.has(name) || profiles.every((profile) => profile.has(name)), `${name} is in none of the three files`)
+  }
+
+  // model/metal/servers.sh reads each setting as `setting "$<file>" NAME`, from one of its three files.
+  const metalProfiles = shippedMetalTiers().tiers.map((tier) => names(`profiles/${tier.profile}.env`))
+  const metalRetrieval = names('metal/retrieval.env')
+  const supplies: Record<string, (name: string) => boolean> = {
+    env_file: (name) => machine.has(name),
+    profile_file: (name) => metalProfiles.every((profile) => profile.has(name)),
+    retrieval_file: (name) => metalRetrieval.has(name),
+  }
+  const reads = [...read('metal/servers.sh').matchAll(/\bsetting "\$([a-z_]+)" ([A-Z][A-Z0-9_]*)/g)]
+  assert.ok(reads.length > 0)
+  for (const [, file = '', name = ''] of reads) {
+    assert.ok(supplies[file]?.(name) === true, `servers.sh reads ${name} from $${file}, which does not supply it`)
   }
 })

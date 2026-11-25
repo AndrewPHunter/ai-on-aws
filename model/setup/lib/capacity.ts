@@ -1,25 +1,29 @@
 // vLLM's start-up capacity line and the verdict on it (contract section 3, step 12). The line, as vLLM
-// v0.34.0 prints it after a logger prefix:
+// v0.34.0 prints it after a logger prefix, begins with the device the cache is on: GPU on an NVIDIA card,
+// CPU under vLLM-Metal on an Apple silicon Mac:
 //   GPU KV cache size: 82,895 tokens, Maximum concurrency for 20,480 tokens per request: 4.05x
+//   CPU KV cache size: 132,496 tokens, Maximum concurrency for 32,768 tokens per request: 4.04x
 
 export type Capacity = { tokens: number; context: number; concurrency: number }
 
 export type CapacityParse = { ok: true; capacity: Capacity } | { ok: false; message: string }
 
-const LINE = /GPU KV cache size: ([0-9][0-9,]*) tokens, Maximum concurrency for ([0-9][0-9,]*) tokens per request: ([0-9]+(?:\.[0-9]+)?)x/
+const lineOf = (device: 'GPU' | 'CPU'): RegExp =>
+  new RegExp(`${device} KV cache size: ([0-9][0-9,]*) tokens, Maximum concurrency for ([0-9][0-9,]*) tokens per request: ([0-9]+(?:\\.[0-9]+)?)x`)
 
 function number(text: string): number {
   return Number(text.replaceAll(',', ''))
 }
 
-export function parseCapacity(log: string): CapacityParse {
+export function parseCapacity(log: string, device: 'GPU' | 'CPU'): CapacityParse {
+  const line = lineOf(device)
   let last: RegExpExecArray | null = null
-  for (const line of log.split('\n')) {
-    const match = LINE.exec(line)
+  for (const text of log.split('\n')) {
+    const match = line.exec(text)
     if (match !== null) last = match
   }
   if (last === null) {
-    return { ok: false, message: "the server's log has no line \"GPU KV cache size: ... Maximum concurrency for ... tokens per request: ...x\"" }
+    return { ok: false, message: `the server's log has no line "${device} KV cache size: ... Maximum concurrency for ... tokens per request: ...x"` }
   }
   const [, tokens, context, concurrency] = last
   if (tokens === undefined || context === undefined || concurrency === undefined) {

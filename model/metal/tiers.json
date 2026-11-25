@@ -1,0 +1,12 @@
+{
+  "requirements": {
+    "minMacosMajor": 15
+  },
+  "marginMiB": 512,
+  "environmentDiskMiB": 4200,
+  "embeddingDownloadMiB": 1200,
+  "rerankerDownloadMiB": 700,
+  "tiers": [
+    { "name": "medium", "profile": "metal-qwen3.5-4b-mlx-4bit", "serversPeakMiB": 23300, "downloadMiB": 3000 }
+  ]
+}
