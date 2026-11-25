@@ -1,0 +1,13 @@
+# The Python environment of the Metal model servers, for Python 3.12 on aarch64-apple-darwin.
+# model/metal/lock.sh compiles it into requirements.txt; setup installs only requirements.txt.
+#
+# vLLM core and vLLM-Metal v0.34.0, the release wheels, each checked against its sha256.
+vllm @ https://github.com/vllm-project/vllm/releases/download/v0.34.0/vllm-0.34.0%2Bcpu-cp38-abi3-macosx_11_0_arm64.whl#sha256=cd0abe2a9d698bc0bef36ac9aa38da34307c53572ddee60ca35faef280af99d2
+vllm-metal @ https://github.com/vllm-project/vllm-metal/releases/download/v0.34.0/vllm_metal-0.34.0-cp312-cp312-macosx_15_0_arm64.whl#sha256=27141e0134e92358b494b3609df3a3f4be611852a9201b34ad7dbc0cbad8029f
+
+# The PyTorch build the vllm-metal wheel names in vllm_metal/requirements-torch.txt: dated nightlies from
+# PyTorch's index. vLLM core asks for torch 2.14.0, torchvision 0.29.2 and torchaudio 2.11.1; lock.sh passes
+# this file as overrides too, so these three replace what any package asks for.
+torch @ https://download.pytorch.org/whl/nightly/cpu/torch-2.16.0.dev20261013-cp312-cp312-macosx_14_0_arm64.whl
+torchvision @ https://download.pytorch.org/whl/nightly/cpu/torchvision-0.30.0.dev20261013-py3-none-macosx_14_0_arm64.whl
+torchaudio @ https://download.pytorch.org/whl/nightly/cpu/torchaudio-2.11.0.dev20261013-py3-none-macosx_14_0_arm64.whl

@@ -5,15 +5,16 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 
-import { parseArgs } from '../lib/args.ts'
+import { parseArgs, type Machine } from '../lib/args.ts'
 import { capacityVerdict, embedCapacityVerdict, parseCapacity } from '../lib/capacity.ts'
 import { diskVerdict, type DiskInput } from '../lib/disk.ts'
 import type { Gpu } from '../lib/probe.ts'
 import { readProfile } from '../lib/profile.ts'
 import { readRetrieval } from '../lib/retrieval.ts'
-import { runningVerdict } from '../lib/running.ts'
-import { selectTier } from '../lib/select.ts'
-import type { Tier, Tiers } from '../lib/tiers.ts'
+import { metalRunningVerdict, runningVerdict } from '../lib/running.ts'
+import { selectMetalTier, selectTier } from '../lib/select.ts'
+import type { MetalTiers, Tier, Tiers } from '../lib/tiers.ts'
+import { chooseToolchain, recordedToolchain, type Toolchain } from '../lib/toolchain.ts'
 
 const read = (relative: string): string => readFileSync(new URL(`../../${relative}`, import.meta.url), 'utf8')
 
@@ -31,6 +32,19 @@ function tiersOf(list: [name: string, peakMiB: number][], extra: Partial<Tiers> 
     ...extra,
   }
 }
+
+function metalTiersOf(list: [name: string, peakMiB: number][]): MetalTiers {
+  return {
+    requirements: { minMacosMajor: 15 },
+    marginMiB: 0,
+    environmentDiskMiB: 1,
+    embeddingDownloadMiB: 1,
+    rerankerDownloadMiB: 1,
+    tiers: list.map(([name, serversPeakMiB]) => ({ name, profile: name, serversPeakMiB, downloadMiB: 1 })),
+  }
+}
+
+const MiB = 1048576
 
 const gpu = (totalMiB: number, usedMiB = 0): Gpu => ({
   index: 0,
@@ -54,7 +68,7 @@ test('4. a profile or the retrieval settings naming a revision that is not a com
   for (const [label, ok, expected] of rows) assert.equal(ok, expected, label)
 })
 
-test('8. a tier needs its chat peak plus both retrieval peaks plus the margin, and the disk check counts what is not already there', () => {
+test('8. a tier needs its servers\' peaks plus the margin, and the disk check counts what is not already there', () => {
   const selection = selectTier([gpu(100000)], tiersOf([['only', 1000]], { embeddingPeakMiB: 100, rerankerPeakMiB: 10, marginMiB: 1 }), null)
   assert.equal(selection.ok && selection.needMiB, 1111)
 
@@ -73,6 +87,7 @@ test('8. a tier needs its chat peak plus both retrieval peaks plus the margin, a
   assert.deepEqual(diskVerdict(disk(false)), { ok: true, weightsNeedMiB: 14, imageNeedMiB: 1 })
   assert.deepEqual(diskVerdict(disk(true)), { ok: true, weightsNeedMiB: 0, imageNeedMiB: 0 })
   assert.equal(diskVerdict({ ...disk(false), cacheFreeMiB: 13 }).ok, false)
+
 })
 
 test('9. setup selects the largest tier that fits the free memory and never another than the one named', () => {
@@ -91,29 +106,47 @@ test('9. setup selects the largest tier that fits the free memory and never anot
     ['a tier named that does not fit', pick(gpu(2500), 'big'), 'insufficient_memory big'],
   ]
   for (const [label, got, expected] of rows) assert.equal(got, expected, label)
+
+  // Metal: the tier named, else its one tier, once the macOS version and the total memory pass.
+  const metalTiers = metalTiersOf([['medium', 2000]])
+  const pickMetal = (macos: string, memoryMiB: number): string => {
+    const result = selectMetalTier(macos, String(memoryMiB * MiB), metalTiers, null)
+    return result.ok ? result.tier.name : result.reason
+  }
+  const metalRows: [string, string, string][] = [
+    ['its one tier', pickMetal('15.1', 2000), 'medium'],
+    ['a macOS too old', pickMetal('14.7', 4000), 'macos_too_old'],
+    ['too little memory', pickMetal('15.1', 1999), 'insufficient_memory'],
+  ]
+  for (const [label, got, expected] of metalRows) assert.equal(got, expected, label)
 })
+
+const linux: Machine = { system: 'Linux', machine: 'x86_64' }
+const anyTier = (): string[] => ['t']
 
 test('12. two equal ports are refused', () => {
-  const rows: [string, string[], boolean][] = [
-    ['the three defaults', [], true],
-    ['chat on the embedding default', ['--port', '8001'], false],
-    ['embedding equals reranker', ['--embed-port', '9000', '--rerank-port', '9000'], false],
-    ['reranker on the chat default', ['--rerank-port', '8000'], false],
+  const rows: [string, Machine, string[], boolean][] = [
+    ['the three defaults', linux, [], true],
+    ['chat on the embedding default', linux, ['--port', '8001'], false],
+    ['embedding equals reranker', linux, ['--embed-port', '9000', '--rerank-port', '9000'], false],
+    ['reranker on the chat default', linux, ['--rerank-port', '8000'], false],
   ]
-  for (const [label, flags, ok] of rows) assert.equal(parseArgs(['--cache-dir', '/srv/models', ...flags], ['t']).ok, ok, label)
+  for (const [label, machine, flags, ok] of rows) {
+    assert.equal(parseArgs(['--cache-dir', '/srv/models', ...flags], machine, anyTier).ok, ok, label)
+  }
 })
 
-const line = (tokens: string, context: string, concurrency: string): string =>
-  `(EngineCore pid=1) INFO [kv_cache_utils.py:1] GPU KV cache size: ${tokens} tokens, Maximum concurrency for ${context} tokens per request: ${concurrency}x`
+const line = (tokens: string, context: string, concurrency: string, device = 'GPU'): string =>
+  `(EngineCore pid=1) INFO [kv_cache_utils.py:1] ${device} KV cache size: ${tokens} tokens, Maximum concurrency for ${context} tokens per request: ${concurrency}x`
 
 test("14. setup accepts a server only when its start-up log confirms room for the profile's requests or one longest input", () => {
   // The chat profile: requests of 20,480 tokens, 4 at once. The embedding server: inputs of 8,192 tokens.
-  const chat = (log: string): boolean => {
-    const parsed = parseCapacity(log)
+  const chat = (log: string, device: 'GPU' | 'CPU' = 'GPU'): boolean => {
+    const parsed = parseCapacity(log, device)
     return parsed.ok && capacityVerdict(parsed.capacity, 20480, 4).ok
   }
   const embed = (log: string): boolean => {
-    const parsed = parseCapacity(log)
+    const parsed = parseCapacity(log, 'GPU')
     return parsed.ok && embedCapacityVerdict(parsed.capacity, 8192).ok
   }
   const rows: [string, boolean, boolean][] = [
@@ -125,6 +158,7 @@ test("14. setup accepts a server only when its start-up log confirms room for th
     ['embedding: room for one input', embed(line('9,344', '8,192', '1.14')), true],
     ['embedding: room for less than one', embed(line('8,110', '8,192', '0.99')), false],
     ['embedding: sized for another context', embed(line('9,344', '4,096', '2.28')), false],
+    ['Metal chat: the CPU line vLLM-Metal prints', chat(line('82,895', '20,480', '4.05', 'CPU'), 'CPU'), true],
   ]
   for (const [label, ok, expected] of rows) assert.equal(ok, expected, label)
 })
@@ -142,4 +176,40 @@ test('15. setup refuses while any of the three servers is running, and only then
     assert.deepEqual(verdict.ok ? [] : verdict.running, running, label)
     assert.equal(verdict.ok, running.length === 0, label)
   }
+  // Metal: found by process, under any cache directory; other processes are not the lab's servers.
+  const processes = [
+    '  101 /srv/models/vllm-metal/venv/bin/python /srv/models/vllm-metal/venv/bin/vllm serve Qwen/Qwen3-Embedding-0.6B --port 8101',
+    '  202 /usr/bin/python3 -m http.server 8100',
+    '  303 grep vllm',
+  ].join('\n')
+  const metal = metalRunningVerdict(processes)
+  assert.deepEqual(metal.ok ? [] : metal.pids, [101])
+})
+
+test('17. setup takes the toolchain from --host and the machine only, and --keep-env refuses settings of another', () => {
+  const choose = (hostGiven: boolean, system: string, machine: string): string => {
+    const choice = chooseToolchain(hostGiven, system, machine)
+    return choice.ok ? choice.toolchain : 'refused'
+  }
+  const rows: [string, string, string][] = [
+    ['--host from an Apple silicon Mac', choose(true, 'Darwin', 'arm64'), 'nvidia'],
+    ['an Apple silicon Mac', choose(false, 'Darwin', 'arm64'), 'metal'],
+    ['an Intel Mac', choose(false, 'Darwin', 'x86_64'), 'refused'],
+    ['Linux', choose(false, 'Linux', 'x86_64'), 'nvidia'],
+    ['another system', choose(false, 'FreeBSD', 'amd64'), 'refused'],
+  ]
+  for (const [label, got, expected] of rows) assert.equal(got, expected, label)
+
+  const keep = (recorded: Record<string, string>, chosen: Toolchain): string => {
+    const result = recordedToolchain(new Map(Object.entries(recorded)), chosen)
+    return result.ok ? result.toolchain : result.reason
+  }
+  const metal = { MODEL_TOOLCHAIN: 'metal', MODEL_RETRIEVAL_ENV: 'metal/retrieval.env' }
+  const keepRows: [string, string, string][] = [
+    ['Mac settings on a Mac', keep(metal, 'metal'), 'metal'],
+    ['Mac settings on an NVIDIA run', keep(metal, 'nvidia'), 'toolchain_mismatch'],
+    ['settings that name no toolchain, on an NVIDIA run', keep({}, 'nvidia'), 'nvidia'],
+    ['settings that name no toolchain, on a Mac', keep({}, 'metal'), 'toolchain_mismatch'],
+  ]
+  for (const [label, got, expected] of keepRows) assert.equal(got, expected, label)
 })

@@ -3,7 +3,8 @@
 #
 #   docker compose up -d --build --wait
 #
-# The model server is not started here. It runs on the GPU machine, set up by model/setup.sh, and
+# The model server is not started here. It runs on the GPU machine (an NVIDIA machine or an Apple silicon Mac), set
+# up by model/setup.sh, and
 # that setup writes model/.env, which tells the agents where it is. Set it up first.
 name: ai-on-aws
 
@@ -22,4 +23,6 @@ include:
   # The trace store, where pieces export execution evidence. Published on this machine only.
   - platform/telemetry/compose.yaml
   # The search engine and the retrieval service. The index is built into the running stack with knowledge/index.sh.
-  - knowledge/compose.yaml
+  # Read with model/.env, whose MODEL_RETRIEVAL_ENV names the retrieval settings file the service is given.
+  - path: knowledge/compose.yaml
+    env_file: model/.env

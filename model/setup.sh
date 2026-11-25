@@ -1,18 +1,22 @@
 #!/bin/sh
-# One command that brings up the lab's model servers on a machine with one NVIDIA GPU: it checks the
-# machine, selects the largest measured tier that fits (model/tiers.json), writes model/.env, downloads
-# the weights of the three models, starts the chat, embedding and reranker servers in that order, and
-# proves them fit with the gate.
+# One command that brings up the lab's model servers: it checks the machine, selects a measured tier that fits,
+# writes model/.env, downloads the weights of the three models, starts the chat, embedding and reranker servers in
+# that order, and proves them fit with the gate. It takes one of two toolchains from --host and the machine
+# (uname -s, uname -m), and from nothing else: with --host, or on Linux, the servers run in Docker on a machine with
+# one NVIDIA GPU, selected from model/tiers.json (steps 2 to 14 below); on an Apple silicon Mac without --host they
+# run on the Mac with vLLM-Metal, from model/metal/tiers.json, and the rest of the sequence is model/metal/steps.sh.
+# Any other machine is exit 3.
 #
 #   model/setup.sh --cache-dir <dir> [--bind <address>] [--port <n>] [--embed-port <n>] [--rerank-port <n>]
 #                  [--host <docker-host>] [--tier <name>] [--check]
 #   model/setup.sh --keep-env [--host <docker-host>] [--tier <name>] [--check]
+#   On an Apple silicon Mac: --bind is refused, and the ports default to 8100, 8101 and 8102.
 #
 # Exit codes: 0 servers running and shown fit (with --check: the machine would get the printed tier),
 #             1 a download failed or a server was not shown fit, 2 could not run,
 #             3 this machine is not supported or is too small.
 #
-# This script only sequences Docker commands and prints messages. Apart from the three checks of step 0,
+# This script only sequences commands and prints messages. Apart from the three checks of step 0,
 # which must run before the tool can, every decision (flags, selection, disk verdict, the text of
 # model/.env, health, capacity, exit codes) is made by model/setup/tool.ts, run in the pinned Node image on
 # the local Docker daemon. The tool reports key=value lines ending in outcome= and exit_code=; a tool that
@@ -71,6 +75,9 @@ tool_broken() {
   exit 2
 }
 
+toolchain='' toolchain_reason='' retrieval_env=''
+memory_mib='' macos_version='' chat_repo='' chat_revision='' embed_repo='' embed_revision='' rerank_repo='' rerank_revision=''
+env_state='' lock_sha256='' environment_need_mib=''
 check='' keep_env='' cache_dir='' bind='' port='' embed_port='' rerank_port='' host='' tier='' gate_network=''
 base_url='' embed_base_url='' rerank_base_url='' embed_model_id='' rerank_model_id=''
 server_image='' selected_tier='' profile='' need_mib='' free_mib='' total_mib='' used_mib=''
@@ -95,6 +102,20 @@ read_results() {
     key=${line%%=*}
     value=${line#*=}
     case $key in
+      toolchain) toolchain=$value ;;
+      toolchain_reason) toolchain_reason=$value ;;
+      retrieval_env) retrieval_env=$value ;;
+      memory_mib) memory_mib=$value ;;
+      macos_version) macos_version=$value ;;
+      chat_repo) chat_repo=$value ;;
+      chat_revision) chat_revision=$value ;;
+      embed_repo) embed_repo=$value ;;
+      embed_revision) embed_revision=$value ;;
+      rerank_repo) rerank_repo=$value ;;
+      rerank_revision) rerank_revision=$value ;;
+      env_state) env_state=$value ;;
+      lock_sha256) lock_sha256=$value ;;
+      environment_need_mib) environment_need_mib=$value ;;
       check) check=$value ;;
       keep_env) keep_env=$value ;;
       cache_dir) cache_dir=$value ;;
@@ -176,9 +197,17 @@ stop_with() {
 
 # ---------- 1. arguments ----------
 
+# The machine, for the toolchain. The tool decides; uname only reports.
 rc=0
-out=$(run_tool args -- "$@") || rc=$?
+out=$(run_tool args "$(uname -s)" "$(uname -m)" -- "$@") || rc=$?
 take "$rc" "$out"
+say "toolchain: $toolchain ($toolchain_reason)"
+
+# On an Apple silicon Mac the rest of the sequence is model/metal/steps.sh, which always ends by exiting.
+if [ "$toolchain" = metal ]; then
+  . "$model_dir/metal/steps.sh"
+  tool_broken "0, but model/metal/steps.sh returned"
+fi
 
 # Docker commands for the GPU machine. DOCKER_HOST is given to these commands only, and only with --host.
 gpu_docker() {
@@ -204,7 +233,7 @@ fi
 # ---------- 3. existing settings ----------
 
 rc=0
-out=$(run_tool settings "$check" "$keep_env" "$bind" "$port" "$cache_dir" "$embed_port" "$rerank_port") || rc=$?
+out=$(run_tool settings nvidia "$check" "$keep_env" "$bind" "$port" "$cache_dir" "$embed_port" "$rerank_port") || rc=$?
 take "$rc" "$out"
 
 # ---------- 4. none of the lab's servers may be running ----------
@@ -429,7 +458,7 @@ read_log() {
 start_server chat
 read_log
 rc=0
-out=$(printf '%s\n' "$logs" | run_tool_in capacity "$profile") || rc=$?
+out=$(printf '%s\n' "$logs" | run_tool_in capacity nvidia "$profile") || rc=$?
 take_started "$rc" "$out"
 say "capacity: vLLM's cache holds $concurrency requests of $context tokens at once ($kv_cache_tokens tokens)"
 
@@ -438,7 +467,7 @@ say "capacity: vLLM's cache holds $concurrency requests of $context tokens at on
 start_server embed
 read_log
 rc=0
-out=$(printf '%s\n' "$logs" | run_tool_in embed-capacity) || rc=$?
+out=$(printf '%s\n' "$logs" | run_tool_in embed-capacity nvidia) || rc=$?
 take_started "$rc" "$out"
 say "capacity: the embedding server's cache holds $concurrency inputs of $context tokens at once ($kv_cache_tokens tokens)"
 

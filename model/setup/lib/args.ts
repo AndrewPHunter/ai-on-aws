@@ -1,9 +1,12 @@
-// Command-line flags of model/setup.sh (contract section 1). Pure: argv and the known tier names in,
-// options or a usage error out.
+// Command-line flags of model/setup.sh (contract section 1). Pure: argv, the machine (`uname -s`, `uname -m`) and
+// the tier names of each toolchain in; the toolchain and the options, a usage error, or an unsupported machine out.
 
 import { isEnvSafe } from './envfile.ts'
+import { chooseToolchain, METAL_BIND, TIERS_FILE, type Toolchain } from './toolchain.ts'
 
 export type Options = {
+  toolchain: Toolchain
+  toolchainReason: string
   cacheDir: string | null // null only with --keep-env
   bind: string | null // null only with --keep-env (read from model/.env)
   port: number | null // null only with --keep-env (read from model/.env)
@@ -15,12 +18,20 @@ export type Options = {
   keepEnv: boolean
 }
 
-export type ParseResult = { ok: true; options: Options } | { ok: false; message: string }
+export type ParseResult = { ok: true; options: Options } | { ok: false; reason: 'usage' | 'machine_unsupported'; message: string }
+
+export type Machine = { system: string; machine: string }
 
 export const DEFAULT_BIND = '127.0.0.1'
 export const DEFAULT_PORT = 8000
 export const DEFAULT_EMBED_PORT = 8001
 export const DEFAULT_RERANK_PORT = 8002
+
+// On an Apple silicon Mac the servers use ports the lab's own stack does not publish there (it publishes 8000 to 8002).
+const DEFAULT_PORTS: Record<Toolchain, readonly [number, number, number]> = {
+  nvidia: [DEFAULT_PORT, DEFAULT_EMBED_PORT, DEFAULT_RERANK_PORT],
+  metal: [8100, 8101, 8102],
+}
 
 const VALUE_FLAGS = ['--cache-dir', '--bind', '--port', '--embed-port', '--rerank-port', '--host', '--tier'] as const
 const PORT_FLAGS = ['--port', '--embed-port', '--rerank-port'] as const
@@ -48,7 +59,7 @@ export function isLoopbackIpv4(text: string): boolean {
 }
 
 function fail(message: string): ParseResult {
-  return { ok: false, message }
+  return { ok: false, reason: 'usage', message }
 }
 
 // The chat, embedding and reranker servers are published on three ports of one address, so the three must
@@ -70,7 +81,11 @@ function portOf(given: string | undefined, fallback: number): number {
   return given === undefined ? fallback : Number(given)
 }
 
-export function parseArgs(argv: readonly string[], tierNames: readonly string[]): ParseResult {
+export function parseArgs(
+  argv: readonly string[],
+  machine: Machine,
+  tierNamesOf: (toolchain: Toolchain) => readonly string[],
+): ParseResult {
   const values = new Map<ValueFlag, string>()
   const switches = new Set<SwitchFlag>()
 
@@ -99,6 +114,14 @@ export function parseArgs(argv: readonly string[], tierNames: readonly string[])
   const host = values.get('--host') ?? null
   const tier = values.get('--tier') ?? null
 
+  const choice = chooseToolchain(host !== null, machine.system, machine.machine)
+  if (!choice.ok) return { ok: false, reason: 'machine_unsupported', message: choice.message }
+  const { toolchain } = choice
+  const [defaultPort, defaultEmbedPort, defaultRerankPort] = DEFAULT_PORTS[toolchain]
+
+  if (toolchain === 'metal' && bindGiven !== null) {
+    return fail(`--bind is not accepted on an Apple silicon Mac: the servers listen on ${METAL_BIND} only`)
+  }
   if (keepEnv) {
     for (const flag of ['--cache-dir', '--bind', ...PORT_FLAGS] as const) {
       if (values.has(flag)) return fail(`${flag} is not accepted with --keep-env (the value comes from model/.env)`)
@@ -123,25 +146,28 @@ export function parseArgs(argv: readonly string[], tierNames: readonly string[])
       }
     }
     const clash = portClash([
-      ['--port', portOf(values.get('--port'), DEFAULT_PORT)],
-      ['--embed-port', portOf(values.get('--embed-port'), DEFAULT_EMBED_PORT)],
-      ['--rerank-port', portOf(values.get('--rerank-port'), DEFAULT_RERANK_PORT)],
+      ['--port', portOf(values.get('--port'), defaultPort)],
+      ['--embed-port', portOf(values.get('--embed-port'), defaultEmbedPort)],
+      ['--rerank-port', portOf(values.get('--rerank-port'), defaultRerankPort)],
     ])
     if (clash !== null) return fail(clash)
   }
 
+  const tierNames = tierNamesOf(toolchain)
   if (tier !== null && !tierNames.includes(tier)) {
-    return fail(`--tier names no tier in model/tiers.json: ${tier} (tiers: ${tierNames.join(', ')})`)
+    return fail(`--tier names no tier in model/${TIERS_FILE[toolchain]}: ${tier} (tiers: ${tierNames.join(', ')})`)
   }
 
   return {
     ok: true,
     options: {
+      toolchain,
+      toolchainReason: choice.reason,
       cacheDir,
-      bind: keepEnv ? null : (bindGiven ?? DEFAULT_BIND),
-      port: keepEnv ? null : portGiven === null ? DEFAULT_PORT : Number(portGiven),
-      embedPort: keepEnv ? null : portOf(values.get('--embed-port'), DEFAULT_EMBED_PORT),
-      rerankPort: keepEnv ? null : portOf(values.get('--rerank-port'), DEFAULT_RERANK_PORT),
+      bind: keepEnv ? null : toolchain === 'metal' ? METAL_BIND : (bindGiven ?? DEFAULT_BIND),
+      port: keepEnv ? null : portGiven === null ? defaultPort : Number(portGiven),
+      embedPort: keepEnv ? null : portOf(values.get('--embed-port'), defaultEmbedPort),
+      rerankPort: keepEnv ? null : portOf(values.get('--rerank-port'), defaultRerankPort),
       host,
       tier,
       check,

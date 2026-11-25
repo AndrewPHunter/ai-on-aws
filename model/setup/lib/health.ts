@@ -18,3 +18,14 @@ export function healthVerdict(state: string | null, secondsWaited: number): Heal
   }
   return { verdict: 'wait' }
 }
+
+// The same verdict on Metal, where a server is a process of the Mac: whether its process is alive, as
+// model/metal/servers.sh status reports it, and whether its /health answered.
+export function metalHealthVerdict(alive: boolean, healthy: boolean, secondsWaited: number): HealthVerdict {
+  if (!alive) return { verdict: 'failed', reason: 'the server process ended' }
+  if (healthy) return { verdict: 'ready' }
+  if (secondsWaited >= HEALTH_LIMIT_SECONDS) {
+    return { verdict: 'failed', reason: `the server did not answer /health within ${HEALTH_LIMIT_SECONDS} seconds (waited ${secondsWaited})` }
+  }
+  return { verdict: 'wait' }
+}

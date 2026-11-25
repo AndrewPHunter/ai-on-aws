@@ -193,7 +193,7 @@ The index accepts those vectors only when the embed report names the chunk repor
 | `fused` | Reciprocal rank fusion of the best 50 by each: score = Σ 1 / (60 + rank); ties by chunk id | As `vector`, plus the keyword search, at once |
 | `fused_reranked` | The best 20 fused, each sent as the text the embedding stage embeds (context line, newline, text), ordered by the reranker's score (`max_tokens_per_doc` 7000); ties by fused rank | As `fused`, plus the reranker |
 
-Before using vectors, the service resolves the alias to one index and compares its recorded embedding identity with `model/retrieval.env` and the recipe constants. A `null` identity returns `vectors_not_built`; a mismatch returns `vectors_do_not_match`. Neither calls the embedding server. Both search legs use the resolved index, so an alias change cannot mix corpora within one search. The service combines their ranks in code.
+Before using vectors, the service resolves the alias to one index and compares its recorded embedding identity with the retrieval settings file `MODEL_RETRIEVAL_ENV` names (`model/retrieval.env` or `model/metal/retrieval.env`) and the recipe constants. A `null` identity returns `vectors_not_built`; a mismatch returns `vectors_do_not_match`. Neither calls the embedding server. Both search legs use the resolved index, so an alias change cannot mix corpora within one search. The service combines their ranks in code.
 
 | Failure | Error result |
 |---|---|
@@ -206,7 +206,7 @@ Before using vectors, the service resolves the alias to one index and compares i
 
 Search failures are returned without retry or a change of strategy. The model-server key goes only to the embedding and reranking servers. The service caches each index's embedding-identity verdict by index name for its lifetime.
 
-The model servers are reached at `MODEL_EMBED_BASE_URL` and `MODEL_RERANK_BASE_URL` from inside the stack's network. An address of `127.0.0.1` there is the container itself, so servers published on a loopback address of the host are not reached: the embed command exits 2 and a search answers `embedding_unreachable`.
+The model servers are reached at `MODEL_EMBED_BASE_URL` and `MODEL_RERANK_BASE_URL` from inside the stack's network. An address of `127.0.0.1` there is the container itself, so servers on a loopback address of the host are reached only through `host.docker.internal`, as the model setup of an Apple silicon Mac writes them; an NVIDIA server published on a loopback address is not reached: the embed command exits 2 and a search answers `embedding_unreachable`.
 
 A whole `search_label` or `find_labels` call has 8 s (`SEARCH_LIMIT_MS`, `knowledge/src/search/limits.ts`), leaving room inside the agent's 10 s tool limit. Each request receives the smaller of its own limit and the remaining search time:
 
@@ -366,7 +366,7 @@ The census lists missing or mismatched pinned labels as not counted and exits 1.
 | `knowledge/src/search/` | The mapping and index name, indexing, the engine client, the two tools and their strategies, fusion (`fusion.ts`), the retriever built from the settings (`retriever.ts`), the time limits (`limits.ts`), the MCP and HTTP servers, the settings |
 | `knowledge/src/vectors/` | The document recipe, the query instruction and the vector encoding (`recipe.ts`), the model servers' client (`model-client.ts`), and the embedding stage (`embed.ts`) |
 | `knowledge/embed.sh` | The batch size, tries, waits and time limit of the embedding stage |
-| `model/retrieval.env` (the model piece's) | The embedding and reranker models' repository, revision, served name and dimensions |
+| `model/retrieval.env` (the model piece's); for the retrieval service, the file `MODEL_RETRIEVAL_ENV` names | The embedding and reranker models' repository, revision, served name and dimensions |
 | `knowledge/compose.yaml` | The search engine's and the retrieval service's containers: images, settings, hardening, ports |
 | `knowledge/index.sh` | The alias, the largest bulk body and the time limit of indexing |
 | `knowledge/gate.sh`, `knowledge/gate/`, `knowledge/src/gate/` | The gate of the retrieval path |
