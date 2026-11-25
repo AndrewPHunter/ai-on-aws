@@ -221,6 +221,6 @@ Model and tool clients enforce real-time limits. These tests use generous limits
 - Which of several matching labels is used is the model's choice. It is visible only in the citation.
 - Whether a message is a report or a question is the model's judgement. A bare report of a side effect is declined as `not_a_label_question` by instruction, not by a check.
 - The reading allowance counts characters rather than tokens. It assumes at most 0.75 tokens per character (`expert/settings.ts`); denser text can overflow the context and fail the run with the model server's status.
-- The agent cannot choose passage ranking. The retrieval service uses `SEARCH_STRATEGY`: `keyword`, `vector`, `fused` or `fused_reranked` (`keyword` in the lab compose file). Retrieval steps record the reported strategy and returned scores.
+- The agent cannot choose passage ranking. The retrieval service uses `SEARCH_STRATEGY`: `keyword`, `vector`, `fused` or `fused_reranked` (`fused_reranked` in the lab compose file). Retrieval steps record the reported strategy and returned scores.
 - One implementation, on Strands. There is no hand-written loop for this agent.
 - No hand-off to the intake agent when a message reports an adverse event: it is declined, and the caller must send it to intake.

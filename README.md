@@ -57,10 +57,11 @@ knowledge/parse.sh
 knowledge/chunk.sh
 platform/identity/setup.sh
 docker compose up -d --build --wait
+knowledge/embed.sh ai-on-aws
 knowledge/index.sh ai-on-aws
 ```
 
-The corpus commands fetch the pinned label versions, parse their structure, and produce citable chunks. The final command loads those chunks into OpenSearch. Retrieval requires this index; starting the containers alone does not build it. The default search uses keywords. Embedding, hybrid search, and reranking setup are covered in the [knowledge guide](knowledge/README.md).
+The corpus commands fetch the pinned label versions, parse their structure, and produce citable chunks. The embed command asks the embedding server for a vector of every chunk, and the final command loads the chunks and their vectors into OpenSearch. Retrieval requires this index; starting the containers alone does not build it. Search fuses keyword and vector ranking and reranks the result. The other strategies, keyword search without the model servers among them, are covered in the [knowledge guide](knowledge/README.md).
 
 Identity setup writes `platform/identity/.env` with generated service credentials and the synthetic users below. Compose reads that file and `model/.env`; if either is missing, startup stops with an explanation.
 

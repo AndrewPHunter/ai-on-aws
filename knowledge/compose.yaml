@@ -48,8 +48,9 @@ services:
     image: ai-on-aws-knowledge:local
     command: ["node", "knowledge/src/search/server.ts"]
     # The model servers' addresses and the key (model/.env), and the embedding and reranker models' identity
-    # (model/retrieval.env), for a strategy that uses them. Optional: with SEARCH_STRATEGY keyword the service reads
-    # none of their values, and starts when model/.env does not exist.
+    # (model/retrieval.env). The strategy set below uses both servers: a value of these missing stops the service at
+    # start, naming it. The files are optional so that a stack set to SEARCH_STRATEGY keyword, which reads none of
+    # their values, starts when model/.env does not exist.
     env_file:
       - path: ../model/.env
         required: false
@@ -59,7 +60,7 @@ services:
       SEARCH_URL: http://search:9200
       SEARCH_INDEX: labels
       # How search_label ranks: keyword, vector, fused or fused_reranked. The model never chooses it.
-      SEARCH_STRATEGY: keyword
+      SEARCH_STRATEGY: fused_reranked
       # The access token every request but /ping must carry, checked as the case system checks it.
       AUTH_DISCOVERY_URL: http://identity:8080/realms/lab/.well-known/openid-configuration
       AUTH_ISSUER: http://localhost:8090/realms/lab
